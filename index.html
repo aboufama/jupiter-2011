@@ -99,21 +99,26 @@ button:hover,button:focus-visible{border-color:var(--amber);color:var(--amber)}
 /* The first document: a photocopied, declassified NASA mission report. Modelled on the cover of the Gemini Program
    Mission Report for Gemini-Titan 1 (MSC-R-G-64-1, May 1964): struck classification lines, the rotated change stamp,
    the crossed downgrading box, punch holes, the accession number up the margin, the espionage-law legend. */
-#disc{background:radial-gradient(ellipse 70% 62% at 50% 42%,#262521 0,#121210 58%,#050505 100%)}
+#disc{background:#050505;--red:#a8231c}
+.fscale{position:relative}
+.desk{position:absolute;left:50%;top:50%;width:4400px;height:3200px;margin:-1600px 0 0 -2200px;transform:translateZ(-4px);pointer-events:none;background:radial-gradient(ellipse 1000px 800px at 47% 46%,rgba(255,248,232,.17),rgba(255,248,232,.05) 45%,rgba(0,0,0,.55) 100%),url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='900' height='600'%3E%3Cfilter id='w'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.003 .07' numOctaves='4' seed='11'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1.5 0 0 0 -.45'/%3E%3C/filter%3E%3Crect width='900' height='600' filter='url(%23w)'/%3E%3C/svg%3E"),linear-gradient(#211f1c,#191816)}
+.rscroll::after{content:"";position:absolute;inset:0;pointer-events:none;background:radial-gradient(ellipse 85% 80% at 44% 40%,rgba(0,0,0,0) 40%,rgba(0,0,0,.72) 100%)}
 /* The file it comes in: a manila folder lying shut on a desk. The cover is lifted by its free edge and laid over flat to
    the left; a signed sheet is turned over after it. Both are cut into strips that hinge on each other, so card and paper
    bend as they go and each strip takes its own light. */
-.rscroll{width:100vw;height:100vh;overflow:hidden;display:flex;align-items:center;justify-content:center;perspective:2600px;perspective-origin:50% 44%}
+.rscroll{position:relative;width:100vw;height:100vh;overflow:hidden;display:flex;align-items:center;justify-content:center;perspective:2100px;perspective-origin:50% 40%}
 .fscale{transform-style:preserve-3d}
 .folder{position:relative;padding:15px 17px 17px 15px;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85 .3' numOctaves='2' seed='4'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .1 0'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)'/%3E%3C/svg%3E"),#9d9b96;border-radius:2px 4px 4px 2px;box-shadow:0 22px 70px rgba(0,0,0,.9),0 3px 8px rgba(0,0,0,.6);transform-style:preserve-3d}
 .folder .ftab{position:absolute;top:-23px;right:74px;width:190px;height:24px;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85 .3' numOctaves='2' seed='4'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .1 0'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)'/%3E%3C/svg%3E"),#9d9b96;border-radius:5px 5px 0 0;font-size:10px;letter-spacing:.14em;color:#262524;line-height:25px;text-align:center}
-.fcover{position:absolute;inset:0;background:linear-gradient(90deg,rgba(0,0,0,.22),rgba(0,0,0,.05) 4px,rgba(255,255,255,.06) 5px,rgba(0,0,0,.1) 9px,rgba(255,255,255,.05) 10px,rgba(0,0,0,0) 22px,rgba(0,0,0,0) calc(100% - 3px),rgba(0,0,0,.2)),url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85 .3' numOctaves='2' seed='4'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .1 0'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)'/%3E%3C/svg%3E"),#b3a991;border-radius:2px 4px 4px 2px;color:#1f1c17;display:flex;flex-direction:column;align-items:center;text-align:center;padding:34px 0 30px;box-sizing:border-box;text-shadow:none;cursor:pointer;filter:grayscale(.82);transform:translateZ(1px);box-shadow:inset 0 0 0 1px rgba(255,255,255,.07),inset 0 -2px 3px rgba(0,0,0,.12)}
+.fcover{position:absolute;inset:0;background:linear-gradient(90deg,rgba(0,0,0,.22),rgba(0,0,0,.05) 4px,rgba(255,255,255,.06) 5px,rgba(0,0,0,.1) 9px,rgba(255,255,255,.05) 10px,rgba(0,0,0,0) 22px,rgba(0,0,0,0) calc(100% - 3px),rgba(0,0,0,.2)),url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85 .3' numOctaves='2' seed='4'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .1 0'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)'/%3E%3C/svg%3E"),#aeaba4;border-radius:2px 4px 4px 2px;color:#1f1c17;display:flex;flex-direction:column;align-items:center;text-align:center;padding:34px 0 30px;box-sizing:border-box;text-shadow:none;cursor:pointer;transform:translateZ(1px);box-shadow:inset 0 0 0 1px rgba(255,255,255,.07),inset 0 -2px 3px rgba(0,0,0,.12)}
 .fcover img{height:92px;margin:74px 0 18px;filter:grayscale(1) contrast(1.5) brightness(.9);mix-blend-mode:multiply}
 .fcover .forg{font-size:12px;line-height:1.5;letter-spacing:.12em}
 .fcover .flabel{margin:54px 0 0;border:1.5px solid #1f1c17;padding:12px 26px 11px;font-size:13px;line-height:1.6;letter-spacing:.08em;background:#e6e4dc;color:#1a1a1a;min-width:330px;box-shadow:0 1px 1px rgba(0,0,0,.25)}
 .fcover .flabel b{font-weight:500;font-size:16px;letter-spacing:.12em}
 .fcover .fnote{margin-top:auto;font-size:10px;line-height:1.6;letter-spacing:.1em;max-width:440px}
 .fcover button{margin:18px 0 22px}
+.fcover button,.cgo button{color:var(--red)!important;border:2px solid var(--red)!important;background:transparent;text-shadow:none;font-weight:600;letter-spacing:.24em;padding:9px 26px}
+.fcover button:hover,.fcover button:focus-visible,.cgo button:hover,.cgo button:focus-visible{background:var(--red)!important;color:#efece4!important}
 .turn{position:absolute;transform-style:preserve-3d;pointer-events:none}
 .strip{position:absolute;top:0;transform-origin:0 50%;transform-style:preserve-3d}
 .face{position:absolute;inset:0;overflow:hidden;backface-visibility:hidden;-webkit-backface-visibility:hidden}
@@ -125,10 +130,10 @@ button:hover,button:focus-visible{border-color:var(--amber);color:var(--amber)}
 .fin .acc div{display:grid;grid-template-columns:1.6fr 1fr .7fr;border-top:1px solid rgba(20,20,18,.7);height:19px;align-items:center}
 .fin .acc div:last-child{border-bottom:1px solid rgba(20,20,18,.7)}
 .fin .acc i{display:block;height:9px;background:#0a0a0a;margin-right:10px}
-.pback{background:linear-gradient(270deg,rgba(0,0,0,.13),rgba(0,0,0,0) 14px),#dddbd3}
+.pback{background:linear-gradient(270deg,rgba(0,0,0,.13),rgba(0,0,0,0) 14px),url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='p'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.7' numOctaves='3' seed='7'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .045 0'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23p)'/%3E%3C/svg%3E"),#dcdad2}
 .pback i{position:absolute;right:24px;width:21px;height:21px;border-radius:50%;background:#050505}
 .csh{position:absolute;left:15px;top:15px;bottom:17px;width:760px;transform-origin:0 50%;pointer-events:none;opacity:0;background:linear-gradient(90deg,rgba(0,0,0,.62),rgba(0,0,0,.5) calc(100% - 70px),rgba(0,0,0,0))}
-.report{position:relative;width:760px;box-sizing:border-box;filter:grayscale(.82);transform:translateZ(.3px);text-align:left;color:#1a1a1a;padding:22px 58px 16px 72px;text-shadow:0 0 .6px rgba(0,0,0,.45);font-size:12.5px;line-height:1.42;letter-spacing:.02em;background:linear-gradient(90deg,rgba(0,0,0,.13),rgba(0,0,0,0) 14px),#e6e4dc;box-shadow:0 1px 5px rgba(0,0,0,.45),1px 1px 0 #cdcbc3,2px 2px 0 #9a9892,3px 3px 0 #d2d0c8,4px 4px 0 #8e8c86}
+.report{position:relative;width:760px;box-sizing:border-box;transform:translateZ(.3px);text-align:left;color:#1a1a1a;padding:22px 58px 16px 72px;text-shadow:0 0 .6px rgba(0,0,0,.45);font-size:12.5px;line-height:1.42;letter-spacing:.02em;background:linear-gradient(90deg,rgba(0,0,0,.13),rgba(0,0,0,0) 14px),radial-gradient(ellipse 120% 95% at 34% 22%,rgba(255,255,255,.3),rgba(255,255,255,0) 55%,rgba(0,0,0,.07) 100%),url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='p'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.7' numOctaves='3' seed='7'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .045 0'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23p)'/%3E%3C/svg%3E"),#e3e1d9;box-shadow:0 1px 5px rgba(0,0,0,.45),1px 1px 0 #cdcbc3,2px 2px 0 #9a9892,3px 3px 0 #d2d0c8,4px 4px 0 #8e8c86}
 .report .hole{position:absolute;left:24px;width:21px;height:21px;border-radius:50%;background:#050505;box-shadow:0 0 0 1px rgba(0,0,0,.35)}
 .report .vnum{position:absolute;left:38px;top:39%;transform-origin:0 0;transform:rotate(-90deg) translate(-50%,0);font-size:17px;letter-spacing:.14em;white-space:nowrap}
 .report .vav{position:absolute;left:36px;top:73%;transform-origin:0 0;transform:rotate(-90deg) translate(-50%,0);font-size:9px;line-height:1.3;letter-spacing:.08em;white-space:nowrap;text-align:center;opacity:.85}
@@ -138,7 +143,7 @@ button:hover,button:focus-visible{border-color:var(--amber);color:var(--amber)}
 .report .rno{position:absolute;right:40px;top:12px;text-align:right;font-size:11px;line-height:1.3}
 .report .hand{font-style:italic;font-weight:400}
 .rhead{display:flex;align-items:center;justify-content:center;gap:20px;margin:20px 0 8px}
-.rhead img{height:66px;filter:contrast(1.7) brightness(.92)}.rhead canvas{height:62px;aspect-ratio:1;filter:contrast(1.5)}
+.rhead img{height:66px;filter:grayscale(.85) contrast(1.7) brightness(.92)}.rhead canvas{height:62px;aspect-ratio:1;filter:grayscale(.85) contrast(1.5)}
 .rorg{text-align:center;font-size:11.5px;line-height:1.4;letter-spacing:.1em}
 .rtitle{text-align:center;font-size:20px;line-height:1.26;font-weight:500;letter-spacing:.09em;margin:8px 0 6px}
 .rtitle small{display:block;font-size:12.5px;font-weight:500;letter-spacing:.1em;margin-top:4px;line-height:1.35}
@@ -156,7 +161,11 @@ button:hover,button:focus-visible{border-color:var(--amber);color:var(--amber)}
 .rsign{display:grid;grid-template-columns:1fr 1fr;gap:6px 26px;margin:10px 0 6px;font-size:11.5px}
 .rsign svg{display:block;height:30px;width:170px;margin:-4px 0 -9px 8px;overflow:visible}
 .rsign .ln{border-top:1px solid #161616;padding-top:1px;width:92%}
+.rrecv{position:relative}
 .sigbox{position:relative;height:26px;width:92%;cursor:pointer}
+.sflag{position:absolute;right:-50px;top:19px;background:#b3261e;color:#f6f1e8;font-size:9.5px;font-weight:600;letter-spacing:.14em;line-height:1;padding:6px 10px 6px 22px;clip-path:polygon(14px 0,100% 0,100% 100%,14px 100%,0 50%);transform:rotate(-2deg);cursor:pointer;text-shadow:none;transition:opacity .4s}
+.sflag.off{opacity:0;pointer-events:none}
+#sigHint{color:var(--red)}
 .sigbox svg{position:absolute;left:18px;bottom:-2px;width:230px;height:44px;overflow:visible;pointer-events:none}
 #sigInk{stroke-dasharray:1;stroke-dashoffset:1}
 .sigbox.signed #sigInk{stroke-dashoffset:0;transition:stroke-dashoffset 1.05s cubic-bezier(.45,.05,.4,1)}
@@ -175,17 +184,16 @@ button:hover,button:focus-visible{border-color:var(--amber);color:var(--amber)}
 .crow b{font-weight:500;font-size:11px}
 .crow:hover,.crow:focus-visible{background:rgba(22,22,22,.1)}
 .crow.on{background:#161616;color:#e6e4dc;text-shadow:none}
-.crec{display:grid;grid-template-columns:186px 1fr;grid-auto-rows:min-content}
+.crec{display:grid;grid-template-columns:170px 1fr;grid-template-rows:74px 64px 71px 96px 46px 100px 54px}
 .crec .cph{grid-row:1/4;border-right:1px solid #161616;border-bottom:1px solid #161616;padding:8px}
 .crec .cph canvas{width:100%;aspect-ratio:4/5;display:block;background:#111;filter:contrast(1.12)}
+.cf{overflow:hidden}
 .cf,.cnote{position:relative;padding:17px 10px 9px;font-size:12.5px;line-height:1.42;border-bottom:1px solid #161616}
 .cf label,.cnote label{position:absolute;left:5px;top:3px;font-size:7.5px;letter-spacing:.12em}
 .cf.w{grid-column:1/3}
 .cf.big{font-size:16px;font-weight:500;letter-spacing:.06em}
 .cf b{font-weight:500;letter-spacing:.05em}
 .cgo{grid-column:1/3;display:flex;justify-content:flex-end;align-items:center;gap:14px;padding:12px 10px;font-size:9px;letter-spacing:.1em}
-.cgo button{background:transparent;color:#161616;border:1.5px solid #161616;text-shadow:none;font-weight:500;letter-spacing:.2em}
-.cgo button:hover,.cgo button:focus-visible{background:#161616;border-color:#161616;color:#e4e2da}
 .cnote{border:1.5px solid #161616;border-top:0;font-size:10.5px;letter-spacing:.03em}.cnote b{font-weight:500}
 .rleg{font-size:8.6px;line-height:1.4;letter-spacing:.04em;margin:8px 34px 8px;text-align:justify}
 .rfoot{display:flex;justify-content:space-between;align-items:flex-end;margin-top:6px;font-size:10px;letter-spacing:.1em}
@@ -198,7 +206,7 @@ button:hover,button:focus-visible{border-color:var(--amber);color:var(--amber)}
 <canvas id="gl"></canvas>
 
 <div class="screen" id="disc">
-  <div class="rscroll"><div class="fscale" id="fscale"><div class="folder" id="folder">
+  <div class="rscroll"><div class="fscale" id="fscale"><div class="desk"></div><div class="folder" id="folder">
     <div class="ftab">JSC-ODY9-2011-0829</div>
   <div class="report pg2" id="pg2">
     <i class="hole" style="top:8%"></i><i class="hole" style="top:49%"></i><i class="hole" style="top:90%"></i>
@@ -241,7 +249,7 @@ button:hover,button:focus-visible{border-color:var(--amber);color:var(--amber)}
     <p class="encl">Enclosure 1: flight recorder audio, 07:30 UTC, 39 seconds. <a id="encPlay" role="button" tabindex="0">PLAY</a></p>
     <div class="rsign">
       <div>Approved by:<svg viewBox='0 0 170 30'><path d='M4 21 C9 6 15 4 16 14 S10 27 20 15 S27 9 28 17 S34 12 37 15 S44 7 46 16 S55 18 60 11 C64 4 67 22 73 14 S84 9 88 15 S99 16 106 12 S126 17 164 9' fill='none' stroke='#161616' stroke-width='1.5' stroke-linecap='round'/></svg><div class="ln"><span class="rd" style="width:11em"></span><br>Manager, Odyssey Program</div></div>
-      <div class="rrecv">Received by:<div class="sigbox" id="sig" role="button" tabindex="0" aria-label="Sign to continue"><svg viewBox='0 0 230 44'><path id="sigInk" pathLength="1" d='M10 34 C12 14 20 4 24 12 S16 40 26 30 C32 24 36 14 40 22 S36 36 44 28 S50 16 54 24 S60 30 64 22 C68 12 72 8 74 18 S70 38 80 26 S92 14 96 24 S104 30 110 22 S118 18 124 25 C140 32 170 20 216 23 M58 10 C74 6 98 7 118 11' fill='none' stroke='#14141a' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/></svg><span class="sigx">X</span></div><div class="ln" id="sigHint">Sign above to continue</div></div>
+      <div class="rrecv">Received by:<div class="sigbox" id="sig" role="button" tabindex="0" aria-label="Sign to continue"><svg viewBox='0 0 230 44'><path id="sigInk" pathLength="1" d='M10 34 C12 14 20 4 24 12 S16 40 26 30 C32 24 36 14 40 22 S36 36 44 28 S50 16 54 24 S60 30 64 22 C68 12 72 8 74 18 S70 38 80 26 S92 14 96 24 S104 30 110 22 S118 18 124 25 C140 32 170 20 216 23 M58 10 C74 6 98 7 118 11' fill='none' stroke='#14141a' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/></svg><span class="sigx">X</span></div><span class="sflag" id="sflag">SIGN HERE</span><div class="ln" id="sigHint">Sign above to continue</div></div>
     </div>
     <div class="rleg">CLASSIFIED DOCUMENT - This material contains information affecting the National Defense of the United States within the meaning of the espionage laws, Title 18, U.S.C., Secs. 793 and 794, the transmission or revelation of which in any manner to an unauthorized person is prohibited by law.</div>
     <div class="rfoot"><span>JSC Form 2011-A</span><div class="cls"><span class="struck">SECRET<svg viewBox='0 0 100 30' preserveAspectRatio='none'><path d='M1 13 C12 9 22 17 34 12 S58 9 70 14 S90 10 99 13 M2 18 C16 21 30 14 46 18 S76 21 98 17 M3 9 C24 6 44 11 62 8 S86 7 97 9 M4 22 C28 24 52 20 96 22' fill='none' stroke='#060606' stroke-width='5.4' stroke-linecap='round' vector-effect='non-scaling-stroke'/></svg></span></div><span>Page 1 of 14</span></div>
@@ -10758,10 +10766,10 @@ function p2Hud(o) {
   const sig = Math.round(S.signal * 100); txt(garbleText(sig < 25 ? 'LINK LOST' : `LINK ${sig}%`, gz), cw - mx, top, 13, 'right', C_BLU); if (S.micOn) txt('MIC OPEN', cw - mx, top + 13, 13, 'right');
   const n = shDone(X), obj = X.burn ? 'BURN IN PROGRESS' : n >= 3 ? 'FIRE THE BURN FROM THE FLIGHT DECK' : X.core === 1 ? 'SEAT THE CORE IN AVIONICS' : `WAKE ITHACA  ${n} OF 3`;
   txt(garbleText(obj, gz * .6), cw / 2, top, 14, 'center', C_AMB);
-  hx.fillStyle = 'rgba(236,236,230,.25)'; hx.fillRect(mx * u, 236 * u, 70 * u, 3 * u); hx.fillStyle = '#ececE6'; hx.fillRect(mx * u, 236 * u, 70 * u * p.stam, 3 * u);
-  if (X.cut) txt(`CUT ${X.cut} OF 3`, mx, 232, 12, 'left', C_RED);
-  txt(`ROUNDS ${p.ammo}`, cw - mx, 180, 14, 'right', p.ammo ? C_AMB : C_RED); if (p.pulses > 0) txt(`PULSE ${p.pulses}  [Q]`, cw - mx, 164, 14, 'right', C_AMB);
-  shMinimap(u, cw - mx - 54, 186, 54, p, X);
+  hx.fillStyle = 'rgba(236,236,230,.25)'; hx.fillRect(mx * u, 245 * u, 70 * u, 3 * u); hx.fillStyle = '#ececE6'; hx.fillRect(mx * u, 245 * u, 70 * u * p.stam, 3 * u);
+  if (X.cut) txt(`CUT ${X.cut} OF 3`, mx, 241, 12, 'left', C_RED);
+  txt(`ROUNDS ${p.ammo}`, cw - mx, 189, 14, 'right', p.ammo ? C_AMB : C_RED); if (p.pulses > 0) txt(`PULSE ${p.pulses}  [Q]`, cw - mx, 174, 14, 'right', C_AMB);
+  shMinimap(u, cw - mx - 54, 195, 54, p, X);
   if (S.near) { txt(`HOLD E  ${S.near.label}`, cw / 2, 176, 14, 'center'); if (p.hold > 0 && S.near.id !== 'hide') { hx.fillStyle = 'rgba(236,236,230,.25)'; hx.fillRect((cw / 2 - 50) * u, 182 * u, 100 * u, 4 * u); hx.fillStyle = '#fff'; hx.fillRect((cw / 2 - 50) * u, 182 * u, 100 * u * p.hold, 4 * u); } }
   else { hx.fillStyle = 'rgba(255,255,255,.7)'; hx.fillRect((cw / 2 - .5) * u, 143.5 * u, u, u); }
   if (p.hitT < .1) { hx.strokeStyle = '#fff'; hx.lineWidth = 1.2 * u; hx.beginPath(); for (const [a, b] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) { hx.moveTo((cw / 2 + a * 3) * u, (144 + b * 3) * u); hx.lineTo((cw / 2 + a * 7) * u, (144 + b * 7) * u); } hx.stroke(); }
@@ -11049,14 +11057,14 @@ function ecgStep() { const E = S.ecg || (S.ecg = {}), now = S.t, cine = S.cine;
       e.ph += rate / 60 / ECG_HZ; if (e.ph >= 1) { e.ph -= 1; e.jit = (hsh(e.i, c.pitch) - .5) * .09; }
       e.b[e.i++ % ECG_N] = ecgWave(e.ph) * amp * (f && f.down ? .62 : 1) + (alive ? (hsh(e.i, 7) - .5) * .05 : 0); }
     e.show = alive ? Math.round(e.bpm) : 0; } }
-function ecgDraw(e, x, y, w, a) { const u = hud.height / 288; hx.save(); hx.lineWidth = Math.max(1, u * .5); hx.lineJoin = 'round';
-  for (const [col, off] of [['rgba(0,0,0,.6)', .6], ['#f4f1e8', 0]]) { hx.strokeStyle = col; hx.beginPath(); for (let k = 0; k < ECG_N; k++) { const v = e.b[(e.i + k) % ECG_N], px = (x + w * k / (ECG_N - 1) + off) * u, py = (y - v * a + off) * u; if (k) hx.lineTo(px, py); else hx.moveTo(px, py); } hx.stroke(); } hx.restore(); }
+function ecgDraw(e, x, y, w, a, col0) { const u = hud.height / 288; hx.save(); hx.lineWidth = Math.max(1, u * .5); hx.lineJoin = 'round';
+  for (const [col, off] of [['rgba(0,0,0,.6)', .6], [col0 || '#f4f1e8', 0]]) { hx.strokeStyle = col; hx.beginPath(); for (let k = 0; k < ECG_N; k++) { const v = e.b[(e.i + k) % ECG_N], px = (x + w * k / (ECG_N - 1) + off) * u, py = (y - v * a + off) * u; if (k) hx.lineTo(px, py); else hx.moveTo(px, py); } hx.stroke(); } hx.restore(); }
 function crewVitals(txt, mx, y, gz, far, own) { ecgStep(); let i = 0;
-  if (own) { const e = S.ecg[S.crew.id]; ecgDraw(e, mx + 60, y - 16.5, 40, 4.2); txt(e.show ? String(e.show) : 'NO PULSE', mx + 103, y - 13, 9, 'left', '#f4f1e8'); }
+  if (own) { const e = S.ecg[S.crew.id]; ecgDraw(e, mx + 52, y - 16.5, 40, 4.2, e.show ? 0 : C_RED); txt(String(e.show), mx + 95, y - 13, 9, 'left', e.show ? '#f4f1e8' : C_RED); }
   for (const c of CREW) { if (c.id === S.crew.id) continue; const f = S.cr && S.cr[c.id], up = !f || f.alive !== false, e = S.ecg[c.id], yy = y + i * 10;
     txt(garbleText(c.short, gz * .5), mx, yy, 9, 'left', up ? C_BLU : C_RED);
-    if (far && up) txt('NO SIGNAL', mx + 44, yy, 9, 'left', C_AMB);
-    else { ecgDraw(e, mx + 44, yy - 3, 40, 3.5); txt(up ? String(e.show) : 'NO PULSE', mx + 87, yy, 9, 'left', up ? '#f4f1e8' : C_RED); }
+    if (far && up) txt('NO SIGNAL', mx + 40, yy, 9, 'left', C_AMB);
+    else { const flat = !up && !e.show; ecgDraw(e, mx + 40, yy - 3, 40, 3.5, flat ? C_RED : 0); txt(String(up ? e.show : 0), mx + 83, yy, 9, 'left', up ? '#f4f1e8' : C_RED); }
     i++; } }
 const pitchOf = id => (CREW.find(c => c.id === id) || {}).pitch || 110;
 function buildScript() {
@@ -11781,7 +11789,7 @@ function drawMinimap(u, x0, y0, sz, p) {
 function garbleText(s, amt) { amt = Math.min(amt, .5); if (amt < .3) return s; let o = ''; for (let i = 0; i < s.length; i++) o += (s[i] !== ' ' && Math.random() < amt * .09) ? '#%/\\=-'[(Math.random() * 6) | 0] : s[i]; return o; }
 function wrap(s, n) { const rows = ['']; for (const w of s.split(' ')) { if ((rows[rows.length - 1] + ' ' + w).length > n) rows.push(w); else rows[rows.length - 1] += (rows[rows.length - 1] ? ' ' : '') + w; } return rows; }
 function drawHud() {
-  const Wd = hud.width, H = hud.height, u = H / 288; hx.clearRect(0, 0, Wd, H); if (!S) return; const p = P(); const gz = S.cine ? 0 : S.glitch, cw = Wd / u, mx = cw * .12, top = 44;
+  const Wd = hud.width, H = hud.height, u = H / 288; hx.clearRect(0, 0, Wd, H); if (!S) return; const p = P(); const gz = S.cine ? 0 : S.glitch, cw = Wd / u, mx = cw * .108, top = 42;
   const txt = (s, x, y, size, al, col) => { hx.font = `500 ${Math.round(size * .55 * u)}px ${FONT}`; hx.letterSpacing = (size * .035 * u).toFixed(2) + 'px'; hx.textAlign = al || 'left'; hx.fillStyle = 'rgba(0,0,0,.6)'; hx.fillText(s, x * u + u * .7, y * u + u * .7); hx.fillStyle = col || '#ececE6'; hx.fillText(s, x * u, y * u); };
   const radio = y0 => { const l = S.lines[S.lines.length - 1]; if (!l) return; const age = S.t - l.t; if (age > 8 || age < 0) return; const full = (l.who + ': ' + l.text).slice(0, l.who.length + 2 + Math.floor(age * 38)); hx.globalAlpha = clamp(8 - age, 0, 1); wrap(full, 52).forEach((r, i) => txt(garbleText(r, gz * (l.calm ? .25 : .55)), cw / 2, y0 + i * 12, 13, 'center')); hx.globalAlpha = 1; };
   if (S.cine) { const c = S.cine;
@@ -11801,9 +11809,9 @@ function drawHud() {
   const sig = Math.round(S.signal * 100); txt(garbleText(sig < 25 ? 'LINK LOST' : `LINK ${sig}%`, gz), cw - mx, top, 13, 'right', sig < 50 ? C_RED : C_BLU); if (S.micOn) txt('MIC OPEN', cw - mx, top + 13, 13, 'right');
   const dist = Math.max(0, W.shipDist[Math.floor(p.x / CS) + Math.floor(p.z / CS) * MW]) * CS;
   const obj = S.depart !== undefined ? 'ARGUS A-2 HAS DEPARTED' : S.climb ? `CLIMB  ${(Math.max(0, LADDER_TOP + 1.2 - S.climb.y)).toFixed(1)} M` : [`REACH ARGUS A-2  ${Math.round(dist)} M`, 'RESTART THE REACTOR', 'TAKE THE LADDER', ''][S.stage]; txt(garbleText(obj, gz * .6), cw / 2, top + 15, 13, 'center', C_AMB);
-  hx.fillStyle = 'rgba(236,236,230,.25)'; hx.fillRect(mx * u, 236 * u, 70 * u, 3 * u); hx.fillStyle = '#ececE6'; hx.fillRect(mx * u, 236 * u, 70 * u * p.stam, 3 * u); if (p.breach) txt('SUIT BREACHED', mx, 232, 12, 'left', C_RED);
-  txt(`ROUNDS ${p.ammo}`, cw - mx, 180, 14, 'right', p.ammo ? C_AMB : C_RED); if (p.pulses > 0) txt(`PULSE ${p.pulses}  [Q]`, cw - mx, 164, 14, 'right', C_AMB);
-  drawMinimap(u, cw - mx - 54, 186, 54, p);
+  hx.fillStyle = 'rgba(236,236,230,.25)'; hx.fillRect(mx * u, 245 * u, 70 * u, 3 * u); hx.fillStyle = '#ececE6'; hx.fillRect(mx * u, 245 * u, 70 * u * p.stam, 3 * u); if (p.breach) txt('SUIT BREACHED', mx, 241, 12, 'left', C_RED);
+  txt(`ROUNDS ${p.ammo}`, cw - mx, 189, 14, 'right', p.ammo ? C_AMB : C_RED); if (p.pulses > 0) txt(`PULSE ${p.pulses}  [Q]`, cw - mx, 174, 14, 'right', C_AMB);
+  drawMinimap(u, cw - mx - 54, 195, 54, p);
   if (S.near) { txt(`HOLD E  ${S.near.label}`, cw / 2, 176, 14, 'center'); if (p.hold > 0) { hx.fillStyle = 'rgba(236,236,230,.25)'; hx.fillRect((cw / 2 - 50) * u, 182 * u, 100 * u, 4 * u); hx.fillStyle = '#fff'; hx.fillRect((cw / 2 - 50) * u, 182 * u, 100 * u * p.hold, 4 * u); } }
   else { hx.fillStyle = 'rgba(255,255,255,.7)'; hx.fillRect((cw / 2 - .5) * u, 143.5 * u, u, u); }
   if (p.hitT < .1) { hx.strokeStyle = '#fff'; hx.lineWidth = 1.2 * u; hx.beginPath(); for (const [a, b] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) { hx.moveTo((cw / 2 + a * 3) * u, (144 + b * 3) * u); hx.lineTo((cw / 2 + a * 7) * u, (144 + b * 7) * u); } hx.stroke(); }
@@ -12036,23 +12044,23 @@ function bindUI() {
         bi.className = o.back; bi.innerHTML = o.backHTML || ''; bi.style.cssText = `position:absolute;left:${-(n - 1 - i) * sw}px;top:0;width:${W}px;height:${H}px`; b.append(bi, bs);
         s.append(f, b); par.appendChild(s); par = s; st.push([s, fs, bs]); }
       F.appendChild(host); el.style.visibility = 'hidden'; el.style.pointerEvents = 'none'; const t0 = performance.now();
-      const step = now => { const t = Math.min(1, (now - t0) / o.dur), e = ease(t), th = -180 * e, be = -o.bend * Math.sin(Math.PI * t) * (1 - .4 * t);
-        st.forEach(([s, fs, bs], i) => { s.style.transform = i ? `rotateY(${be.toFixed(3)}deg)` : `rotateY(${th.toFixed(3)}deg) translateZ(${o.z}px)`; const k = Math.abs(Math.sin((th + i * be) * Math.PI / 180)); fs.style.opacity = (.66 * k).toFixed(3); bs.style.opacity = (.07 + .5 * k).toFixed(3); });
+      const step = now => { const t = Math.min(1, (now - t0) / o.dur), e = ease(t), th = -180 * e, be = -o.bend / (n - 1) * Math.sin(Math.PI * t) * (1 - .4 * t), ax = -(o.lift || 0) * Math.sin(Math.PI * Math.min(1, t * 1.25));
+        st.forEach(([s, fs, bs], i) => { s.style.transform = i ? `rotateY(${be.toFixed(3)}deg)` : `rotateX(${ax.toFixed(3)}deg) rotateY(${th.toFixed(3)}deg) translateZ(${o.z}px)`; const k = Math.abs(Math.sin((th + i * be) * Math.PI / 180)); fs.style.opacity = (.66 * k).toFixed(3); bs.style.opacity = (.07 + .5 * k).toFixed(3); });
         const c = Math.cos(th * Math.PI / 180); csh.style.transform = `translateZ(${o.z - .2}px)`; csh.style.width = Math.max(0, W * c + 70 * (1 - c)) + 'px'; csh.style.opacity = c > 0 ? (.85 * Math.min(1, (1 - c) * 5) * Math.min(1, c * 4)).toFixed(3) : 0;
-        if (t < 1) requestAnimationFrame(step); else { csh.style.opacity = 0; done(); } };
+        if (t < 1) requestAnimationFrame(step); else { csh.style.opacity = 0; /* landed: one flat leaf again, no seams */ const flat = document.createElement('div'); flat.className = o.back; flat.innerHTML = o.backHTML || ''; flat.style.cssText = `position:absolute;left:${-W}px;top:0;width:${W}px;height:${H}px;transform:translateZ(${-o.z}px)`; host.innerHTML = ''; host.appendChild(flat); done(); } };
       requestAnimationFrame(step); });
     const acc = '<div class="acc"><b>RECORD OF ACCESS</b><div><span>NAME</span><span>DATE</span><span>INIT.</span></div><div><i></i><span>09 SEP 11</span><i></i></div><div><i></i><span>14 SEP 11</span><i></i></div><div><i></i><span>02 FEB 12</span><i></i></div><div><i></i><span>26 MAR 23</span><i></i></div><div><span></span><span></span><span></span></div><div><span></span><span></span><span></span></div></div>';
-    cover.onclick = () => { if (stage || busy) return; busy = true; turn(cover, { n: 6, bend: 2.4, dur: 1400, z: 1, back: 'fin', backHTML: acc }).then(() => { stage = 1; busy = false; }); };
+    cover.onclick = () => { if (stage || busy) return; busy = true; turn(cover, { n: 20, bend: 13, lift: 1.2, dur: 1500, z: 1, back: 'fin', backHTML: acc }).then(() => { stage = 1; busy = false; }); };
     const c = $('sig'); let signed = false;
-    const sign = () => { if (signed || stage !== 1 || busy) return; signed = true; c.classList.add('signed'); $('sigHint').textContent = 'Received ' + new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-      setTimeout(() => { busy = true; turn(pg1, { n: 10, bend: 7, dur: 1250, z: .5, back: 'pback', backHTML: '<i style="top:8%"></i><i style="top:49%"></i><i style="top:90%"></i>' }).then(() => { stage = 2; busy = false; }); }, 1350); };
-    c.onclick = sign; c.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') sign(); };
+    const sign = () => { if (signed || stage !== 1 || busy) return; signed = true; c.classList.add('signed'); $('sflag').classList.add('off'); $('sigHint').textContent = 'Received ' + new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      setTimeout(() => { busy = true; turn(pg1, { n: 40, bend: 82, lift: 3.2, dur: 1450, z: .5, back: 'pback', backHTML: '<i style="top:8%"></i><i style="top:49%"></i><i style="top:90%"></i>' }).then(() => { stage = 2; busy = false; }); }, 1350); };
+    c.onclick = sign; $('sflag').onclick = sign; c.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') sign(); };
     $('fileBack').onclick = () => show('menu');
     { const e = $('encPlay'); let src = null; const stop = () => { if (src) { try { src.stop(); } catch (_) { } src = null; } e.textContent = 'PLAY'; };
       e.onclick = ev => { ev.stopPropagation(); auInit(); if (src) return stop(); const m = VOICE.media.box; if (!m || !m.buf) { e.textContent = 'LOADING'; setTimeout(() => { if (!src) e.textContent = 'PLAY'; }, 1200); return; }
         src = AU.ctx.createBufferSource(); src.buffer = m.buf; const g = AU.ctx.createGain(); g.gain.value = 1.6; src.connect(g); g.connect(AU.voice); src.onended = () => { if (src) stop(); }; src.start(); if (AU.duck) AU.duck(m.buf.duration); e.textContent = 'STOP'; };
       window.encStop = stop; }
-    const fitDoc = () => { const sc = $('fscale'); if (!F.offsetHeight) return; sc.style.transform = `scale(${Math.min(1.3, (innerHeight - 80) / F.offsetHeight, (innerWidth - 30) / F.offsetWidth).toFixed(4)})`; };   // the whole folder stays in view, like a page on a copy stand
+    const fitDoc = () => { const sc = $('fscale'); if (!F.offsetHeight) return; sc.style.transform = `scale(${Math.min(1.3, (innerHeight - 70) / F.offsetHeight, (innerWidth - 30) / F.offsetWidth).toFixed(4)}) rotateX(9deg)`; };   // the whole folder stays in view, like a page on a copy stand
     addEventListener('resize', fitDoc); window.openFile = () => { show('disc'); fitDoc(); };
   }
   $('mPlay').onclick = () => { auInit(); openFile(); }; $('mFile').onclick = () => show('file'); $('mSet').onclick = () => show('set');
