@@ -3961,6 +3961,886 @@ const KEI = (() => {
 })();
 
 
+/* BURROW: the KEI that goes through the ground. Its body travels under the regolith; what the player sees is its key
+   standing out of the surface, raked back like a fin, with the ground heaving, cracking and being thrown aside round
+   it. One global, BURROW. Needs nothing but the prims.js batch layout (TL if it is there; WL is read at call time).
+   Deterministic: no Math.random, no clock; everything comes from the seed and the sequence of update calls.
+
+   rig = BURROW.create(seed)
+   BURROW.update(rig, s, dt, groundY)      s = { x, z, heading, speed, depth, breach, stun, alert, look, dead }
+       heading 0 faces -Z, positive toward +X. speed m/s (0..9). depth 0 = fin up .. 1 = wholly under (the game eases
+       it). breach 0..1, driven by the game over BURROW.BREACH_T seconds: the bow of the key arrives at rig.strike at
+       the fraction BURROW.BREACH_HIT. stun = seconds remaining. alert 0..1. look = a world heading the key turns its
+       flat toward (optional). dead = seconds since it died (optional). A jump of more than 3 m resets the trail and
+       everything in flight. Bad numbers are ignored.
+   BURROW.emit(B, rig, lod)                the creature: key, neck, and whatever of the body is above the ground.
+       lod 0 at most 9000 vertices, lod 1 (beyond about 22 m) at most 1800, the key drawn stouter and dark.
+   BURROW.emitGround(B, rig, groundY, lod [, eye])   mound, furrow, craters, clods, stones, regolith in flight.
+       lod 0 at most 7000 vertices, lod 1 at most 2000. eye = [x, y, z] of the camera is optional: with it the grains
+       face the camera and keep a steady apparent size at any distance.
+   BURROW.hit(rig, origin, dir, pad [, groundY])   -> null or { t, part }, part = 'key' | 'neck' | 'body' | 'arm';
+       only what is above the ground can be hit. t is along dir (metres if dir is unit).
+   After update, read only: rig.O (middle of the visible key, or the ground over it when it is under), rig.tip
+       (the middle of the bow), rig.strike (where the bow comes down in a breach: REACH metres ahead, 1.15 m up),
+       rig.grind 0..1 (how hard it is working the ground), rig.exposed 0..1 (how much of the key is out),
+       rig.events: the game reads and clears. 'dive' the key has gone under; 'surface' it has come back up;
+       'breach' the ground bursts (at 0.16 of the breach); 'slam' the bow arrives at rig.strike (at BREACH_HIT);
+       'sink' it goes down and digs in (at 0.84 of a breach; when a stunned one sags; when it dies); and one more,
+       'topple', when a dead one's key hits the ground (2.2 s after death).
+   rig.fat (default 1) thickens the key. Tuning on BURROW itself: CELL, DIAG, UV, terrainShade describe the terrain
+       mesh the overlay must lie on (see terr below); dustShade the tone of flying grains; farFat the lod-1 key.
+   BURROW._stat (after emitGround): vertices of near spoil, crust, craters, flying regolith, far furrow. */
+const BURROW = (() => {
+  const PI = Math.PI, TAU = PI * 2, sin = Math.sin, cos = Math.cos, sqrt = Math.sqrt, abs = Math.abs, exp = Math.exp, atan2 = Math.atan2, floor = Math.floor, min = Math.min, max = Math.max, pow = Math.pow;
+  const len3 = (x, y, z) => sqrt(x * x + y * y + z * z), len2 = (x, z) => sqrt(x * x + z * z);
+  const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+  const mix = (a, b, t) => a + (b - a) * t;
+  const sstep = (a, b, x) => { x = clamp((x - a) / (b - a), 0, 1); return x * x * (3 - 2 * x); };
+  const wrap = a => { a = (a + PI) % TAU; if (a < 0) a += TAU; return a - PI; };
+  const frac = x => x - floor(x);
+  const fin = (v, d) => (typeof v === 'number' && v === v && v !== Infinity && v !== -Infinity) ? v : d;
+  const flat0 = () => 0;
+  const GRAV = 1.24;                       // Callisto
+  const BREACH_T = 2.4, BREACH_HIT = .58, REACH = 2.3, STRIKE_H = 1.15;
+  const TLAY = typeof TL !== 'undefined' ? TL : { DARK: 2, METAL: 3 };
+  const DARK = TLAY.DARK, METAL = TLAY.METAL;
+  function mkrng(seed) { let a = Math.imul((seed | 0) ^ 0x9E3779B9, 0x85EBCA6B) ^ 0x1B873593; return () => { a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+  const ih = (a, b) => { let h = Math.imul(a | 0, 374761393) ^ Math.imul(b | 0, 668265263); h = Math.imul(h ^ h >>> 13, 1274126177); return ((h ^ h >>> 16) >>> 0) / 4294967296; };
+  const n1 = (x, s) => { const i = floor(x), f = x - i, u = f * f * (3 - 2 * f); return mix(ih(i, s), ih(i + 1, s), u) * 2 - 1; };       // smooth noise, -1..1
+
+  /* ------------------------------------------------------------------ the key, from the seed
+     Copied from kei.js so that the burrower's key is one of the family: same two kinds (the warded skeleton key and
+     the flat pin-tumbler key), same bows, collars, bends and bits. Key space: origin at the collar; +x along the
+     shaft toward the far end, +y toward the bow, the bit hangs toward -y. */
+  function makeKey(r) { return r() < .45 ? makeFlatKey(r) : makeWardedKey(r); }
+  function makeFlatKey(r) {
+    const rr = (a, b) => a + (b - a) * r(), K = { family: 'flat', bend: 0, loops: [], bars: [], prof: null, teeth: [], teethLod: [] };
+    const L = K.L = rr(1.22, 1.72), rs = K.rs = rr(.042, .054), thz = K.thz = rr(.026, .038);
+    const Rb = rr(.29, .355), asp = rr(.76, 1.2), q = sqrt(asp), hw = Rb * q, hh = Rb / q, hole = rr(.24, .44);
+    const hwi = hw * hole, hhi = hh * hole, tr = (hw - hwi) * .5;
+    const shape = r(), lob = shape < .36 ? 0 : shape < .64 ? 4 : 6, amp = lob ? rr(.05, .12) : 0;
+    K.loops.push({ cx: 0, cy: 0, rx: (hw + hwi) * .5 / (1 + amp * .5), ry: (hh + hhi) * .5 / (1 + amp * .5), k: lob, amp, ph: lob === 4 ? PI / 4 : 0, tr, flat: thz / tr, n: lob ? 24 : 18 });
+    if (r() < .24) { const t2 = .05; K.loops.push({ cx: rr(.06, .15), cy: -hh * rr(.3, .5), rx: t2 * 1.6, ry: t2 * 1.6, k: 0, amp: 0, ph: 0, tr: t2, flat: thz / t2, n: 10 }); }
+    K.Rb = Rb; K.bcx = -(hw - tr) * rr(.94, 1.06); K.bcy = hh + rr(.01, .1); K.bhh = hh; K.bhw = hw;
+    const T = K.teeth, xs = rr(.085, .155), yT = rr(.05, .085), yB0 = -rr(.185, .275), span = yT - yB0;
+    const bend = r() < .3 ? (r() < .5 ? -1 : 1) * rr(.03, .09) : 0, yAt = x => x > xs ? bend * ((x - xs) / (L - xs)) * ((x - xs) / (L - xs)) : 0;
+    const serr = r() < .22, twin = r() < .2;
+    const nC = serr ? 9 + ((r() * 7) | 0) : 4 + ((r() * 4) | 0);
+    const x0 = xs + rr(.07, .15), x1 = L - rr(.02, .07), LADDER = [0, .26, .46, .66, .86];
+    const prof = (n, flat0) => { const cx = [xs, x0 - .025], cd = [flat0, flat0];
+      for (let i = 0; i < n; i++) { const p = x0 + (x1 - x0) * (i + .5) / n, w = (x1 - x0) / n * (serr ? .18 : .3), d = serr ? (i & 1 ? rr(.32, .56) : 0) : LADDER[(r() * 5) | 0];
+        cx.push(p - w, p + w); cd.push(d, d); }
+      cx.push(x1, L); cd.push(cd[cd.length - 1], cd[cd.length - 1]);
+      return x => { for (let i = 1; i < cx.length; i++) if (x <= cx[i]) { const t = (x - cx[i - 1]) / Math.max(1e-6, cx[i] - cx[i - 1]); return cd[i - 1] + (cd[i] - cd[i - 1]) * clamp(t, 0, 1); } return cd[cd.length - 1]; }; };
+    const dBot = prof(nC, 0), dTop = twin ? prof(2 + ((r() * 3) | 0), 0) : null;
+    const notch = r() < .55 ? [xs + rr(.05, .12), xs + rr(.16, .3), rr(.025, .045)] : null;
+    const topAt = x => { let y = yT; if (notch && x > notch[0] && x < notch[1]) y -= notch[2]; if (twin) y -= dTop(x) * span * .42; if (x > L - .07) y -= (x - (L - .07)) / .07 * (yT - yB0) * .42; return y; };
+    const step = .017, cols = [];
+    for (let x = xs; x < L - 1e-6; x += step) { const b = Math.min(x + step, L), m = (x + b) * .5, y = yAt(m);
+      cols.push([x, b, topAt(m) + y, yB0 + dBot(m) * span * .76 + y]); }
+    for (const c of cols) { const p = T[T.length - 1]; if (p && abs(p[2] - c[2]) < 1e-9 && abs(p[3] - c[3]) < 1e-9) { p[1] = c[1]; continue; } T.push([c[0], c[1], c[2], c[3], 0, thz, 1]); }
+    T.push([-.075, xs + .012, yT * 1.15 + rr(.01, .04), yB0 * rr(.38, .52), 0, thz * 1.22, .95]);
+    T.push([xs - .01, xs + rr(.035, .06), yB0 * .5, yB0 - rr(.02, .05), 0, thz * 1.2, .82]);
+    const gy = rr(-.02, .03), gh = rr(.016, .026);
+    for (const zs of [-1, 1]) { T.push([xs + .03, L - .05, gy + gh * 2.2, gy + gh, zs * (thz + .005), .006, 1.28]); T.push([xs + .03, L - .05, gy - gh, gy - gh * 2.2, zs * (thz + .005), .006, 1.28]); }
+    const mid = cols[(cols.length * .5) | 0];
+    K.teethLod.push([-.075, xs, yT, yB0 * .45, 0, thz * 1.22, 1], [xs, L, topAt(L * .5), mid[3], 0, thz, 1]);
+    K.tipY = (topAt(L) + yB0 + dBot(L) * span * .76) * .5 + yAt(L);
+    return K;
+  }
+  function makeWardedKey(r) {
+    const rr = (a, b) => a + (b - a) * r(), K = { family: 'warded' };
+    const L = K.L = rr(1.2, 1.62), rs = K.rs = rr(.052, .066);
+    const bt = r(); K.bend = bt < .38 ? 0 : bt < .74 ? 1 : 2; K.sag = (r() < .65 ? -1 : 1) * rr(.04, .12); K.kx = L * rr(.3, .5); K.ka = (r() < .6 ? -1 : 1) * rr(.07, .17);
+    const yAt = K.bend === 0 ? () => 0 : K.bend === 1 ? x => x > 0 ? K.sag * (x / L) * (x / L) : 0 : x => x > K.kx ? (x - K.kx) * K.ka : 0;
+    const P = K.prof = [[-.075, 0], [-.055, 1.45], [.04, 1.72], [.09, 1.15]]; let x = .09;
+    const nb = (r() * 3.2) | 0; for (let i = 0; i < nb; i++) { const w = rr(.022, .04), f = rr(1.5, 1.85); P.push([x + w, f], [x + w * 2, 1.12]); x += w * 2 + rr(.0, .03); }
+    P.push([x + .04, 1]); const tp = rr(.78, .95);
+    const mids = K.bend === 2 ? [K.kx] : K.bend === 1 ? [L * .35, L * .58, L * .8] : [];
+    for (const m of mids) if (m > x + .1 && m < L - .15) P.push([m, mix(1, tp, m / L)]);
+    const end = r();
+    if (end < .5) P.push([L - .1, tp], [L - .078, 1.32], [L - .03, 1.32], [L, .7], [L + .005, 0]);
+    else if (end < .8) P.push([L - .005, tp], [L, 0]);
+    else P.push([L - .06, tp], [L - .04, tp * .55], [L + .05, tp * .4], [L + .055, 0]);
+    const Rb = rr(.275, .335), bt2 = r(), loops = K.loops = [], bars = K.bars = []; let hw = Rb, hh = Rb;
+    K.bow = bt2 < .24 ? 'ring' : bt2 < .43 ? 'oval' : bt2 < .58 ? 'trefoil' : bt2 < .72 ? 'lobed' : bt2 < .86 ? 'plate' : 'barred';
+    let t0 = .06;
+    if (K.bow === 'ring') { const t = t0 = rr(.055, .085); loops.push({ cx: 0, cy: 0, rx: Rb - t, ry: Rb - t, k: 0, amp: 0, ph: 0, tr: t, flat: rr(.6, .9), n: 16 }); }
+    else if (K.bow === 'oval') { const t = t0 = rr(.055, .078), a = r() < .6 ? rr(1.22, 1.5) : rr(.68, .82), q = sqrt(a); hw = Rb * q; hh = Rb / q; loops.push({ cx: 0, cy: 0, rx: hw - t, ry: hh - t, k: 0, amp: 0, ph: 0, tr: t, flat: rr(.6, .9), n: 16 }); }
+    else if (K.bow === 'trefoil') { const t = rr(.04, .052), rl = Rb * .5, a0 = PI / 2 + rr(-.3, .3); t0 = Rb * .12; for (let i = 0; i < 3; i++) { const a = a0 + i * TAU / 3; loops.push({ cx: cos(a) * Rb * .5, cy: sin(a) * Rb * .5, rx: rl - t, ry: rl - t, k: 0, amp: 0, ph: 0, tr: t, flat: .8, n: 10 }); } }
+    else if (K.bow === 'lobed') { const t = t0 = rr(.05, .068), k = r() < .5 ? 4 : 3, amp = rr(.15, .24), R0 = (Rb - t) / (1 + amp); loops.push({ cx: 0, cy: 0, rx: R0, ry: R0, k, amp, ph: rr(0, TAU), tr: t, flat: rr(.6, .85), n: 20 }); }
+    else if (K.bow === 'plate') { const t = Rb * rr(.34, .44); t0 = t * .5; loops.push({ cx: 0, cy: 0, rx: Rb - t, ry: Rb - t, k: 0, amp: 0, ph: 0, tr: t, flat: rr(.22, .3) * .1 / t, n: 14 }); }
+    else { const t = t0 = rr(.05, .066), ri = Rb - t; loops.push({ cx: 0, cy: 0, rx: ri, ry: ri, k: 0, amp: 0, ph: 0, tr: t, flat: rr(.6, .85), n: 16 }); const a = rr(0, PI), n = r() < .4 ? 2 : 1; for (let i = 0; i < n; i++) { const b = a + i * PI / 2; bars.push([cos(b) * ri, sin(b) * ri, -cos(b) * ri, -sin(b) * ri, t * .7]); } }
+    K.Rb = Rb; K.bcx = -(hw - t0) * rr(.97, 1.03); K.bcy = hh + rr(.03, .15); K.bhh = hh; K.bhw = hw;
+    const T = K.teeth = [], th = rs * .6, nt = 1 + ((r() * r() * 3.99) | 0) + (r() < .55 ? 1 : 0), x0 = L * rr(.5, .6), x1 = L - rr(.03, .09), span = x1 - x0;
+    const gap = nt > 1 ? clamp(span * rr(.1, .2) / (nt - 1) * 1.6, .07, .17) : 0, tw = (span - gap * (nt - 1));
+    let ws = []; let wsum = 0; for (let i = 0; i < nt; i++) { const w = rr(.6, 1.5); ws.push(w); wsum += w; }
+    let tx = x0; const tooth = (a, b, len, style) => {
+      const w = b - a;
+      if (style === 0 || w < .1) T.push([a, b, -th, -len]);
+      else if (style === 1) { const fh = rr(.08, .12), fw = Math.min(rr(.07, .11), gap * .7 + .03), dirL = r() < .6; T.push([a, b, -th, -len]); T.push(dirL ? [a - fw, a, -len + fh, -len] : [b, b + fw, -len + fh, -len]); }
+      else if (style === 2) { const bar = len * rr(.36, .5), pw = w * rr(.3, .38); T.push([a, b, -th, -bar]); T.push([a, a + pw, -bar, -len * rr(.75, 1)]); T.push([b - pw, b, -bar, -len]); }
+      else if (style === 3) { const bw = Math.min(.06, w * .28), top = len * rr(.25, .4), bot = len * rr(.1, .16); T.push([a, b, -th, -top]); T.push([a, a + bw, -top, -len]); T.push([b - bw, b, -top, -len]); T.push([a, b, -len + bot, -len]); }
+      else { const st = len * rr(.5, .7), xm = a + w * rr(.4, .6); T.push([a, xm, -th, -len]); T.push([xm, b, -th, -st]); }
+    };
+    for (let i = 0; i < nt; i++) { const w = tw * ws[i] / wsum, len = (nt === 1 ? rr(.42, .58) : rr(.27, .56)) * (i === nt - 1 && nt > 1 ? 1.08 : 1), st = r(); tooth(tx, tx + w, len, nt === 1 ? (st < .5 ? 3 : 2) : st < .3 ? 0 : st < .52 ? 1 : st < .72 ? 2 : st < .86 ? 3 : 4); tx += w + gap; }
+    for (const t of T) { const y = yAt((t[0] + t[1]) * .5); t[2] += y; t[3] += y; }
+    for (const p of P) p.push(yAt(p[0]));
+    K.tipY = yAt(L);
+    return K;
+  }
+
+  /* ------------------------------------------------------------------ geometry sink
+     Everything is written straight into a Float32Array in the prims.js layout
+     (x y z | u v layer | nx ny nz | shade emissive spare). Whole triangles only, and never past the limit, so a
+     nearly full batch is safe. Parts that never change shape are recorded once (record) and stamped per frame (inst). */
+  let D = null, NV = 0, MAXV = 0, OUT = null;
+  const SCR = new Float32Array(12 * 18000), REC = new Float32Array(12 * 9000);
+  function sinkOpen(B, limit) {
+    if (B && B.d && B.max !== undefined && B.d.length >= B.max * 12) { D = B.d; NV = B.n | 0; MAXV = min(B.max | 0, NV + limit); OUT = null; }
+    else { D = SCR; NV = 0; MAXV = min(18000, limit); OUT = B; }
+    MAXV = NV + floor(max(0, MAXV - NV) / 3) * 3;
+  }
+  const _p = [0, 0, 0], _n = [0, 0, 0];
+  function sinkClose(B) {
+    if (OUT) { if (OUT.v) for (let i = 0; i < NV; i++) { const o = i * 12; _p[0] = D[o]; _p[1] = D[o + 1]; _p[2] = D[o + 2]; _n[0] = D[o + 6]; _n[1] = D[o + 7]; _n[2] = D[o + 8]; OUT.v(_p, D[o + 3], D[o + 4], D[o + 5], _n, D[o + 9], D[o + 10]); } OUT = null; }
+    else B.n = NV;
+    D = null;
+  }
+  function record(fn) { const sD = D, sN = NV, sM = MAXV; D = REC; NV = 0; MAXV = 9000; fn(); const m = REC.slice(0, NV * 12); D = sD; NV = sN; MAXV = sM; return m; }
+  function vx(x, y, z, u, v, layer, nx, ny, nz, sh) { const o = NV * 12; D[o] = x; D[o + 1] = y; D[o + 2] = z; D[o + 3] = u; D[o + 4] = v; D[o + 5] = layer; D[o + 6] = nx; D[o + 7] = ny; D[o + 8] = nz; D[o + 9] = sh; D[o + 10] = 0; D[o + 11] = 0; NV++; }
+  // stamp a recorded mesh through the frame F = origin + three axes (12 numbers), shade multiplied by shm
+  function inst(m, F, shm, sc) {
+    let cnt = m.length / 12; if (NV + cnt > MAXV) { cnt = MAXV - NV; cnt -= cnt % 3; } if (cnt <= 0) return;
+    const ox = F[0], oy = F[1], oz = F[2], ax = F[3], ay = F[4], az = F[5], bx = F[6], by = F[7], bz = F[8], cx = F[9], cy = F[10], cz = F[11]; let o = NV * 12; sc = sc || 1;
+    for (let i = 0, e = cnt * 12; i < e; i += 12, o += 12) { const x = m[i] * sc, y = m[i + 1] * sc, z = m[i + 2] * sc, nx = m[i + 6], ny = m[i + 7], nz = m[i + 8];
+      D[o] = ox + ax * x + bx * y + cx * z; D[o + 1] = oy + ay * x + by * y + cy * z; D[o + 2] = oz + az * x + bz * y + cz * z; D[o + 3] = m[i + 3]; D[o + 4] = m[i + 4]; D[o + 5] = m[i + 5];
+      D[o + 6] = ax * nx + bx * ny + cx * nz; D[o + 7] = ay * nx + by * ny + cy * nz; D[o + 8] = az * nx + bz * ny + cz * nz; D[o + 9] = m[i + 9] * shm; D[o + 10] = 0; D[o + 11] = 0; }
+    NV += cnt;
+  }
+  const TP = new Float64Array(3 * 48), TR = new Float64Array(48);
+  let RA = new Float64Array(6 * 25), RB = new Float64Array(6 * 25);
+  const TAB = [];
+  function tab(n) { let t = TAB[n]; if (!t) { t = TAB[n] = new Float64Array(2 * (n + 1)); for (let i = 0; i <= n; i++) { t[2 * i] = cos(i / n * TAU); t[2 * i + 1] = sin(i / n * TAU); } } return t; }
+  function put(o, R, q, u, v, layer, shade) { D[o] = R[q]; D[o + 1] = R[q + 1]; D[o + 2] = R[q + 2]; D[o + 3] = u; D[o + 4] = v; D[o + 5] = layer; D[o + 6] = R[q + 3]; D[o + 7] = R[q + 4]; D[o + 8] = R[q + 5]; D[o + 9] = shade; D[o + 10] = 0; D[o + 11] = 0; return o + 12; }
+  /* Sweep a tube through the n points in TP with radii TR (the way kei.js does). (rx,ry,rz): reference direction for
+     each ring's 'u' axis; flat: the radius along u is r*flat; closed: join last to first. Zero radius = a point. */
+  function tube(n, sides, layer, shade, rx, ry, rz, flat, closed) {
+    const cs = tab(sides), cnt = closed ? n + 1 : n; let A = RA, C = RB, v0 = 0, v1 = 0, rPrev = 0;
+    for (let ii = 0; ii < cnt; ii++) {
+      const i = ii % n, o = i * 3; let ip = i - 1, inx = i + 1;
+      if (closed) { if (ip < 0) ip = n - 1; if (inx >= n) inx = 0; } else { if (ip < 0) ip = 0; if (inx >= n) inx = n - 1; }
+      let ax = TP[o] - TP[ip * 3], ay = TP[o + 1] - TP[ip * 3 + 1], az = TP[o + 2] - TP[ip * 3 + 2]; const la = len3(ax, ay, az);
+      let bx = TP[inx * 3] - TP[o], by = TP[inx * 3 + 1] - TP[o + 1], bz = TP[inx * 3 + 2] - TP[o + 2]; const lb = len3(bx, by, bz);
+      if (la > 1e-9) { ax /= la; ay /= la; az /= la; } if (lb > 1e-9) { bx /= lb; by /= lb; bz /= lb; }
+      let tx, ty, tz, mit = 1;
+      if (la <= 1e-9) { tx = bx; ty = by; tz = bz; } else if (lb <= 1e-9) { tx = ax; ty = ay; tz = az; }
+      else { tx = ax + bx; ty = ay + by; tz = az + bz; const tl = len3(tx, ty, tz); if (tl < 1e-4) { tx = bx; ty = by; tz = bz; } else { tx /= tl; ty /= tl; tz /= tl; const c = tx * bx + ty * by + tz * bz; mit = 1 / (c > .62 ? c : .62); } }
+      const slope = la + lb > 1e-9 ? (TR[inx] - TR[ip]) / (la + lb) : 0;
+      const d = rx * tx + ry * ty + rz * tz; let ux = rx - tx * d, uy = ry - ty * d, uz = rz - tz * d, ul = len3(ux, uy, uz);
+      if (ul < 1e-4) { if (abs(ty) < .9) { ux = -tz; uy = 0; uz = tx; } else { ux = 0; uy = tz; uz = -ty; } ul = len3(ux, uy, uz); }
+      ux /= ul; uy /= ul; uz /= ul;
+      const wx = ty * uz - tz * uy, wy = tz * ux - tx * uz, wz = tx * uy - ty * ux;
+      const r = TR[i] * mit, ru = r * flat, px = TP[o], py = TP[o + 1], pz = TP[o + 2];
+      for (let k = 0; k <= sides; k++) { const c = cs[2 * k], s = cs[2 * k + 1], q = k * 6, cu = c * ru, sw = s * r;
+        C[q] = px + ux * cu + wx * sw; C[q + 1] = py + uy * cu + wy * sw; C[q + 2] = pz + uz * cu + wz * sw;
+        let nx = ux * c + wx * s * flat - tx * slope, ny = uy * c + wy * s * flat - ty * slope, nz = uz * c + wz * s * flat - tz * slope; const nl = len3(nx, ny, nz) || 1;
+        C[q + 3] = nx / nl; C[q + 4] = ny / nl; C[q + 5] = nz / nl; }
+      v1 = v0 + la * .6;
+      if (ii > 0) { const a0 = rPrev > 1e-6, c0 = TR[i] > 1e-6;
+        if (a0 || c0) { const need = (a0 && c0 ? 6 : 3) * sides;
+          if (NV + need <= MAXV) { let o2 = NV * 12; NV += need;
+            for (let k = 0; k < sides; k++) { const q = k * 6, u0 = k / sides * .25, u1 = (k + 1) / sides * .25;
+              if (a0) { o2 = put(o2, A, q, u0, v0, layer, shade); o2 = put(o2, A, q + 6, u1, v0, layer, shade); o2 = put(o2, C, q + 6, u1, v1, layer, shade); }
+              if (c0) { o2 = put(o2, A, q, u0, v0, layer, shade); o2 = put(o2, C, q + 6, u1, v1, layer, shade); o2 = put(o2, C, q, u0, v1, layer, shade); } } } } }
+      v0 = v1; rPrev = TR[i]; const t = A; A = C; C = t;
+    }
+  }
+  function setP(i, x, y, z, r) { TP[i * 3] = x; TP[i * 3 + 1] = y; TP[i * 3 + 2] = z; TR[i] = r; }
+  const BX = new Float64Array(8 * 6), BQ = [0, 1, 3, 2, 5, 4, 6, 7, 1, 5, 7, 3, 4, 0, 2, 6, 2, 3, 7, 6, 4, 5, 1, 0], BA = [2, 2, 0, 0, 1, 1], BS = [-1, 1, 1, -1, 1, -1];
+  // box from a frame F (origin + 3 unit axes at F[3], F[6], F[9]) and extents in that frame. Flat shaded.
+  function box(F, x0, x1, y0, y1, z0, z1, layer, shade) {
+    if (NV + 36 > MAXV) return;
+    for (let f = 0; f < 6; f++) { const ax = 3 + BA[f] * 3, sg = BS[f], nx = F[ax] * sg, ny = F[ax + 1] * sg, nz = F[ax + 2] * sg;
+      for (let k = 0; k < 4; k++) { const c = BQ[f * 4 + k], x = c & 1 ? x1 : x0, y = c & 2 ? y1 : y0, z = c & 4 ? z1 : z0, q = k * 6;
+        BX[q] = F[0] + F[3] * x + F[6] * y + F[9] * z; BX[q + 1] = F[1] + F[4] * x + F[7] * y + F[10] * z; BX[q + 2] = F[2] + F[5] * x + F[8] * y + F[11] * z; BX[q + 3] = nx; BX[q + 4] = ny; BX[q + 5] = nz; }
+      let o = NV * 12; NV += 6;
+      o = put(o, BX, 0, .1, .1, layer, shade); o = put(o, BX, 6, .3, .1, layer, shade); o = put(o, BX, 12, .3, .3, layer, shade); o = put(o, BX, 0, .1, .1, layer, shade); o = put(o, BX, 12, .3, .3, layer, shade); put(o, BX, 18, .1, .3, layer, shade); }
+  }
+  // cone spike from (x,y,z) along (dx,dy,dz) (need not be unit), length l, base radius r
+  function spike(x, y, z, dx, dy, dz, l, r, layer, shade) { const dl = len3(dx, dy, dz) || 1; setP(0, x, y, z, r); setP(1, x + dx / dl * l, y + dy / dl * l, z + dz / dl * l, 0); tube(2, 3, layer, shade, dy, dz, dx, 1, false); }
+
+  /* ------------------------------------------------------------------ recorded parts */
+  const FI = new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]);
+  // the key in key space, shade 1 (multiplied by rig.keyShade when stamped)
+  function buildKey(K, fat, lod) {
+    return record(() => {
+      const P = (i, x, y, r) => { TP[i * 3] = x; TP[i * 3 + 1] = y; TP[i * 3 + 2] = 0; TR[i] = r * fat; };
+      const rs = K.rs, LP = K.loops;
+      for (let l = 0; l < LP.length; l++) { const q = LP[l], n = lod ? Math.max(6, q.n >> 1) : q.n;
+        for (let i = 0; i < n; i++) { const t = i / n * TAU, m = 1 + q.amp * cos(q.k * t + q.ph); P(i, K.bcx + q.cx + cos(t) * q.rx * m, K.bcy + q.cy + sin(t) * q.ry * m, q.tr); }
+        tube(n, lod ? 4 : 6, METAL, 1, 0, 0, 1, q.flat, true); }
+      for (let l = 0; l < K.bars.length; l++) { const b = K.bars[l]; P(0, K.bcx + b[0], K.bcy + b[1], b[4]); P(1, K.bcx + b[2], K.bcy + b[3], b[4]); tube(2, 4, METAL, 1, 0, 0, 1, .8, false); }
+      if (K.prof) {
+        if (lod) { P(0, 0, -.04, rs * 1.5); P(1, -.006, K.bcy + K.bhh * .3, rs * 1.0); tube(2, 4, METAL, 1, 0, 0, 1, 1, false); }
+        else { P(0, .0, -.07, rs * .9); P(1, .0, .0, rs * 1.6); P(2, -.002, (K.bcy - K.bhh) * .6 + .03, rs * 1.25); P(3, -.004, K.bcy - K.bhh * .3, rs * 1.15); P(4, -.008, K.bcy + K.bhh * .25, rs * .95); P(5, -.014, K.bcy + K.bhh * .62, 0); tube(6, 6, METAL, 1, 0, 0, 1, 1, false); }
+        const PR = K.prof, np = PR.length;
+        if (lod) { let j = 0; for (let i = 0; i < np; i++) { const p = PR[i]; if (i === 1 || i === np - 2 || (i > 3 && i < np - 3 && abs(p[1] - 1) < .25)) { P(j++, p[0], p[2], rs * Math.max(p[1], .9)); } } tube(j, 4, METAL, 1, 0, 1, 0, 1, false); }
+        else { for (let i = 0; i < np; i++) { const p = PR[i]; P(i, p[0], p[2], rs * p[1]); } tube(np, 7, METAL, 1, 0, 1, 0, 1, false); }
+      } else {
+        P(0, .0, -.05, rs * 1.1); P(1, -.01, (K.bcy - K.bhh) * .5 + .04, rs * 1.25); P(2, -.02, K.bcy - K.bhh * .5, rs * 1.1);
+        tube(3, lod ? 4 : 5, METAL, 1, 0, 0, 1, Math.min(1, K.thz / (rs * 1.1)), false);
+      }
+      const T = lod && K.teethLod && K.teethLod.length ? K.teethLod : K.teeth, tz = .03 * fat;
+      for (let i = 0; i < T.length; i++) { const t = T[i];
+        if (lod && !(K.teethLod && K.teethLod.length) && (t[1] - t[0]) * (t[2] - t[3]) < .012) continue;
+        if (lod && t[6] === 1.28) continue;
+        const zc = (t[4] || 0), zh = t[5] !== undefined ? t[5] * fat : tz;
+        box(FI, t[0], t[1], t[3], t[2], zc - zh, zc + zh, METAL, (t[6] !== undefined ? t[6] : (.92 + (i & 1) * .12))); }
+    });
+  }
+
+  /* ------------------------------------------------------------------ the ground under it
+     The overlay has to sit exactly on the terrain the game draws. That mesh is the height field sampled every CELL
+     metres, each cell split along (i,j)-(i+1,j+1), with a normal and a shade per vertex; terr() reproduces exactly
+     that interpolation (height, normal, shade) from groundY, with a small cache of grid vertices. CELL = 0 turns
+     this off and samples groundY directly (for ground that is not such a mesh). */
+  const API = { CELL: 2, DIAG: 0, UV: 1 / 3.2, terrainShade: null };
+  const TC_N = 4096, TC_K = new Int32Array(TC_N), TC_V = new Float32Array(TC_N * 5);
+  let TC_G = null, TC_C = -1, TC_S = null;
+  let T_h = 0, T_sh = 1, T_nx = 0, T_ny = 1, T_nz = 0;
+  const shadeDefault = (x, z) => typeof fbm === 'function' ? .78 + fbm(x * .2, z * .2) * .5 : 1.03;
+  let V_h = 0, V_s = 0, V_x = 0, V_y = 0, V_z = 0;
+  function tvert(g, i, j, c, sf) {
+    const key = ((i & 0x7fff) << 16) | (j & 0xffff), slot = (Math.imul(i, 73856093) ^ Math.imul(j, 19349663)) & (TC_N - 1), o = slot * 5;
+    if (TC_K[slot] !== key) { TC_K[slot] = key; const x = i * c, z = j * c; let nx = g(x - c, z) - g(x + c, z), nz = g(x, z - c) - g(x, z + c), ny = 2 * c; const l = len3(nx, ny, nz) || 1;
+      TC_V[o] = g(x, z); TC_V[o + 1] = sf(x, z); TC_V[o + 2] = nx / l; TC_V[o + 3] = ny / l; TC_V[o + 4] = nz / l; }
+    V_h = TC_V[o]; V_s = TC_V[o + 1]; V_x = TC_V[o + 2]; V_y = TC_V[o + 3]; V_z = TC_V[o + 4];
+  }
+  function terr(g, x, z) {
+    const c = API.CELL, sf = API.terrainShade || shadeDefault;
+    if (!(c > 0)) { const e = .3; T_h = g(x, z); T_nx = g(x - e, z) - g(x + e, z); T_nz = g(x, z - e) - g(x, z + e); T_ny = 2 * e; const l = len3(T_nx, T_ny, T_nz) || 1; T_nx /= l; T_ny /= l; T_nz /= l; T_sh = sf(x, z); return; }
+    if (g !== TC_G || c !== TC_C || sf !== TC_S) { TC_K.fill(-1); TC_G = g; TC_C = c; TC_S = sf; }
+    const fx = x / c, fz = z / c, i = floor(fx), j = floor(fz), u = fx - i, v = fz - j; let wa, wb, wc;
+    tvert(g, i, j, c, sf); const upper = API.DIAG ? u + v <= 1 : u >= v;
+    if (!API.DIAG) {
+      if (upper) { wa = 1 - u; wb = u - v; wc = v; } else { wa = 1 - v; wb = v - u; wc = u; }
+      let h = V_h * wa, s = V_s * wa, nx = V_x * wa, ny = V_y * wa, nz = V_z * wa;
+      if (upper) tvert(g, i + 1, j, c, sf); else tvert(g, i, j + 1, c, sf); h += V_h * wb; s += V_s * wb; nx += V_x * wb; ny += V_y * wb; nz += V_z * wb;
+      tvert(g, i + 1, j + 1, c, sf); h += V_h * wc; s += V_s * wc; nx += V_x * wc; ny += V_y * wc; nz += V_z * wc;
+      T_h = h; T_sh = s; T_nx = nx; T_ny = ny; T_nz = nz;
+    } else {                                   // the other diagonal: (i+1,j)-(i,j+1)
+      let h, s, nx, ny, nz;
+      if (upper) { wa = 1 - u - v; wb = u; wc = v; h = V_h * wa; s = V_s * wa; nx = V_x * wa; ny = V_y * wa; nz = V_z * wa; }
+      else { wa = u + v - 1; wb = 1 - v; wc = 1 - u; tvert(g, i + 1, j + 1, c, sf); h = V_h * wa; s = V_s * wa; nx = V_x * wa; ny = V_y * wa; nz = V_z * wa; }
+      tvert(g, i + 1, j, c, sf); h += V_h * wb; s += V_s * wb; nx += V_x * wb; ny += V_y * wb; nz += V_z * wb;
+      tvert(g, i, j + 1, c, sf); h += V_h * wc; s += V_s * wc; nx += V_x * wc; ny += V_y * wc; nz += V_z * wc;
+      T_h = h; T_sh = s; T_nx = nx; T_ny = ny; T_nz = nz;
+    }
+  }
+  const surf = (g, x, z) => { terr(g, x, z); return T_h; };
+
+  /* ------------------------------------------------------------------ the body: recorded parts
+     Torso space: +x right, +y up (its back), +z toward the tail. It swims prone. Limb bones: +y along the bone,
+     +z the outside of the bend. Hand: +y along the claws, +x across the fan, +z the palm. */
+  const RIB_Z = [-.44, -.29, -.14, .01, .16, .31, .45], RIB_A = [.27, .32, .345, .34, .32, .285, .24], RIB_B = [.18, .205, .22, .22, .205, .185, .16];
+  const BSC = 1.3, L1U = .36, L2U = .38, L1 = L1U * BSC, L2 = L2U * BSC, SHX = .27 * BSC, SHY = 0, SHZ = -.40 * BSC, BODY_D = .5 * BSC, NECK = [0, .12 * BSC, -.52 * BSC], HIP = [0, -.02 * BSC, .62 * BSC], ABL = .62 * BSC;   // torso space is drawn BSC times life size
+  const keelY = z => .215 - .1 * ((z - .05) / .6) * ((z - .05) / .6);
+  let PARTS = null;
+  function parts() {
+    if (PARTS) return PARTS;
+    const torso = lod => record(() => {
+      const zc = [-.6, -.52, -.34, -.05, .25, .5, .66], rc = [.03, .11, .155, .165, .15, .12, .05];
+      for (let i = 0; i < 7; i++) setP(i, 0, 0, zc[i], rc[i]); tube(7, lod ? 5 : 8, DARK, .55, 1, 0, 0, 1.5, false);
+      for (let k = lod ? 1 : 0; k < 7; k += lod ? 2 : 1) { const a = RIB_A[k], b = RIB_B[k], n = lod ? 5 : 8;        // ribs: hoops round the core, leaning back at the top
+        for (let j = 0; j < n; j++) { const t = j / n * TAU; setP(j, a * sin(t), b * cos(t), RIB_Z[k] + .05 * cos(t), lod ? .034 : .021); }
+        tube(n, 3, DARK, 1.15, 0, 0, 1, 1.5, true); }
+      setP(0, -.3, 0, -.4, .075); setP(1, -.16, .08, -.43, .06); setP(2, 0, .11, -.45, .07); setP(3, .16, .08, -.43, .06); setP(4, .3, 0, -.4, .075); tube(5, lod ? 3 : 6, DARK, .75, 0, 0, 1, 1, false);   // shoulder yoke
+      if (!lod) { for (let i = 0; i < 5; i++) { const z = -.5 + i * .275; setP(i, 0, keelY(z), z, i === 0 || i === 4 ? .012 : .03); } tube(5, 4, DARK, .8, 1, 0, 0, .7, false); }        // the keel along its back
+      for (let k = lod ? 1 : 0; k < 9; k += lod ? 3 : 1) { const z = -.46 + k * .125; spike(0, keelY(z), z, 0, 1, .75, .16 + .1 * ih(k, 77) + (k === 3 || k === 4 ? .05 : 0), lod ? .04 : .026, DARK, 1.1); }   // and the spines that break the surface
+    });
+    const abd = (lod, len, r0, r1, rings) => record(() => {
+      if (lod) { setP(0, 0, 0, 0, r0); setP(1, 0, 0, len * .55, mix(r0, r1, .5) * 1.1); setP(2, 0, 0, len, r1); tube(3, 4, DARK, .6, 1, 0, 0, 1.35, false); }
+      else { setP(0, 0, 0, 0, r0 * .8); setP(1, 0, 0, len * .3, r0); setP(2, 0, 0, len * .7, mix(r0, r1, .7)); setP(3, 0, 0, len, r1); tube(4, 7, DARK, .55, 1, 0, 0, 1.35, false); }
+      if (!lod) for (let k = 0; k < rings; k++) { const f = (k + .5) / rings, a = mix(r0, r1, f) * 1.55 + .02, b = mix(r0, r1, f) * 1.2 + .02; for (let j = 0; j < 8; j++) { const t = j / 8 * TAU; setP(j, a * sin(t), b * cos(t), len * f + .03 * cos(t), .017); } tube(8, 3, DARK, 1.1, 0, 0, 1, 1.4, true); }
+      spike(0, r0 * 1.1, len * .35, 0, 1, .8, .12, .02, DARK, 1.05);
+    });
+    const hum = lod => record(() => { if (lod) { setP(0, 0, 0, 0, .075); setP(1, 0, L1U, 0, .07); tube(2, 3, DARK, .8, 0, 0, 1, 1, false); return; }
+      setP(0, 0, 0, 0, .08); setP(1, 0, .06, 0, .06); setP(2, 0, .19, .014, .052); setP(3, 0, .3, 0, .052); setP(4, 0, L1U, 0, .072); tube(5, 6, DARK, .8, 0, 0, 1, 1, false);
+      if (!lod) { spike(0, .13, .045, 0, .5, 1, .1, .02, DARK, 1.0); spike(0, .24, .045, 0, .5, 1, .085, .018, DARK, 1.0); spike(0, L1U, .05, 0, -.4, 1, .12, .026, DARK, 1.0); } });
+    const fore = lod => record(() => { if (lod) { setP(0, 0, 0, 0, .08); setP(1, 0, .2, 0, .115); setP(2, 0, L2U, 0, .085); tube(3, 3, DARK, .7, 0, 0, 1, .6, false); return; }
+      setP(0, 0, 0, 0, .07); setP(1, 0, .07, 0, .09); setP(2, 0, .2, 0, .105); setP(3, 0, .32, 0, .1); setP(4, 0, L2U, 0, .075); tube(5, 6, DARK, .7, 0, 0, 1, .5, false);
+      if (!lod) for (let k = 0; k < 3; k++) spike(0, .1 + k * .09, .05, 0, .3, 1, .06, .02, DARK, 1.0); });
+    const hand = lod => record(() => { if (lod) { setP(0, 0, -.03, 0, .08); setP(1, 0, .11, 0, .085); tube(2, 3, DARK, .7, 0, 0, 1, .6, false); for (let i = 0; i < 3; i++) { const a = (i - 1) * .6; spike(sin(a) * .06, .09, 0, sin(a), cos(a), .22, .3, .045, DARK, 1.15); } return; }
+      setP(0, 0, -.03, 0, .06); setP(1, 0, .05, 0, .085); setP(2, 0, .11, 0, .07); tube(3, 6, DARK, .7, 0, 0, 1, .5, false);
+      const nc = lod ? 3 : 5; for (let i = 0; i < nc; i++) { const f = i / (nc - 1) * 2 - 1, a = f * .62, len = .3 - .07 * f * f, bx = sin(a) * .06, by = .08 + cos(a) * .02;
+        setP(0, bx, by, 0, .034); setP(1, bx + sin(a) * len * .5, by + cos(a) * len * .5, .02, .028); setP(2, bx + sin(a * 1.1) * len * .85, by + cos(a * 1.1) * len * .85, .06, .016); setP(3, bx + sin(a * 1.15) * len, by + cos(a * 1.15) * len, .1, 0);
+        tube(4, 3, DARK, 1.15, 0, 0, 1, .6, false); } });
+    PARTS = { torso: [torso(0), torso(1)], abdA: [abd(0, .62, .125, .1, 3), abd(1, .62, .125, .1, 0)], abdB: [abd(0, .7, .095, .02, 3), abd(1, .7, .095, .02, 0)], hum: [hum(0), hum(1)], fore: [fore(0), fore(1)], hand: [hand(0), hand(1)] };
+    return PARTS;
+  }
+  // wrist of the right forelimb over one stroke (torso space), eight even keys: catch, plunge, sweep out and back, flick, recover high. And where the claws point.
+  const WK = [.20, .40, -.98, .46, .12, -1.00, .72, -.04, -.78, .83, -.06, -.46, .74, .02, -.16, .50, .20, -.22, .32, .34, -.52, .22, .42, -.80];
+  const FK = [.25, .10, -.96, .55, -.25, -.80, .85, -.30, -.42, .95, -.25, .10, .85, .15, .50, .45, .35, .30, .20, .30, -.60, .15, .25, -.93];
+  const _c = [0, 0, 0, 0, 0, 0];
+  function cr8(K, p, o) {            // periodic Catmull-Rom through 8 keys; value into _c[o..o+2], derivative into _c[o+3..]
+    const t = frac(p) * 8, i = floor(t), f = t - i, f2 = f * f, f3 = f2 * f, i0 = ((i + 7) & 7) * 3, i1 = (i & 7) * 3, i2 = ((i + 1) & 7) * 3, i3 = ((i + 2) & 7) * 3;
+    const a = -.5 * f3 + f2 - .5 * f, b = 1.5 * f3 - 2.5 * f2 + 1, c = -1.5 * f3 + 2 * f2 + .5 * f, d = .5 * f3 - .5 * f2;
+    const da = -1.5 * f2 + 2 * f - .5, db = 4.5 * f2 - 5 * f, dc = -4.5 * f2 + 4 * f + .5, dd = 1.5 * f2 - f;
+    for (let k = 0; k < 3; k++) { _c[o + k] = a * K[i0 + k] + b * K[i1 + k] + c * K[i2 + k] + d * K[i3 + k]; _c[o + 3 + k] = da * K[i0 + k] + db * K[i1 + k] + dc * K[i2 + k] + dd * K[i3 + k]; }
+  }
+
+  /* ------------------------------------------------------------------ the breach, keyed
+     u = 0..1 over BREACH_T. In the plane of its heading (forward, up), from where it is: the angle of the key's axis
+     from straight up toward forward (B_AL), where the hand end of the shaft is (B_GF, B_GH), the neck from the front
+     of the torso to that end (B_NF, B_NH), the torso's pitch (B_PI), the key's turn about its shaft (B_RO).
+     0-.16 it gathers under a doming ground; .16 the ground bursts; .40 it stands out of the ground to the hips with
+     the key over and behind it; .47-.58 the key comes over; .58 the bow arrives at rig.strike; then it goes down
+     after the key and digs itself in. B_GW: how much of the correction for this key's own length applies. */
+  const BU = [0, .10, .16, .27, .40, .47, .58, .66, .74, .86, 1];
+  const B_AL = [-.8, -.85, -.95, -.8, -.62, -.5, 2.0, 2.42, 2.5, 2.55, 2.6];
+  const B_GF = [0, -.05, -.05, 0, .18, .25, .63, 1.05, 1.3, 1.42, 1.45], B_GH = [-.1, -.3, -.35, .75, 1.75, 1.82, 1.47, .8, .3, -.25, -1.0], B_GW = [0, 0, 0, .3, .7, .9, 1, 1, .6, .3, 0];
+  const B_NF = [0, 0, 0, -.1, -.2, -.15, .1, .3, .35, .3, .2], B_NH = [.25, .2, .2, .5, .68, .68, .55, .3, .15, .1, .05];
+  const B_PI = [0, -.1, .05, .95, 1.2, 1.15, .7, .25, -.05, -.3, -.4], B_RO = [0, 0, 0, .9, PI / 2, PI / 2, 0, .25, PI / 2, PI / 2, PI / 2];
+  const AU = [0, .16, .27, .40, .50, .58, .66, .80, 1];
+  const B_WX = [.30, .32, .58, .80, .74, .50, .42, .40, .30], B_WY = [.30, .25, -.05, -.20, -.30, -.55, -.50, -.20, .30], B_WZ = [-.86, -.80, -.85, -.80, -.75, -.60, -.55, -.75, -.86];
+  const B_FX = [.2, .2, .4, .5, .3, .1, .1, .2, .2], B_FY = [.15, .1, -.3, -.5, -.7, -.9, -.8, -.3, .1], B_FZ = [-.95, -.95, -.8, -.7, -.6, -.3, -.5, -.9, -.95];
+  function kf(u, U, V) {              // Hermite through the keys (exact at each)
+    const n = U.length; if (u <= U[0]) return V[0]; if (u >= U[n - 1]) return V[n - 1]; let i = 0; while (u > U[i + 1]) i++;
+    const h = U[i + 1] - U[i], t = (u - U[i]) / h, m0 = i > 0 ? (V[i + 1] - V[i - 1]) / (U[i + 1] - U[i - 1]) : (V[1] - V[0]) / h, m1 = i + 2 < n ? (V[i + 2] - V[i]) / (U[i + 2] - U[i]) : (V[i + 1] - V[i]) / h, t2 = t * t, t3 = t2 * t;
+    return (2 * t3 - 3 * t2 + 1) * V[i] + (t3 - 2 * t2 + t) * h * m0 + (3 * t2 - 2 * t3) * V[i + 1] + (t3 - t2) * h * m1;
+  }
+  const TOPPLE = 2.2;                 // seconds for a dead one's key to go over
+
+  /* ------------------------------------------------------------------ create */
+  const SP = .25, TCAP = 512, TSTR = 6;      // trail: one sample every SP metres of travel, TCAP of them
+  const PN = 1000, PSTR = 10;                 // regolith in flight
+  const NPOSE = 40, CN = 6, CSTR = 6;         // craters: x, z, radius, time it burst, seed, how far the dome has risen
+  function create(seed) {
+    seed = seed === undefined ? 1 : seed | 0;
+    const r = mkrng(seed), rr = (a, b) => a + (b - a) * r();
+    const K = makeKey(mkrng(seed * 131 + 71));
+    let xmin = 0; for (const q of K.loops) xmin = min(xmin, K.bcx + q.cx - q.rx * (1 + q.amp) - q.tr);
+    const ks = rr(1.2, 1.34);
+    const rig = {
+      seed, rnd: mkrng(seed * 31 + 7), live: false, fat: 1, keyShade: .5, key: K, keyMesh: [null, null], keyFat: [0, 0],
+      ks, xmin, klen: (K.L - xmin) * ks,                                    // the key is a little larger than a walker's; klen = bow top to shaft end
+      crook: [rr(.07, .15), rr(-.07, .07), rr(-.10, -.03), rr(-.08, .08), rr(.018, .034), rr(0, TAU)], side: r() < .5 ? -1 : 1,
+      x: 0, z: 0, hd: 0, w: 0, spd: 0, al: 0, dep: 0, depV: 0, t: rr(0, 40), tick: 0, ph: rr(0, 1), S: 0,
+      kUp: 0, kUpV: 0, rake: .3, rakeV: 0, lean: 0, leanV: 0, roll: 0, rollV: 0, rollT: 0, lockT: rr(.5, 2), n0x: 1, n0z: 0, c0x: 0, c0z: 1,
+      by: 0, byV: 0, pitch: 0, pitchV: 0, yawB: 0,
+      bu: 0, buL: 0, bw: 0, depB: 0, under: 0, stunned: false, sagged: false, stT: 0, cv: 0, sag: 0, dead: 0, wasDead: false, up: true, puffS: 0,
+      CR: new Float32Array(CN * CSTR), cn: 0, cDome: -1, pose2: new Float64Array(NPOSE),
+      T: new Float32Array(TCAP * TSTR), nNew: -1, nOld: 0, lx: 0, lz: 0,
+      P: new Float32Array(PN * PSTR), pn: 0, acc: new Float64Array(8),
+      pose: new Float64Array(NPOSE), KF: new Float64Array(12), M: new Float64Array(12), NK: new Float64Array(7 * 3), AJ: new Float64Array(24), FR: new Float64Array(8 * 12),
+      g0: 0, gsx: 0, gsz: 0,
+      GR: new Float64Array(3), O: new Float64Array(3), tip: new Float64Array(3), strike: new Float64Array(3), grind: 0, exposed: 0, events: [],
+    };
+    return rig;
+  }
+  function keyMeshFor(rig, lod) {
+    const fat = max(1 + ((rig.fat || 1) - 1) * .5, lod ? API.farFat : 1);
+    if (!rig.keyMesh[lod] || rig.keyFat[lod] !== fat) { rig.keyMesh[lod] = buildKey(rig.key, fat, lod); rig.keyFat[lod] = fat; }
+    return rig.keyMesh[lod];
+  }
+
+  /* ------------------------------------------------------------------ update */
+  function resetTrail(rig, x, z) { rig.nOld = floor(rig.S / SP) + 1; rig.nNew = rig.nOld - 1; rig.lx = x; rig.lz = z; rig.P.fill(0); rig.pn = 0; }
+  function advancePath(rig, x, z, amp) {
+    const dx = x - rig.lx, dz = z - rig.lz, dl = len2(dx, dz); if (dl < 1e-7) return;
+    const S0 = rig.S, S1 = S0 + dl, T = rig.T; let n = floor(S0 / SP) + 1;
+    while (n * SP <= S1) { const f = (n * SP - S0) / dl, o = (n % TCAP) * TSTR; T[o] = rig.lx + dx * f; T[o + 1] = rig.lz + dz * f; T[o + 2] = dx / dl; T[o + 3] = dz / dl; T[o + 4] = amp; T[o + 5] = rig.t; rig.nNew = n; if (rig.nOld < n - TCAP + 1) rig.nOld = n - TCAP + 1; n++; }
+    rig.S = S1; rig.lx = x; rig.lz = z;
+  }
+  // one grain (or clump) of regolith: it leaves (x,y,z) with velocity v at time now+delay and lands where its parabola meets the ground
+  function spawn(rig, g, x, y, z, vx, vy, vz, size, delay) {
+    const P = rig.P, o = (rig.pn % PN) * PSTR; rig.pn++;
+    const gy = g(x, z); if (y < gy + .02) y = gy + .02;
+    let T = (vy + sqrt(vy * vy + 2 * GRAV * (y - gy))) / GRAV;
+    for (let k = 0; k < 2; k++) { const gl = g(x + vx * T, z + vz * T), dd = vy * vy + 2 * GRAV * (y - gl); if (dd > 0) T = (vy + sqrt(dd)) / GRAV; }
+    P[o] = x; P[o + 1] = y; P[o + 2] = z; P[o + 3] = vx; P[o + 4] = vy; P[o + 5] = vz; P[o + 6] = rig.t + delay; P[o + 7] = rig.t + delay + T; P[o + 8] = size; P[o + 9] = rig.rnd();
+  }
+  function mkCrater(rig, x, z, R, tBurst) { const i = rig.cn % CN, o = i * CSTR, C = rig.CR; rig.cn++; C[o] = x; C[o + 1] = z; C[o + 2] = R; C[o + 3] = tBurst; C[o + 4] = rig.rnd() * 1000; C[o + 5] = 0; return i; }
+  // n grains thrown outward from a patch of radius r0: speeds v0..v1, elevations e0..e1, plus a drift (bx,bz); let go over 'spread' seconds
+  function burst(rig, g, x, z, n, v0, v1, e0, e1, r0, bx, bz, lift, spread, nb) {
+    const rnd = rig.rnd;
+    for (let i = 0; i < (nb | 0); i++) { const a = rnd() * TAU, rr = r0 * sqrt(rnd()), sp = mix(v0, v1, rnd()) * .7, el = mix(e0, e1, rnd()), c = cos(el) * sp, px = x + cos(a) * rr, pz = z + sin(a) * rr;
+      spawn(rig, g, px, g(px, pz) + lift * rnd(), pz, cos(a) * c + bx, sin(el) * sp, sin(a) * c + bz, 1.05 + rnd() * rnd(), spread * rnd()); }
+    for (let i = 0; i < n; i++) { const a = rnd() * TAU, rr = r0 * sqrt(rnd()), sp = mix(v0, v1, sqrt(rnd())), el = mix(e0, e1, rnd()), c = cos(el) * sp, px = x + cos(a) * rr, pz = z + sin(a) * rr;
+      spawn(rig, g, px, g(px, pz) + lift * rnd(), pz, cos(a) * c + bx, sin(el) * sp, sin(a) * c + bz, rnd(), spread * rnd()); }
+  }
+  const kFullOf = rig => rig.klen - .14;                // the key stands with the end of its shaft, and the foot of its bit, down in the mound
+  function advance(rig, s, x, z, hd, h, g) {
+    const rnd = rig.rnd, ev = rig.events;
+    rig.t += h; rig.tick++;
+    rig.w += (wrap(hd - rig.hd) / h - rig.w) * (1 - exp(-h * 10)); rig.hd = hd;
+    const F0 = sin(hd), F2 = -cos(hd), R0 = cos(hd), R2 = sin(hd);
+    const dead = s.dead > 0, stun = !dead && s.stun > 0;
+    // ---- dead: it heaves once, the key goes over. Stunned: it convulses, then sags.
+    if (dead) { if (!rig.wasDead) { rig.wasDead = true; ev.push('sink'); }
+      else if (rig.dead < TOPPLE && s.dead >= TOPPLE) { ev.push('topple'); const L = rig.klen, sd = rig.side;
+        for (let i = 0; i < 46; i++) { const f = rnd(), px = x + R0 * sd * L * f - F0 * .3 * f, pz = z + R2 * sd * L * f - F2 * .3 * f, a = rnd() * TAU, sp = .5 + 1.1 * rnd() * (.4 + f), el = .3 + .7 * rnd(); spawn(rig, g, px, g(px, pz) + .03, pz, cos(a) * sp * cos(el) + R0 * sd * .4, sp * sin(el), sin(a) * sp * cos(el) + R2 * sd * .4, rnd(), 0); } }
+      rig.dead = s.dead; } else { rig.wasDead = false; rig.dead = 0; }
+    if (stun) { if (!rig.stunned) { rig.stunned = true; rig.stT = 0; rig.sagged = false; } rig.stT += h; } else rig.stunned = false;
+    rig.cv = rig.stunned ? exp(-2.4 * rig.stT) : rig.cv * exp(-h * 12);
+    const sagT = rig.stunned ? sstep(.45, 1.3, rig.stT) : 0; rig.sag += (sagT - rig.sag) * (1 - exp(-h * (rig.stunned ? 14 : 4)));
+    if (rig.stunned && !rig.sagged && rig.sag > .5) { rig.sagged = true; ev.push('sink'); }
+    // ---- the breach
+    const u = (dead || stun) ? 0 : s.breach; let u0 = rig.bu; if (u < u0 - .5) u0 = 0;
+    if (u > 0) {
+      if (u0 <= 0) { rig.depB = clamp(rig.dep, 0, 1); rig.cDome = mkCrater(rig, x - F0 * .35, z - F2 * .35, 1.45, 1e9); }
+      if (rig.cDome >= 0 && u < .16) rig.CR[rig.cDome * CSTR + 5] = sstep(0, .16, u);
+      if (u0 < .16 && u >= .16) { ev.push('breach'); const cx = x - F0 * .25, cz = z - F2 * .25;
+        burst(rig, g, cx, cz, 170, 2.2, 3.9, 1.0, 1.36, .7, F0 * .3, F2 * .3, .2, .14, 26); burst(rig, g, cx, cz, 90, 3.0, 4.8, 1.38, 1.54, .35, F0 * .2, F2 * .2, .2, .2); burst(rig, g, cx, cz, 70, 1.0, 2.4, .35, .8, .9, 0, 0, .1, .1);
+        if (rig.cDome >= 0) { rig.CR[rig.cDome * CSTR + 3] = rig.t; rig.CR[rig.cDome * CSTR + 5] = 1; rig.cDome = -1; } }
+      if (u0 < BREACH_HIT && u >= BREACH_HIT) { ev.push('slam'); const sx = x + F0 * REACH, sz = z + F2 * REACH; burst(rig, g, sx, sz, 110, 1.2, 3.4, .3, .95, .35, F0 * .8, F2 * .8, .1, .05, 10); mkCrater(rig, sx - F0 * .15, sz - F2 * .15, .95, rig.t); }
+      if (u0 < .72 && u >= .72) burst(rig, g, x + F0 * 1.3, z + F2 * 1.3, 80, .8, 2.2, .4, 1.0, .6, F0 * .3, F2 * .3, .1, .08, 6);
+      if (u0 < .84 && u >= .84) { ev.push('sink'); burst(rig, g, x + F0 * 1.6, z + F2 * 1.6, 40, .8, 1.8, .7, 1.1, .4, -F0, -F2, .05, .25); }
+      if (u > .2 && u < .56) { rig.acc[3] += 95 * h; const M = rig.M, up = 2.6 * (1 - u / .56);                   // what it carried up runs off it
+        while (rig.acc[3] >= 1) { rig.acc[3] -= 1; const q = rnd() * 1.3 - .75, w = (rnd() - .5) * .7, a = rnd() * TAU, sp = .25 + .6 * rnd();
+          spawn(rig, g, M[0] + M[9] * q + M[3] * w, M[1] + M[10] * q + M[4] * w + .1, M[2] + M[11] * q + M[5] * w, cos(a) * sp + F0 * .3, up * (.3 + .7 * rnd()), sin(a) * sp + F2 * .3, rnd(), 0); } }
+      rig.buL = u; if (u > .3) rig.under = .5;
+    } else { if (rig.cDome >= 0) { rig.CR[rig.cDome * CSTR + 2] = 0; rig.cDome = -1; } if (rig.under > 0) rig.under -= h; }
+    rig.bu = u;
+    { const bT = u > 0 ? sstep(0, .1, u) * (1 - sstep(.9, 1, u)) : 0; rig.bw += clamp(bT - rig.bw, -h * 6, h * 8); }
+    // ---- speed, depth, the stroke
+    rig.spd += (((dead || stun || u > .02) ? 0 : s.speed) - rig.spd) * (1 - exp(-h * 8));
+    rig.al += (s.alert - rig.al) * (1 - exp(-h * 4));
+    const spd = rig.spd, spN = clamp(spd / 9, 0, 1), sag = rig.sag;
+    const depT = (u > .3 || rig.under > 0) ? 1 : dead ? min(s.depth, .12) : s.depth;
+    let k = 7; rig.depV += ((depT - rig.dep) * k * k - 2 * k * rig.depV) * h; rig.dep = clamp(rig.dep + rig.depV * h, -.05, 1.05);
+    const e = clamp(1 - rig.dep, 0, 1);
+    const stride = 1.0 + .26 * spd; rig.ph = frac(rig.ph + h * (spd / stride + (dead ? 0 : .07 * (1 - sstep(0, .5, spd)))));
+    // ---- the key
+    const kUpT = mix(-.3, kFullOf(rig) + .3 * rig.al * (1 - spN), e) * (1 - .36 * sag), rakeT = dead ? .22 : mix(.3, .64, pow(spN, .8)) + rig.dep * .5 - rig.al * .1 * (1 - spN) + .22 * sag;
+    const leanT = dead ? 0 : clamp(rig.w * spd * .11 + rig.w * .2, -.6, .6) + rig.side * .62 * sag;
+    k = 7; rig.kUpV += ((kUpT - rig.kUp) * k * k - 2 * k * rig.kUpV) * h; rig.kUp += rig.kUpV * h;
+    k = 6; rig.rakeV += ((rakeT - rig.rake) * k * k - 2 * k * rig.rakeV) * h; rig.rake += rig.rakeV * h;
+    k = 5; rig.leanV += ((leanT - rig.lean) * k * k - 1.4 * k * rig.leanV) * h; rig.lean += rig.leanV * h;
+    // it works the lock: quarter turns about its own shaft when it prowls, small tries at speed; or it turns its flat to what it looks at
+    rig.lockT -= h; if (rig.lockT <= 0) { const q = rnd(), turned = abs(rig.rollT) > 1; if (spd < 2) { rig.lockT = mix(1.3, 3.2, rnd()); rig.rollT = (q < .3 ? 0 : q < .6 ? PI / 2 : q < .8 ? -PI / 2 : PI * .25) * (1 - rig.al * .6); }
+      else if (!turned && q < .4) { rig.lockT = mix(.5, 1.1, rnd()); rig.rollT = (q < .2 ? 1 : -1) * PI / 2; }        // at speed: now and then a quarter turn, held a moment, and back
+      else { rig.lockT = mix(1.2, 2.8, rnd()); rig.rollT = (q - .5) * .5; } }
+    let rT = rig.rollT;
+    if (dead) rT = Math.round(rig.roll / PI) * PI;
+    else if (rig.stunned) rT = rig.rollT + rig.side * .5 * sag;
+    else if (s.look !== null) { const tx = sin(s.look), tz = -cos(s.look); let ph = atan2(rig.c0x * tx + rig.c0z * tz, rig.n0x * tx + rig.n0z * tz); ph += Math.round((rig.roll - ph) / PI) * PI; rT = ph + rig.rollT * .12 * (1 - rig.al); }
+    k = dead ? 4 : 12; rig.rollV += ((rT - rig.roll) * k * k - 1.1 * k * rig.rollV) * h; rig.roll += rig.rollV * h;
+    // ---- the body
+    rig.yawB += wrap(hd - rig.yawB) * (1 - exp(-h * 5));
+    const byT = -.2 - 1.75 * rig.dep - .15 * sag - (dead ? .3 * sstep(0, 3, rig.dead) : 0); k = 7; rig.byV += ((byT - rig.by) * k * k - 2 * k * rig.byV) * h; rig.by += rig.byV * h;
+    const pT = clamp(-rig.depV * .5, -.5, .5); k = 6; rig.pitchV += ((pT - rig.pitch) * k * k - 2 * k * rig.pitchV) * h; rig.pitch += rig.pitchV * h;
+    advancePath(rig, x, z, max(.3, sstep(.1, .7, e)));
+    /* Thrown regolith. No air: nothing billows or hangs. Each forelimb's power stroke throws one coherent sheet that
+       sweeps from ahead-and-out round to behind-and-out, every grain on its own parabola; at speed the spoil kicked
+       out behind stands up as a rooster tail. The soil it shoulders carries part of its own speed forward. */
+    if (e > .08 && spd > .15 && u <= 0) {
+      const s0 = min(2.4, .55 + .17 * spd), Tf = 2 * s0 * .72 / GRAV, rate = min(150 + 40 * spd, 330 / (.3 + Tf)) * e;
+      for (let a = 0; a < 2; a++) { const sd = a ? 1 : -1, p = frac(rig.ph + a * .5); if (p < .04 || p > .52) continue;
+        rig.acc[a] += rate * h * 2.1; while (rig.acc[a] >= 1) { rig.acc[a] -= 1;
+          const q = (p - .04) / .48, psi = mix(.25, 2.3, q) + (rnd() - .5) * .14, sp = s0 * (rnd() < .2 ? .45 + .4 * rnd() : .86 + .14 * rnd()) * (.8 + .4 * sin(q * PI)), el = .8 + (rnd() - .5) * .09, ch = cos(psi) * sp * cos(el), cs = sin(psi) * sp * cos(el) * sd;
+          const dd = -.8 + .7 * q + (rnd() - .5) * .12, sw = sd * (.3 + .45 * sin(q * PI * .5 + .3) + (rnd() - .5) * .1), px = x - F0 * dd + R0 * sw, pz = z - F2 * dd + R2 * sw;
+          const big = rnd() < .035; spawn(rig, g, px, g(px, pz) + .16 * e, pz, (F0 * (ch + spd * .4) + R0 * cs) * (big ? .7 : 1), sp * sin(el) * (big ? .7 : 1), (F2 * (ch + spd * .4) + R2 * cs) * (big ? .7 : 1), big ? 1.05 + rnd() * .6 : rnd(), 0); } }
+      if (spd > 2.6) { const vy0 = min(2.8, .5 + .24 * spd), Tr = 2 * vy0 / GRAV; rig.acc[2] += min(130, 230 / Tr) * e * sstep(2.6, 4, spd) * h;
+        while (rig.acc[2] >= 1) { rig.acc[2] -= 1; const el = 1.12 + .22 * rnd(), sp = vy0 * (rnd() < .2 ? .5 + .3 * rnd() : .85 + .2 * rnd()), bk = 1.9 + .4 * rnd(), sw = (rnd() - .5) * .3, px = x - F0 * bk + R0 * sw, pz = z - F2 * bk + R2 * sw, lat = (rnd() - .5) * .22, vb = spd * .3 - sp * cos(el) * 1.6;
+          spawn(rig, g, px, g(px, pz) + .1, pz, F0 * vb + R0 * lat, sp * sin(el), F2 * vb + R2 * lat, rnd(), 0); } }
+    }
+    // deep, the ground still tells on it: the ripple cracks and spits every few metres
+    if (e < .1 && spd > .5 && u <= 0 && rig.S >= rig.puffS) { rig.puffS = rig.S + mix(2.2, 4.7, rnd()); burst(rig, g, x - F0 * .4, z - F2 * .4, 16, .5, 1.5, .6, 1.2, .3, F0 * spd * .15, F2 * spd * .15, .03, .1); }
+    rig.grind = dead ? 0 : clamp(max(pow(spN, .7) * (.35 + .65 * e), rig.bw * (u < .3 ? 1 : .5), rig.cv * .8), 0, 1);
+  }
+
+  /* ------------------------------------------------------------------ pose
+     pose[]: 0-2 torso centre, 3 yaw, 4 pitch (nose up), 5 roll; 6-8 the point where the key's axis meets the ground,
+     9-11 the axis (up the shaft toward the bow), 12 roll about it, 13 height of the bow's top along the axis;
+     14-19 wrists L,R (torso space), 20-25 where the claws point, 26-31 palm normals, 32 tail droop, 33 tail bend. */
+  function swimPose(rig, g, P) {
+    const hd = rig.hd, F0 = sin(hd), F2 = -cos(hd), R0 = cos(hd), R2 = sin(hd), x = rig.x, z = rig.z;
+    const spN = clamp(rig.spd / 9, 0, 1), e = clamp(1 - rig.dep, 0, 1), t = rig.t, dd = rig.dead, tpl = dd > 0 ? clamp(dd / TOPPLE, 0, 1) : 0, alive = dd > 0 ? 1 - sstep(0, .25, tpl) : 1;
+    const cv = rig.cv + (dd > 0 ? .55 * exp(-dd * 3.5) : 0), sag = rig.sag;
+    const sh = (.006 + .02 * spN) * e * alive, shr = n1(t * 31, 3) * sh + n1(t * 13, 4) * sh, shl = n1(t * 27, 5) * sh + n1(t * 11.3, 6) * sh;      // it shudders: it is grinding its way through
+    const bob = sin(rig.ph * 2 * TAU), wag = sin(rig.ph * TAU);
+    const slF = Math.atan(rig.gsx * F0 + rig.gsz * F2), slR = Math.atan(rig.gsx * R0 + rig.gsz * R2);        // it stands off the slope it is in, not off the horizon
+    const rake = rig.rake + shr + .03 * bob * spN + cv * (.5 * n1(t * 8.3, 21) + .2 * sin(t * 43)) + slF * .85;
+    let lean = rig.lean + shl + .05 * wag * (.3 + spN) + cv * (.75 * n1(t * 7.1, 22) + .18 * sin(t * 37 + 1)) + sag * .02 * n1(t * 19, 27) - slR * .7, sink = 0;
+    if (dd > 0) { const sl = (rig.gsx * R0 + rig.gsz * R2) * rig.side, fin2 = PI / 2 - .04 - Math.atan(sl), td = dd - TOPPLE; let ang = fin2 * pow(tpl, 2.6); if (td > 0) ang -= .1 * exp(-td * 4.5) * abs(sin(td * 8)); lean = lean * (1 - tpl) + rig.side * ang; sink = .05 * tpl; }
+    let ax = -F0 * sin(rake), ay = cos(rake), az = -F2 * sin(rake); { const c = cos(lean), s2 = sin(lean); ax = ax * c + R0 * s2; ay = ay * c; az = az * c + R2 * s2; }
+    const l = len3(ax, ay, az); P[6] = x; P[7] = rig.g0 - sink; P[8] = z; P[9] = ax / l; P[10] = ay / l; P[11] = az / l; P[12] = rig.roll + cv * 1.3 * n1(t * 6.3, 23); P[13] = rig.kUp + .05 * bob * (.4 + spN) * e + cv * .16 * n1(t * 11, 24);
+    P[36] = -F0; P[37] = 0; P[38] = -F2;
+    // torso: half a metre behind the key, following the ground
+    const yw = rig.yawB + .05 * wag * spN, fx = sin(yw), fz = -cos(yw), bx = x - fx * BODY_D, bz = z - fz * BODY_D;
+    P[0] = bx; P[2] = bz; P[1] = g(bx, bz) + rig.by + .03 * bob * e + cv * .1 * n1(t * 9.1, 28); P[3] = yw; P[4] = Math.atan((g(bx + fx * .6, bz + fz * .6) - g(bx - fx * .6, bz - fz * .6)) / 1.2) + rig.pitch + cv * .2 * n1(t * 6.7, 33); P[5] = rig.lean * .35 + cv * .4 * n1(t * 7.7, 26);
+    // forelimbs: the stroke, or lying at the bow with the claws just through the surface
+    const idle = 1 - sstep(.1, .7, rig.spd);
+    for (let a = 0; a < 2; a++) { const sd = a ? 1 : -1, p = rig.ph + a * .5, o = a * 3;
+      cr8(WK, p, 0); let wx = _c[0] * sd * BSC, wy = _c[1] * BSC, wz = _c[2] * BSC, vxw = _c[3] * sd, vyw = _c[4], vzw = _c[5];
+      cr8(FK, p, 0); let fxx = _c[0] * sd, fy = _c[1], fzz = _c[2];
+      if (idle > 0) { const ti = (sin(t * 1.3 + a * 2.1) * .5 + .5) * alive; wx = mix(wx, sd * .3 * BSC, idle); wy = mix(wy, (.3 + .05 * ti) * BSC, idle); wz = mix(wz, (-.86 - .04 * ti) * BSC, idle); fxx = mix(fxx, sd * .2, idle); fy = mix(fy, .12 + .2 * ti, idle); fzz = mix(fzz, -.95, idle); vxw = mix(vxw, 0, idle); vyw = mix(vyw, -1, idle); vzw = mix(vzw, 0, idle); }
+      if (cv > .01) { wx += cv * .34 * n1(t * 9 + a * 5, 30) * BSC; wy += cv * .34 * n1(t * 8.3 + a * 3, 31) * BSC; wz += cv * .22 * n1(t * 7.3 + a * 4, 32) * BSC; fy += cv * .8 * n1(t * 8.9 + a * 2, 34); }
+      const fl = len3(fxx, fy, fzz) || 1; fxx /= fl; fy /= fl; fzz /= fl;
+      const dv = vxw * fxx + vyw * fy + vzw * fzz; vxw -= fxx * dv; vyw -= fy * dv; vzw -= fzz * dv; let vl = len3(vxw, vyw, vzw); if (vl < 1e-4) { vxw = 0; vyw = 1; vzw = 0; vl = 1; }
+      P[14 + o] = wx; P[15 + o] = wy; P[16 + o] = wz; P[20 + o] = fxx; P[21 + o] = fy; P[22 + o] = fzz; P[26 + o] = vxw / vl; P[27 + o] = vyw / vl; P[28 + o] = vzw / vl; }
+    P[32] = 0; P[33] = clamp(-rig.w * .14, -.35, .35) + cv * .3 * n1(t * 5.9, 35);
+  }
+  function breachPose(rig, g, Q, u) {
+    const hd = rig.hd, F0 = sin(hd), F2 = -cos(hd), R0 = cos(hd), R2 = sin(hd), x = rig.x, z = rig.z, g0 = rig.g0, K = rig.key, ks = rig.ks, t = rig.t;
+    const Lb = (K.L + .02 - K.bcx) * ks, Ob = K.bcy * ks;                        // from the hand end of the shaft to the middle of the bow: along the axis, and off it
+    const sy = g(x + F0 * REACH, z + F2 * REACH) + STRIKE_H - g0, cH = cos(B_AL[6]), sH = sin(B_AL[6]), gfH = REACH - sH * Lb + cH * Ob, ghH = sy - cH * Lb - sH * Ob;
+    const gw = kf(u, BU, B_GW), shk = 1 - sstep(.12, .2, u), al = kf(u, BU, B_AL) + .05 * n1(t * 35, 41) * shk, lat = .04 * n1(t * 29, 42) * shk;
+    const gf = kf(u, BU, B_GF) + (gfH - B_GF[6]) * gw, gh = kf(u, BU, B_GH) + (ghH - B_GH[6]) * gw - rig.depB * 1.7 * (1 - sstep(.13, .27, u));
+    const ca = cos(al), sa = sin(al);
+    Q[6] = x + F0 * gf; Q[7] = g0 + gh; Q[8] = z + F2 * gf; Q[9] = F0 * sa + R0 * lat; Q[10] = ca; Q[11] = F2 * sa + R2 * lat; Q[12] = kf(u, BU, B_RO); Q[13] = rig.klen + .02 * ks;
+    Q[36] = -F0 * ca; Q[37] = sa; Q[38] = -F2 * ca;
+    const pi = kf(u, BU, B_PI), cp = cos(pi), sp = sin(pi), nf = gf - kf(u, BU, B_NF), nh = gh - kf(u, BU, B_NH);
+    const cf = nf + sp * NECK[1] + cp * NECK[2], ch = nh - cp * NECK[1] + sp * NECK[2];
+    Q[0] = x + F0 * cf; Q[1] = g0 + ch; Q[2] = z + F2 * cf; Q[3] = hd; Q[4] = pi; Q[5] = .07 * sin(u * 23) * (1 - shk) + .05 * n1(t * 31, 43) * shk;
+    for (let a = 0; a < 2; a++) { const sd = a ? 1 : -1, o = a * 3, uu = clamp(u - (a ? 0 : .015), 0, 1);
+      Q[14 + o] = kf(uu, AU, B_WX) * sd * BSC; Q[15 + o] = kf(uu, AU, B_WY) * BSC; Q[16 + o] = kf(uu, AU, B_WZ) * BSC;
+      let fx = kf(uu, AU, B_FX) * sd, fy = kf(uu, AU, B_FY), fz = kf(uu, AU, B_FZ); const fl = len3(fx, fy, fz) || 1; fx /= fl; fy /= fl; fz /= fl;
+      let px = 0, py = -1, pz = -.35; const d = px * fx + py * fy + pz * fz; px -= fx * d; py -= fy * d; pz -= fz * d; let pl = len3(px, py, pz); if (pl < 1e-3) { px = sd; py = 0; pz = 0; pl = 1; }
+      Q[20 + o] = fx; Q[21 + o] = fy; Q[22 + o] = fz; Q[26 + o] = px / pl; Q[27 + o] = py / pl; Q[28 + o] = pz / pl; }
+    Q[32] = -pi * .45; Q[33] = 0;
+  }
+  // a bone's frame at F[o..]: origin (px,py,pz), +y along (yx,yy,yz) (unit), +z as near (zx,zy,zz) as it can be
+  function boneFrame(F, o, px, py, pz, yx, yy, yz, zx, zy, zz) {
+    const d = zx * yx + zy * yy + zz * yz; zx -= yx * d; zy -= yy * d; zz -= yz * d; let l = len3(zx, zy, zz);
+    if (l < 1e-5) { if (abs(yy) < .9) { zx = -yz; zy = 0; zz = yx; } else { zx = 1; zy = 0; zz = 0; } l = len3(zx, zy, zz); } zx /= l; zy /= l; zz /= l;
+    F[o] = px; F[o + 1] = py; F[o + 2] = pz; F[o + 3] = yy * zz - yz * zy; F[o + 4] = yz * zx - yx * zz; F[o + 5] = yx * zy - yy * zx; F[o + 6] = yx; F[o + 7] = yy; F[o + 8] = yz; F[o + 9] = zx; F[o + 10] = zy; F[o + 11] = zz;
+  }
+  function solve(rig, g) {
+    const x = rig.x, z = rig.z, K = rig.key, P = rig.pose, ks = rig.ks, hd = rig.hd, F0 = sin(hd), F2 = -cos(hd);
+    const g0 = rig.g0 = g(x, z); rig.gsx = (g(x + .7, z) - g(x - .7, z)) / 1.4; rig.gsz = (g(x, z + .7) - g(x, z - .7)) / 1.4;
+    swimPose(rig, g, P);
+    if (rig.bw > .002) { const Q = rig.pose2, w = rig.bw, p3 = P[3]; breachPose(rig, g, Q, rig.buL); for (let i = 0; i < NPOSE; i++) P[i] += (Q[i] - P[i]) * w; P[3] = p3 + wrap(Q[3] - p3) * w;
+      const l = len3(P[9], P[10], P[11]) || 1; P[9] /= l; P[10] /= l; P[11] /= l; for (let o = 20; o < 26; o += 3) { const m = len3(P[o], P[o + 1], P[o + 2]) || 1; P[o] /= m; P[o + 1] /= m; P[o + 2] /= m; } }
+    // ---- torso frame
+    const M = rig.M, cy = cos(P[3]), sy = sin(P[3]), cp = cos(P[4]), sp = sin(P[4]), cr = cos(P[5]), sr = sin(P[5]);
+    const fx = sy * cp, fy = sp, fz = -cy * cp, u1x = -sy * sp, u1y = cp, u1z = cy * sp;
+    M[0] = P[0]; M[1] = P[1]; M[2] = P[2]; M[3] = cy * cr - u1x * sr; M[4] = -u1y * sr; M[5] = sy * cr - u1z * sr; M[6] = u1x * cr + cy * sr; M[7] = u1y * cr; M[8] = u1z * cr + sy * sr; M[9] = -fx; M[10] = -fy; M[11] = -fz;
+    const W = (o, lx, ly, lz, A) => { A[o] = M[0] + M[3] * lx + M[6] * ly + M[9] * lz; A[o + 1] = M[1] + M[4] * lx + M[7] * ly + M[10] * lz; A[o + 2] = M[2] + M[5] * lx + M[8] * ly + M[11] * lz; };
+    // ---- key frame: axis up the shaft toward the bow; the bit leads, the bow trails; then the turn about the shaft
+    const ax = P[9], ay = P[10], az = P[11];
+    let d = P[36] * ax + P[37] * ay + P[38] * az, bx = P[36] - ax * d, by = P[37] - ay * d, bz = P[38] - az * d, l = len3(bx, by, bz); if (l < 1e-4) { bx = -F0; by = 0; bz = -F2; l = 1; } bx /= l; by /= l; bz /= l;
+    const kax = -ax, kay = -ay, kaz = -az; let ux = bx, uy = by, uz = bz, nx = kay * uz - kaz * uy, ny = kaz * ux - kax * uz, nz = kax * uy - kay * ux;
+    rig.n0x = nx; rig.n0z = nz; rig.c0x = ay * nz - az * ny; rig.c0z = ax * ny - ay * nx;
+    { const c = cos(P[12]), s2 = sin(P[12]), cx = ay * uz - az * uy, cy2 = az * ux - ax * uz, cz = ax * uy - ay * ux; ux = ux * c + cx * s2; uy = uy * c + cy2 * s2; uz = uz * c + cz * s2;
+      nx = kay * uz - kaz * uy; ny = kaz * ux - kax * uz; nz = kax * uy - kay * ux; }
+    const KF = rig.KF, kUp = P[13], oh = kUp + rig.xmin * ks;
+    KF[0] = P[6] + ax * oh; KF[1] = P[7] + ay * oh; KF[2] = P[8] + az * oh; KF[3] = kax; KF[4] = kay; KF[5] = kaz; KF[6] = ux; KF[7] = uy; KF[8] = uz; KF[9] = nx; KF[10] = ny; KF[11] = nz;
+    { const cx = K.bcx * ks, cy2 = K.bcy * ks; rig.tip[0] = KF[0] + kax * cx + ux * cy2; rig.tip[1] = KF[1] + kay * cx + uy * cy2; rig.tip[2] = KF[2] + kaz * cx + uz * cy2; }     // the middle of the bow
+    // ---- neck: from the front of the torso up into the end of the shaft
+    const NK = rig.NK, gl = (K.L + .02) * ks, gx = KF[0] + kax * gl, gy = KF[1] + kay * gl, gz = KF[2] + kaz * gl;
+    rig.GR[0] = gx; rig.GR[1] = gy; rig.GR[2] = gz; W(0, NECK[0], NECK[1], NECK[2], NK); const nax = NK[0], nay = NK[1], naz = NK[2], C = rig.crook;
+    { const len = len3(gx - nax, gy - nay, gz - naz), h1 = len * .36 + .05, h2 = len * .34 + .05, slack = sqrt(max(0, .5 * .5 - len * len)) * .5, b1 = .04 + slack, b2 = -.03 + slack * .6;
+      const p1x = nax + M[6] * h1 + M[9] * b1 + M[3] * C[1], p1y = nay + M[7] * h1 + M[10] * b1 + M[4] * C[1], p1z = naz + M[8] * h1 + M[11] * b1 + M[5] * C[1];
+      const p2x = gx - ax * h2 + M[9] * b2 + M[3] * C[3], p2y = gy - ay * h2 + M[10] * b2 + M[4] * C[3], p2z = gz - az * h2 + M[11] * b2 + M[5] * C[3];
+      const kk = C[4], ka = C[5], kxw = M[3] * cos(ka) + M[9] * sin(ka), kyw = M[4] * cos(ka) + M[10] * sin(ka), kzw = M[5] * cos(ka) + M[11] * sin(ka);
+      for (let i = 0; i < 7; i++) { const t = i / 6, a = (1 - t) * (1 - t) * (1 - t), b = 3 * t * (1 - t) * (1 - t), c = 3 * t * t * (1 - t), e2 = t * t * t, kq = (i === 0 || i === 6) ? 0 : (i & 1 ? kk : -kk * .8);
+        NK[i * 3] = a * nax + b * p1x + c * p2x + e2 * gx + kxw * kq; NK[i * 3 + 1] = a * nay + b * p1y + c * p2y + e2 * gy + kyw * kq; NK[i * 3 + 2] = a * naz + b * p1z + c * p2z + e2 * gz + kzw * kq; } }
+    // ---- forelimbs: two-bone reach from shoulder to wrist, elbow up and out; then the hand
+    const AJ = rig.AJ, FR = rig.FR;
+    for (let a = 0; a < 2; a++) { const sd = a ? 1 : -1, o = a * 3, sx = sd * SHX;
+      let dx = P[14 + o] - sx, dy = P[15 + o] - SHY, dz = P[16 + o] - SHZ, L = len3(dx, dy, dz); const mx = L1 + L2 - .004; if (L > mx) { dx *= mx / L; dy *= mx / L; dz *= mx / L; L = mx; } if (L < .15) { const q = .15 / (L || 1); dx = dx * q || .15; dy *= q; dz *= q; L = .15; }
+      const ux2 = dx / L, uy2 = dy / L, uz2 = dz / L, aa = (L1 * L1 - L2 * L2 + L * L) / (2 * L), hh = sqrt(max(0, L1 * L1 - aa * aa));
+      let px = sd * .7, py = 1, pz = .25; const pd = px * ux2 + py * uy2 + pz * uz2; px -= ux2 * pd; py -= uy2 * pd; pz -= uz2 * pd; const pl = len3(px, py, pz) || 1; px /= pl; py /= pl; pz /= pl;
+      const ex = sx + ux2 * aa + px * hh, ey = SHY + uy2 * aa + py * hh, ez = SHZ + uz2 * aa + pz * hh, wx = sx + dx, wy = SHY + dy, wz = SHZ + dz, j = a * 12;
+      W(j, sx, SHY, SHZ, AJ); W(j + 3, ex, ey, ez, AJ); W(j + 6, wx, wy, wz, AJ); W(j + 9, wx + P[20 + o] * .38 * BSC, wy + P[21 + o] * .38 * BSC, wz + P[22 + o] * .38 * BSC, AJ);
+      // outside of the bend, in world space
+      const ox = M[3] * px + M[6] * py + M[9] * pz, oy = M[4] * px + M[7] * py + M[10] * pz, oz = M[5] * px + M[8] * py + M[11] * pz;
+      boneFrame(FR, a * 36, AJ[j], AJ[j + 1], AJ[j + 2], (AJ[j + 3] - AJ[j]) / L1, (AJ[j + 4] - AJ[j + 1]) / L1, (AJ[j + 5] - AJ[j + 2]) / L1, ox, oy, oz);
+      boneFrame(FR, a * 36 + 12, AJ[j + 3], AJ[j + 4], AJ[j + 5], (AJ[j + 6] - AJ[j + 3]) / L2, (AJ[j + 7] - AJ[j + 4]) / L2, (AJ[j + 8] - AJ[j + 5]) / L2, ox, oy, oz);
+      const fwx = M[3] * P[20 + o] + M[6] * P[21 + o] + M[9] * P[22 + o], fwy = M[4] * P[20 + o] + M[7] * P[21 + o] + M[10] * P[22 + o], fwz = M[5] * P[20 + o] + M[8] * P[21 + o] + M[11] * P[22 + o];
+      const pwx = M[3] * P[26 + o] + M[6] * P[27 + o] + M[9] * P[28 + o], pwy = M[4] * P[26 + o] + M[7] * P[27 + o] + M[10] * P[28 + o], pwz = M[5] * P[26 + o] + M[8] * P[27 + o] + M[11] * P[28 + o];
+      boneFrame(FR, a * 36 + 24, AJ[j + 6], AJ[j + 7], AJ[j + 8], fwx, fwy, fwz, pwx, pwy, pwz); }
+    // ---- the tail: two segments hinged behind the hips, trailing through turns, hanging when the torso rears
+    { let hx = M[0] + M[3] * HIP[0] + M[6] * HIP[1] + M[9] * HIP[2], hy = M[1] + M[4] * HIP[0] + M[7] * HIP[1] + M[10] * HIP[2], hz = M[2] + M[5] * HIP[0] + M[8] * HIP[1] + M[11] * HIP[2];
+      let rx = M[3], ry = M[4], rz = M[5], vx2 = M[6], vy2 = M[7], vz2 = M[8], kx = M[9], ky = M[10], kz = M[11];
+      for (let i = 0; i < 2; i++) { const cb = cos(P[33]), sb = sin(P[33]), cd = cos(P[32]), sd2 = sin(P[32]);
+        let nkx = kx * cb + rx * sb, nky = ky * cb + ry * sb, nkz = kz * cb + rz * sb; const nrx = rx * cb - kx * sb, nry = ry * cb - ky * sb, nrz = rz * cb - kz * sb;      // bend
+        const nvx = vx2 * cd + nkx * sd2, nvy = vy2 * cd + nky * sd2, nvz = vz2 * cd + nkz * sd2; nkx = nkx * cd - vx2 * sd2; nky = nky * cd - vy2 * sd2; nkz = nkz * cd - vz2 * sd2;       // droop
+        rx = nrx; ry = nry; rz = nrz; vx2 = nvx; vy2 = nvy; vz2 = nvz; kx = nkx; ky = nky; kz = nkz; const o = 72 + i * 12;
+        FR[o] = hx; FR[o + 1] = hy; FR[o + 2] = hz; FR[o + 3] = rx; FR[o + 4] = ry; FR[o + 5] = rz; FR[o + 6] = vx2; FR[o + 7] = vy2; FR[o + 8] = vz2; FR[o + 9] = kx; FR[o + 10] = ky; FR[o + 11] = kz;
+        hx += kx * ABL; hy += ky * ABL; hz += kz * ABL; } }
+    // ---- what the game reads
+    { const tx = P[6] + ax * kUp, ty = P[7] + ay * kUp, tz = P[8] + az * kUp, hT = ty - g(tx, tz), hG = gy - g(gx, gz);        // the key from the top of its bow (t) to its hand end (g)
+      let ex = hT <= 0 && hG <= 0 ? 0 : hT > 0 && hG > 0 ? 1 : max(hT, hG) / (abs(hT) + abs(hG)); if (rig.dead > 0) ex = max(ex, .5 * clamp(rig.dead / TOPPLE, 0, 1) * clamp(1 - rig.dep, 0, 1)); rig.exposed = ex;   // a dead one's key lies half buried
+      if (ex <= 0) { rig.O[0] = x; rig.O[1] = g0 + .1; rig.O[2] = z; } else { const f = hT >= hG ? ex * .5 : 1 - ex * .5; rig.O[0] = tx + (gx - tx) * f; rig.O[1] = ty + (gy - ty) * f; rig.O[2] = tz + (gz - tz) * f; } }
+    rig.strike[0] = x + F0 * REACH; rig.strike[2] = z + F2 * REACH; rig.strike[1] = g(rig.strike[0], rig.strike[2]) + STRIKE_H;
+  }
+  function settle(rig, s, g) {
+    rig.x = s.x; rig.z = s.z; rig.hd = s.heading; rig.yawB = s.heading; rig.w = 0; rig.spd = s.speed; rig.al = s.alert; rig.dep = s.depth; rig.depV = 0;
+    const e = clamp(1 - rig.dep, 0, 1), spN = clamp(rig.spd / 9, 0, 1);
+    rig.kUp = mix(-.3, kFullOf(rig) + .3 * rig.al * (1 - spN), e); rig.kUpV = 0; rig.rake = mix(.3, .64, pow(spN, .8)) + rig.dep * .5; rig.rakeV = 0; rig.lean = 0; rig.leanV = 0; rig.rollV = 0;
+    rig.by = -.2 - 1.75 * rig.dep; rig.byV = 0; rig.pitch = 0; rig.pitchV = 0;
+    rig.bu = 0; rig.bw = 0; rig.under = 0; rig.cv = 0; rig.sag = 0; rig.stunned = false; rig.dead = 0; rig.wasDead = s.dead > 0; rig.cDome = -1; rig.CR.fill(0); rig.puffS = rig.S; rig.up = rig.dep < .7;
+    resetTrail(rig, s.x, s.z); rig.live = true;
+  }
+  const _s = { x: 0, z: 0, heading: 0, speed: 0, depth: 0, breach: 0, stun: 0, alert: 0, look: null, dead: 0 };
+  function update(rig, s, dt, groundY) {
+    const g = groundY || flat0; dt = clamp(fin(+dt, 0), 0, .25); s = s || _s;
+    const sx = fin(+s.x, rig.x), sz = fin(+s.z, rig.z), shd = fin(+s.heading, rig.hd);
+    _s.speed = clamp(fin(+s.speed, 0), 0, 12); _s.depth = clamp(fin(+s.depth, 0), 0, 1); _s.breach = clamp(fin(+s.breach, 0), 0, 1);
+    _s.stun = max(0, fin(+s.stun, 0)); _s.alert = clamp(fin(+s.alert, 0), 0, 1); _s.look = (s.look === undefined || s.look === null) ? null : fin(+s.look, null); _s.dead = max(0, fin(+s.dead, 0));
+    _s.x = sx; _s.z = sz; _s.heading = shd;
+    rig.gnd = g; if (!rig.live || len2(sx - rig.x, sz - rig.z) > 3) settle(rig, _s, g);
+    if (dt > 0) { const n = max(1, Math.ceil(dt * 90)), h = dt / n, x0 = rig.x, z0 = rig.z, h0 = rig.hd, dh = wrap(shd - h0);
+      for (let i = 1; i <= n; i++) { const f = i / n; rig.x = x0 + (sx - x0) * f; rig.z = z0 + (sz - z0) * f; advance(rig, _s, rig.x, rig.z, h0 + dh * f, h, g); } }
+    solve(rig, g);
+    // going under, coming up (the breach and the sag have their own events)
+    if (rig.up && rig.exposed < .06) { rig.up = false; if (rig.bw < .05 && !rig.dead) { rig.events.push('dive'); burst(rig, g, rig.x - sin(rig.hd) * .3, rig.z + cos(rig.hd) * .3, 22, .4, 1.3, .5, 1.1, .5, 0, 0, .03, .15); } }
+    else if (!rig.up && rig.exposed > .3) { rig.up = true; if (rig.bw < .05 && !rig.dead) { rig.events.push('surface'); burst(rig, g, rig.x - sin(rig.hd) * .2, rig.z + cos(rig.hd) * .2, 70, .8, 2.6, .8, 1.35, .45, sin(rig.hd) * rig.spd * .25, -cos(rig.hd) * rig.spd * .25, .1, .12, 6); } }
+    if (rig.events.length > 32) rig.events.splice(0, rig.events.length - 32);
+  }
+
+  /* ------------------------------------------------------------------ emit: the creature */
+  function emit(B, rig, lod) {
+    if (!rig.live) return; lod = lod ? 1 : 0;
+    sinkOpen(B, lod ? 1800 : 9000);
+    const PT = parts(), FR = rig.FR, M = rig.M, fat = rig.fat || 1, ks = rig.ks, KF = rig.KF;
+    const under = (px, py, pz, r) => py + r < rig.g0 + rig.gsx * (px - rig.x) + rig.gsz * (pz - rig.z);
+    // key (scaled by ks)
+    { inst(keyMeshFor(rig, lod), KF, lod ? min(rig.keyShade, .12) : rig.keyShade, ks); }
+    // neck
+    { const NK = rig.NK;
+      if (lod) { for (let i = 0; i < 4; i++) setP(i, NK[i * 6], NK[i * 6 + 1], NK[i * 6 + 2], (.06 - i * .004) * fat); tube(4, 3, DARK, .85, M[9], M[10], M[11], 1, false); }
+      else { for (let i = 0; i < 7; i++) setP(i, NK[i * 3], NK[i * 3 + 1], NK[i * 3 + 2], (i === 0 ? .08 : (i & 1 ? .046 : .062) - i * .002) * fat); tube(7, 5, DARK, .85, M[9], M[10], M[11], 1, false);
+        for (let i = 1; i < 6; i++) spike(NK[i * 3], NK[i * 3 + 1], NK[i * 3 + 2], M[9] + M[6] * .3, M[10] + M[7] * .3, M[11] + M[8] * .3, .09 - i * .006, .019 * fat, DARK, 1.15); } }
+    // torso, tail, forelimbs: only what is not wholly under the ground
+    if (!under(M[0], M[1], M[2], .75 * BSC)) inst(PT.torso[lod], M, 1, BSC);
+    if (!under(FR[72] + FR[81] * .4, FR[73] + FR[82] * .4, FR[74] + FR[83] * .4, .6)) inst(PT.abdA[lod], FR.subarray(72, 84), 1, BSC);
+    if (!under(FR[84] + FR[93] * .4, FR[85] + FR[94] * .4, FR[86] + FR[95] * .4, .6)) inst(PT.abdB[lod], FR.subarray(84, 96), 1, BSC);
+    for (let a = 0; a < 2; a++) { const o = a * 36, AJ = rig.AJ, j = a * 12;
+      if (under(AJ[j + 3], AJ[j + 4], AJ[j + 5], 1.1)) continue;
+      inst(PT.hum[lod], FR.subarray(o, o + 12), 1, BSC); inst(PT.fore[lod], FR.subarray(o + 12, o + 24), 1, BSC); inst(PT.hand[lod], FR.subarray(o + 24, o + 36), 1, BSC); }
+    sinkClose(B);
+  }
+
+  /* ------------------------------------------------------------------ emitGround: mound, furrow, thrown regolith
+     Nothing here cuts the terrain: it is all drawn on top of it. Under everything lies the SPOIL, a ribbon of dark
+     fresh regolith following the path: heaped at the bow, humped over the body, and behind the body fallen in to a
+     trench between two raised lips. On top of that ride the PLATES: the old surface, broken on a jittered lattice
+     that is fixed in the world, each plate lifting, tilting and parting as the heave passes under it and left
+     tipped where it lands. The outer plates stay rooted in the ground, which is what joins the mound to the terrain. */
+  const NS = 11, QS = [-1, -.8, -.58, -.36, -.09, 0, .09, .36, .58, .8, 1];
+  const DOME = [0, .1, .4, .76, 1, 1, 1, .76, .4, .1, 0], LIPS = [0, .14, 1, .3, .04, 0, .04, .3, 1, .14, 0], DARKM = [0, .15, .6, .9, 1, 1, 1, .9, .6, .15, 0], FLOOR = [0, 0, 0, .4, 1, 1, 1, .4, 0, 0, 0];
+  const SUB = [[0, 2, 3, 4, 5, 6, 7, 8, 10], [0, 2, 3, 5, 7, 8, 10], [0, 2, 5, 8, 10]], TILE = [0, 1, 2, 3, 6, 7, 8, 9];
+  const LIFT = .015, SINK = .05, W0 = 1.0, TILE_R = 7.5, D_TOE = -1.5, D_BOW = -.6;
+  const PH = new Float64Array(NS), PM = new Float64Array(NS); let PW = 0, PZ = 0, PP = 0, PLV = 0, PTA = 0;
+  let F_A = 1, F_rip = 0, F_ph = 0, F_seed = 0;
+  // the cross-section d metres behind the key (negative = ahead of it): heights PH, shade factors PM, half-width PW
+  function rowProfile(d, n, amp, near) {
+    const lw = 1 - sstep(2.9, 4.4, d), tw = sstep(2.4, 4.0, d);
+    let env = 0; if (d > D_TOE && lw > 0) { const bow = d < D_BOW ? pow((d - D_TOE) / (D_BOW - D_TOE), .7) : mix(1, .74, sstep(D_BOW, .3, d)), body = d < 1.5 ? 1 : mix(1, .5, sstep(1.5, 3.0, d)); env = .33 * bow * body * (1 + .1 * sin(TAU * 2 * F_ph - d * 2.2)); }
+    const hm = F_A * env * lw, hr = F_rip * .14 * sstep(-1.3, -.3, d) * (1 - sstep(1.0, 2.8, d));
+    const crk = F_A * lw * sstep(-1.2, -.6, d), ta = amp * tw;
+    const lL = .13 * (1 + .5 * n1(n * .37, F_seed + 11)) * ta, lR = .13 * (1 + .5 * n1(n * .37, F_seed + 12)) * ta;
+    const p = PP = clamp(8 * max(hm + hr, ta * .13), 0, 1); PLV = F_A * lw * (d > D_TOE ? 1 : 0); PTA = ta;
+    const dk = mix(.12, .42, near);
+    for (let j = 0; j < NS; j++) { let H = (hm + hr) * DOME[j] + (j < 5 ? lL : lR) * LIPS[j]; if (j === 5) H -= hm * .55 * crk;
+      if (j > 0 && j < NS - 1) H *= 1 + .6 * (ih(n, j + 50) - .5) * DARKM[j];
+      PH[j] = (j === 0 || j === NS - 1) ? -SINK : H + (LIFT - .02 * near) * p - SINK * (1 - p);
+      PM[j] = (1 - DARKM[j] * p * (dk + .3 * ta * FLOOR[j])) * (j === 5 ? 1 - .5 * crk : 1) * (1 + (ih(n, j + 60) - .5) * .12 * p); }
+    PW = W0 * (d < D_BOW ? sqrt(max(0, 1 - ((D_BOW - d) / (D_BOW - D_TOE)) * ((D_BOW - d) / (D_BOW - D_TOE)))) : 1) * (1 + .1 * n1(n * .22, F_seed + 13));
+    PZ = .07 * n1(n * .42, F_seed + 14) * min(1, PW / W0);
+  }
+  const RMAX = 240, RXS = new Float32Array(RMAX * NS), RYS = new Float32Array(RMAX * NS), RZS = new Float32Array(RMAX * NS), RHS = new Float32Array(RMAX * NS), RSS = new Float32Array(RMAX * NS), RTS = new Float32Array(RMAX * NS), RNS = new Float32Array(RMAX * NS * 3), RTN = new Float32Array(RMAX * NS * 3), RLV = new Uint8Array(RMAX);
+  const RCX = new Float32Array(RMAX), RCZ = new Float32Array(RMAX), RTX = new Float32Array(RMAX), RTZ = new Float32Array(RMAX), RDD = new Float32Array(RMAX), RAM = new Float32Array(RMAX), RNN = new Int32Array(RMAX), RPP = new Float32Array(RMAX), RLW = new Float32Array(RMAX), RTA = new Float32Array(RMAX), RNR = new Float32Array(RMAX);
+  const _tx = new Float64Array(4), _ty = new Float64Array(4), _tz = new Float64Array(4), _tp = new Uint8Array(4), _ti = new Int32Array(4);
+  let G_REGO = 3, G_ROCK = 3, G_UV = 1 / 3.2;
+  /* One plate: nc corners (lattice vertices _ti, pinned ones stay in the ground). It rides the spoil under it, lifted
+     a little, shrunk toward its own middle (the cracks), tilted at random and by the lie of the land it is on. */
+  function plate(nc, key, n, k, pres, near, live, ta, churn, rx, rz, left, inner, skirt) {
+    if (NV + (nc === 4 ? 6 : 3) > MAXV) return;
+    const h1 = ih(n, key + 300), h2 = ih(n, key + 400), h3 = ih(n, key + 500), h4 = ih(n, key + 600), h5 = ih(n, key + 700);
+    let cx = 0, cz = 0, hb = 0; for (let i = 0; i < nc; i++) { cx += RXS[_ti[i]]; cz += RZS[_ti[i]]; hb += RHS[_ti[i]]; } cx /= nc; cz /= nc; hb /= nc;
+    const ac = clamp((hb + .012) / .05, 0, 1) * pres; if (ac < .05 && !skirt) return;
+    if (inner && ta > .3 && h1 < .45 * ta) return;                                    // some of the roof is simply gone into the trench
+    const shr = skirt ? 0 : ac * (h1 < .36 ? .012 : .04 + .15 * h1 * churn + (inner ? .08 * live : 0)), lift = ac * (.02 + .03 * h2 * churn);
+    const h36 = h3 * h3 * h3, tm = ac * churn * (.025 + .5 * h36 * h36) * (inner && ta > .3 ? 1.6 : 1), an = TAU * h4, sys = (left ? 1 : -1) * ((inner ? .25 * live : 0) + (!inner && !skirt ? .34 * ta * h2 : 0)) * ac;
+    const sxw = cos(an) * tm + rx * sys, szw = sin(an) * tm + rz * sys;
+    for (let i = 0; i < nc; i++) { const q = _ti[i]; if (_tp[i]) { _tx[i] = RXS[q]; _ty[i] = RYS[q]; _tz[i] = RZS[q]; continue; }
+      const px = cx + (RXS[q] - cx) * (1 - shr), pz = cz + (RZS[q] - cz) * (1 - shr); _tx[i] = px; _tz[i] = pz; _ty[i] = RYS[q] + .02 * near * pres + lift + sxw * (px - cx) + szw * (pz - cz); }
+    const i2 = nc === 4 ? 2 : 1, i3 = nc === 4 ? 3 : 2;      // flat normal from two edges
+    let nx = (_ty[i2] - _ty[0]) * (_tz[1] - _tz[i3]) - (_tz[i2] - _tz[0]) * (_ty[1] - _ty[i3]), ny = (_tz[i2] - _tz[0]) * (_tx[1] - _tx[i3]) - (_tx[i2] - _tx[0]) * (_tz[1] - _tz[i3]), nz = (_tx[i2] - _tx[0]) * (_ty[1] - _ty[i3]) - (_ty[i2] - _ty[0]) * (_tx[1] - _tx[i3]);
+    if (nc === 3) { const ax = _tx[1] - _tx[0], ay = _ty[1] - _ty[0], az = _tz[1] - _tz[0], bx = _tx[2] - _tx[0], by = _ty[2] - _ty[0], bz = _tz[2] - _tz[0]; nx = ay * bz - az * by; ny = az * bx - ax * bz; nz = ax * by - ay * bx; }
+    if (ny < 0) { nx = -nx; ny = -ny; nz = -nz; } const nl = len3(nx, ny, nz) || 1; nx /= nl; ny /= nl; nz /= nl;
+    const sm = (1 + (h5 - .5) * .2 * ac) * (1 - .04 * ac);
+    for (let v = 0; v < (nc === 4 ? 6 : 3); v++) { const i = nc === 4 ? QV[v] : TV3[v], q = _ti[i], q3 = q * 3;
+      if (_tp[i]) vx(_tx[i], _ty[i], _tz[i], _tx[i] * G_UV, _tz[i] * G_UV, G_REGO, RTN[q3], RTN[q3 + 1], RTN[q3 + 2], RTS[q]);
+      else vx(_tx[i], _ty[i], _tz[i], _tx[i] * G_UV, _tz[i] * G_UV, G_REGO, mix(RTN[q3], nx, ac), mix(RTN[q3 + 1], ny, ac), mix(RTN[q3 + 2], nz, ac), RTS[q] * sm); }
+  }
+  const QV = [0, 2, 1, 0, 3, 2], TV3 = [0, 2, 1], GRP = [[0, 1, 2, 3, 4], [0, 1, 3, 4], [0, 2, 3, 4], [0, 1, 2, 4], [0, 2, 4], [0, 1, 3, 4], [0, 2, 4]];
+  // a small faceted lump (clod of spoil, or a stone): an octahedron pulled about by the seed
+  const LX = new Float64Array(18);
+  function lump(x, y, z, r, seed, layer, shade, rot) {
+    if (NV + 24 > MAXV) return;
+    const c = cos(rot), s2 = sin(rot);
+    for (let i = 0; i < 6; i++) { const ax = i >> 1, sg = i & 1 ? -1 : 1, m = r * (.4 + 1.1 * ih(seed, i + 3)); let lx = ax === 0 ? sg * m : (ih(seed, i + 11) - .5) * r * .5, ly = ax === 1 ? sg * m * .7 : (ih(seed, i + 17) - .5) * r * .4, lz = ax === 2 ? sg * m : (ih(seed, i + 23) - .5) * r * .5;
+      const yy = ly * c - lz * s2, zz = ly * s2 + lz * c; LX[i * 3] = x + lx; LX[i * 3 + 1] = y + yy; LX[i * 3 + 2] = z + zz; }
+    for (let f = 0; f < 8; f++) { const a = (f & 1 ? 1 : 0), b = 2 + (f & 2 ? 1 : 0), d = 4 + (f & 4 ? 1 : 0);
+      const ax = LX[a * 3], ay = LX[a * 3 + 1], az = LX[a * 3 + 2], bx = LX[b * 3], by = LX[b * 3 + 1], bz = LX[b * 3 + 2], dx = LX[d * 3], dy = LX[d * 3 + 1], dz = LX[d * 3 + 2];
+      let nx = (by - ay) * (dz - az) - (bz - az) * (dy - ay), ny = (bz - az) * (dx - ax) - (bx - ax) * (dz - az), nz = (bx - ax) * (dy - ay) - (by - ay) * (dx - ax);
+      const mx = (ax + bx + dx) / 3 - x, my = (ay + by + dy) / 3 - y, mz = (az + bz + dz) / 3 - z; if (nx * mx + ny * my + nz * mz < 0) { nx = -nx; ny = -ny; nz = -nz; }
+      const nl = len3(nx, ny, nz) || 1; nx /= nl; ny /= nl; nz /= nl; const sh = shade * (.8 + .4 * ih(seed, f + 40)), u = ih(seed, 51), v = ih(seed, 52);
+      vx(ax, ay, az, u, v, layer, nx, ny, nz, sh); vx(bx, by, bz, u + .08, v, layer, nx, ny, nz, sh); vx(dx, dy, dz, u, v + .08, layer, nx, ny, nz, sh); }
+  }
+  /* A crater: where it burst out, where the key came down. Before it bursts it is a dome (the ground lifting over what
+     is gathering under it). Drawn on top of the terrain like everything else: a dark floor, a raised broken rim. */
+  const CQ = [.3, .55, .76, .92, 1.1], C_RIM = [.035, .1, .25, .1, 0], C_DOME = [.92, .64, .3, .07, 0], C_SH = [.5, .58, .92, 1.06, 1];
+  const CX = new Float32Array(17 * 5 * 8);
+  function drawCrater(g, x, z, R, grow, age, fade, seed, nsec, lumps) {
+    if (NV + nsec * 27 > MAXV) return;
+    const a = age < 0 ? 0 : sstep(0, .22, age), dome = .3 * grow * (1 - a);
+    terr(g, x, z); const cy = T_h + fade * (dome + .02 * a), csh = T_sh * mix(1, .5, a * fade), cnx = T_nx, cny = T_ny, cnz = T_nz;
+    for (let sc = 0; sc <= nsec; sc++) { const sm = sc % nsec, an = (sm + (ih(seed, sm + 3) - .5) * .5) / nsec * TAU + seed, c = cos(an), s2 = sin(an); let hp = fade * (dome + .02 * a), rp = 0;
+      for (let k = 0; k < 5; k++) { const q = CQ[k] * (1 + .24 * (ih(seed + sm, k + 7) - .5) * (k < 4 ? 1 : .5)), r = R * q, px = x + c * r, pz = z + s2 * r; terr(g, px, pz);
+        const H = k === 4 ? -.03 : fade * (dome * C_DOME[k] + a * C_RIM[k] * (.5 + .85 * ih(seed + sm, k + 30)) * min(1, R)), o = (sc * 5 + k) * 8, slope = (H - hp) / max(.05, r - rp);
+        const fc = (ih(seed + sm, k + 90) - .5) * .7 * a * (k < 4 ? 1 : 0); let nx = T_nx - c * slope * .8 - s2 * fc, ny = T_ny, nz = T_nz - s2 * slope * .8 + c * fc; const nl = len3(nx, ny, nz); if (k === 4) { nx = T_nx; ny = T_ny; nz = T_nz; } else { nx /= nl; ny /= nl; nz /= nl; }
+        CX[o] = px; CX[o + 1] = T_h + H; CX[o + 2] = pz; CX[o + 3] = nx; CX[o + 4] = ny; CX[o + 5] = nz;
+        CX[o + 6] = T_sh * (k === 4 ? 1 : mix(1, C_SH[k] * (.9 + .2 * ih(seed + sm, k + 40)), a * fade) * (1 - .3 * grow * (1 - a) * (sm & 1) * C_DOME[k])); hp = H; rp = r; } }
+    const V = o => vx(CX[o], CX[o + 1], CX[o + 2], CX[o] * G_UV, CX[o + 2] * G_UV, G_REGO, CX[o + 3], CX[o + 4], CX[o + 5], CX[o + 6]);
+    for (let sc = 0; sc < nsec; sc++) { const o0 = sc * 40, o1 = o0 + 40;
+      vx(x, cy, z, x * G_UV, z * G_UV, G_REGO, cnx, cny, cnz, csh); V(o1); V(o0);
+      for (let k = 0; k < 4; k++) { const A = o0 + k * 8, Bq = o1 + k * 8; V(A); V(Bq); V(Bq + 8); V(A); V(Bq + 8); V(A + 8); } }
+    if (lumps && a > 0) for (let i = 0; i < lumps; i++) { const an = ih(seed, i + 60) * TAU, r = R * (.7 + .5 * ih(seed, i + 70)), px = x + cos(an) * r, pz = z + sin(an) * r, sz = (.05 + .09 * ih(seed, i + 80)) * a * fade; terr(g, px, pz);
+      lump(px, T_h + sz * .5 + (r < R * .95 ? .08 * a * fade : 0), pz, sz, seed * 3 + i, G_REGO, T_sh * .7, an * 3); }
+  }
+  function emitGround(B, rig, groundY, lod, eye) {
+    if (!rig.live) return; lod = lod ? 1 : 0; const g = groundY || flat0;
+    G_REGO = typeof WL !== 'undefined' ? WL.REGO : METAL; G_ROCK = typeof WL !== 'undefined' ? WL.ROCK : METAL; G_UV = API.UV;
+    sinkOpen(B, lod ? 2000 : 7000);
+    const hd = rig.hd, F0 = sin(hd), F2 = -cos(hd), x = rig.x, z = rig.z, S = rig.S, T = rig.T, e = clamp(1 - rig.dep, 0, 1);
+    F_A = sstep(.05, .7, e); F_rip = (1 - F_A) * sstep(.2, 1.5, rig.spd); F_ph = rig.ph; F_seed = rig.seed * 7; if (rig.dead > 0) F_A *= mix(1, .45, sstep(.3, 3, rig.dead));
+    // ---- rows: the lattice is one row every SP metres of path, fixed in the world. Ahead of the key it is laid along the heading.
+    let nr = 0;
+    const add = (n, cx, cz, tx, tz, d, amp, lv) => { if (nr >= RMAX) return; RNN[nr] = n; RCX[nr] = cx; RCZ[nr] = cz; RTX[nr] = tx; RTZ[nr] = tz; RDD[nr] = d; RAM[nr] = amp; RLV[nr] = lv; nr++; };
+    { let lx = x, lz = z, ltx = F0, ltz = F2, lS = S; const nTop = floor((S - D_TOE + .05) / SP) + 1, n0 = rig.nNew >= rig.nOld ? rig.nNew : floor(S / SP);
+      for (let n = nTop; n * SP > S - 112; n--) { const d = S - n * SP, st = lod ? (d < 6 ? 2 : d < 30 ? 4 : 8) : d < TILE_R ? 1 : d < 20 ? 2 : d < 45 ? 4 : 8, lv = lod ? 2 : d < 4.4 ? 0 : d < 20 ? 1 : 2;
+        if (n > n0) { if (n % st === 0) add(n, x + F0 * -d, z + F2 * -d, F0, F2, d, 1, lv); continue; }
+        const have = n >= rig.nOld && n <= rig.nNew; if (!have && d > 4.4) break;
+        if (have) { const o = (n % TCAP) * TSTR; lx = T[o]; lz = T[o + 1]; ltx = T[o + 2]; ltz = T[o + 3]; lS = n * SP; if (n % st) continue;
+          const age = rig.t - T[o + 5], tail = clamp((n - rig.nOld) / 12, 0, 1); add(n, lx, lz, ltx, ltz, d, T[o + 4] * (1 - .6 * sstep(15, 90, age)) * tail * (1 - sstep(100, 110, d)), lv); }
+        else if (n % st === 0) { const b = lS - n * SP; add(n, lx - ltx * b, lz - ltz * b, ltx, ltz, d, 0, lv); } }
+    }
+    // ---- stations (staggered and jittered, so nothing runs in straight lines), spoil heights and shades, terrain normal and shade
+    for (let r = 0; r < nr; r++) { const near = lod ? 0 : 1 - sstep(TILE_R - 2.5, TILE_R, RDD[r]), n = RNN[r]; rowProfile(RDD[r], n, RAM[r], near); RPP[r] = PP; RLW[r] = PLV; RTA[r] = PTA; RNR[r] = near;
+      const cx = RCX[r], cz = RCZ[r], tx = RTX[r], tz = RTZ[r], rx = -tz, rz = tx, o = r * NS, jm = min(1, PW / W0);
+      for (let j = 0; j < NS; j++) { const jl = ((j & 1 ? .5 : 0) + (ih(n, j + 100) - .5) * .8) * SP * jm, jw = (j === 0 || j === NS - 1 ? .5 : 1) * (ih(n, j + 200) - .5) * .15 * jm, w = QS[j] * PW + (j >= 4 && j <= 6 ? PZ : 0) + jw, px = cx + rx * w + tx * jl, pz = cz + rz * w + tz * jl; terr(g, px, pz);
+        RXS[o + j] = px; RZS[o + j] = pz; RHS[o + j] = PH[j]; RYS[o + j] = T_h + PH[j]; RTS[o + j] = T_sh; RSS[o + j] = T_sh * PM[j];
+        const q = (o + j) * 3; RTN[q] = T_nx; RTN[q + 1] = T_ny; RTN[q + 2] = T_nz; } }
+    // a row between two strips of different fineness gives up the stations the coarser one does not use (no T-junctions)
+    for (let r = 1; r + 1 < nr; r++) { const sA = max(RLV[r - 1], RLV[r]), sB = max(RLV[r], RLV[r + 1]); if (sA === sB) continue; const sub = SUB[max(sA, sB)], o = r * NS;
+      for (let k = 0; k + 1 < sub.length; k++) { const a = sub[k], b = sub[k + 1]; for (let j = a + 1; j < b; j++) { const f = (j - a) / (b - a);
+        RXS[o + j] = mix(RXS[o + a], RXS[o + b], f); RYS[o + j] = mix(RYS[o + a], RYS[o + b], f); RZS[o + j] = mix(RZS[o + a], RZS[o + b], f); RHS[o + j] = mix(RHS[o + a], RHS[o + b], f); RSS[o + j] = mix(RSS[o + a], RSS[o + b], f); } } }
+    // ---- spoil normals: the terrain's own, tilted by the slope of the bump (so the edge shades exactly like the ground)
+    for (let r = 0; r < nr; r++) { const o = r * NS, ra = r > 0 ? r - 1 : r, rb = r < nr - 1 ? r + 1 : r, oa = ra * NS, ob = rb * NS;
+      for (let j = 0; j < NS; j++) { const ja = j > 0 ? j - 1 : j, jb = j < NS - 1 ? j + 1 : j, q = (o + j) * 3;
+        const ex = RXS[o + jb] - RXS[o + ja], ez = RZS[o + jb] - RZS[o + ja], eh = RHS[o + jb] - RHS[o + ja], fx = RXS[oa + j] - RXS[ob + j], fz = RZS[oa + j] - RZS[ob + j], fh = RHS[oa + j] - RHS[ob + j];
+        const det = ex * fz - ez * fx; let gx = 0, gz = 0; if (abs(det) > 1e-5) { gx = (eh * fz - ez * fh) / det; gz = (ex * fh - eh * fx) / det; }
+        const wq = (j === 0 || j === NS - 1) ? 0 : (j === 1 || j === NS - 2) ? .5 : 1;
+        const nx = RTN[q] / RTN[q + 1] - gx * wq, nz = RTN[q + 2] / RTN[q + 1] - gz * wq, l = sqrt(nx * nx + 1 + nz * nz); RNS[q] = nx / l; RNS[q + 1] = 1 / l; RNS[q + 2] = nz / l; } }
+    // ---- spoil strips
+    const st0 = NV;
+    const V = i => vx(RXS[i], RYS[i], RZS[i], RXS[i] * G_UV, RZS[i] * G_UV, G_REGO, RNS[i * 3], RNS[i * 3 + 1], RNS[i * 3 + 2], RSS[i]);
+    const strips = (ra, rb) => { for (let r = ra; r + 1 < rb; r++) { const lv = max(RLV[r], RLV[r + 1]), sub = SUB[lv], oa = r * NS, ob = (r + 1) * NS;
+      if (RPP[r] < .01 && RPP[r + 1] < .01) continue;
+      if (NV + (sub.length - 1) * 6 > MAXV) break;
+      for (let k = 0; k + 1 < sub.length; k++) { const a = oa + sub[k], b = oa + sub[k + 1], c = ob + sub[k + 1], d2 = ob + sub[k]; V(a); V(c); V(b); V(a); V(d2); V(c); } } };
+    let rSplit = nr; if (!lod) for (let r = 0; r < nr; r++) if (RDD[r] >= 9) { rSplit = r + 1; break; }
+    strips(0, rSplit);
+    const st1 = NV;
+    // ---- plates, and the clods and stones that go with them
+    /* The crust breaks into slabs of uneven size: over each pair of rows, on each side of the crest, the lattice
+       cells are joined two or three together by the seed, and some slabs run the whole half metre. */
+    if (!lod) for (let r = 0; r + 2 < nr; r++) { const n0 = RNN[r]; if ((n0 & 1) || RNN[r + 1] !== n0 - 1 || RNN[r + 2] !== n0 - 2 || RNR[r + 2] <= 0) continue;
+      for (let side = 0; side < 2; side++) { const lng = ih(n0, 810 + side) < .42, G = GRP[(ih(n0, 820 + side) * GRP.length) | 0];
+        for (let part = 0; part < (lng ? 1 : 2); part++) { const ra = lng ? r : r + part, rb = lng ? r + 2 : r + part + 1, n = n0 - part, oa = ra * NS, ob = rb * NS;
+          const near = RNR[rb], live = (RLW[ra] + RLW[rb]) * .5, ta = (RTA[ra] + RTA[rb]) * .5, pres = (RPP[ra] + RPP[rb]) * .5 * near, dm = (RDD[ra] + RDD[rb]) * .5; if (pres < .04) continue;
+          const rx = -RTZ[ra], rz = RTX[ra], churn = live * (dm < -.2 ? 1 : .55) + ta * .75;
+          for (let c = 0; c + 1 < G.length; c++) { let ka = G[c], kb = G[c + 1]; if (side) { const q = 10 - kb; kb = 10 - ka; ka = q; }
+            const a = oa + ka, b = oa + kb, cc = ob + kb, d2 = ob + ka, pa = ka === 0 ? 1 : 0, pb = kb === 10 ? 1 : 0, inner = kb === 4 || ka === 6, skirt = ka === 0 || kb === 10, key = ka * 11 + part * 3 + side, split = ih(n, key + 800);
+            if (split < .2) { if (split < .1) { _ti[0] = a; _ti[1] = b; _ti[2] = cc; _tp[0] = pa; _tp[1] = pb; _tp[2] = pb; plate(3, key, n, ka, pres, near, live, ta, churn, rx, rz, !side, inner, skirt); _ti[0] = a; _ti[1] = cc; _ti[2] = d2; _tp[0] = pa; _tp[1] = pb; _tp[2] = pa; plate(3, key + 20, n, ka, pres, near, live, ta, churn, rx, rz, !side, inner, skirt); }
+              else { _ti[0] = a; _ti[1] = b; _ti[2] = d2; _tp[0] = pa; _tp[1] = pb; _tp[2] = pa; plate(3, key, n, ka, pres, near, live, ta, churn, rx, rz, !side, inner, skirt); _ti[0] = b; _ti[1] = cc; _ti[2] = d2; _tp[0] = pb; _tp[1] = pb; _tp[2] = pa; plate(3, key + 20, n, ka, pres, near, live, ta, churn, rx, rz, !side, inner, skirt); } }
+            else { _ti[0] = a; _ti[1] = b; _ti[2] = cc; _ti[3] = d2; _tp[0] = pa; _tp[1] = pb; _tp[2] = pb; _tp[3] = pa; plate(4, key, n, ka, pres, near, live, ta, churn, rx, rz, !side, inner, skirt); } } } } }
+    if (!lod) for (let r = 0; r + 1 < nr; r++) { if (RNN[r] - RNN[r + 1] !== 1 || RNR[r + 1] <= 0) continue; const n = RNN[r + 1], ob = (r + 1) * NS;
+      const near = RNR[r + 1], pres = (RPP[r] + RPP[r + 1]) * .5 * near, dm = (RDD[r] + RDD[r + 1]) * .5; if (pres < .04) continue; const rx = -RTZ[r], rz = RTX[r];
+      // clods of spoil thrown up on the lips and lying in the trench, once it has passed
+      const cl = sstep(-.6, .4, dm) * pres;
+      if (cl > .05) for (let i = 0; i < 2; i++) { const hq = ih(n, 900 + i); if (hq > .55) continue; const j = i ? (hq < .3 ? 8 : 6) : (hq < .3 ? 2 : 4), q = ob + j, sz = (.04 + .09 * ih(n, 910 + i)) * cl;
+        lump(RXS[q] + (ih(n, 920 + i) - .5) * .2, RYS[q] + sz * .45 + .02, RZS[q] + (ih(n, 930 + i) - .5) * .2, sz, n * 7 + i, G_REGO, RTS[q] * .72, hq * 9); }
+      // a stone that was in its way: it comes up at the bow and is shouldered out to lie beyond the lip
+      { const hs = ih(n, 950); if (hs < .16) { const sgn = hs < .08 ? -1 : 1, rr = .06 + .08 * ih(n, 951), out = sstep(-1.3, .5, dm), qq = mix(.3, 1.02 + .25 * ih(n, 952), out) * sgn, up = sstep(D_TOE, D_TOE + .5, dm);
+        let j = 0; while (j < NS - 2 && QS[j + 1] < qq) j++; const f = clamp((qq - QS[j]) / (QS[j + 1] - QS[j]), 0, 1), q0 = ob + j, q1 = q0 + 1;
+        const sx = mix(RXS[q0], RXS[q1], f) + rx * (abs(qq) > 1 ? (abs(qq) - 1) * sgn : 0), sz2 = mix(RZS[q0], RZS[q1], f) + rz * (abs(qq) > 1 ? (abs(qq) - 1) * sgn : 0), sy = max(mix(RYS[q0], RYS[q1], f), mix(RYS[q0] - RHS[q0], RYS[q1] - RHS[q1], f));
+        if (up > .02) lump(sx, sy + rr * (up - .45) * near, sz2, rr, n * 13 + 5, G_ROCK, 1.15, abs(qq) * W0 / rr * sgn); } } }
+    const st2 = NV;
+    // ---- craters (the newest few)
+    { const C = rig.CR, t = rig.t, nc = lod ? 2 : 3; for (let i = 0; i < nc; i++) { const q = rig.cn - 1 - i; if (q < 0) break; const o = (q % CN) * CSTR, R = C[o + 2]; if (R <= 0) continue;
+        const age = t - C[o + 3], fade = age > 0 ? 1 - sstep(45, 70, age) : 1; if (fade <= 0) continue; drawCrater(g, C[o], C[o + 1], R, C[o + 5], age, fade, C[o + 4], lod ? 8 : 12, lod || i > 1 ? 0 : 6); } }
+    const st3 = NV;
+    /* ---- regolith in flight: every grain on its own parabola, drawn as the short streak it leaves on the film. If
+       more are in the air than the budget draws, every second or third is drawn, wider. */
+    { const P = rig.P, t = rig.t, ex = eye ? eye[0] : 0, ey = eye ? eye[1] : 0, ez = eye ? eye[2] : 0, SH = API.dustShade;
+      let alive = 0; for (let i = 0; i < PN; i++) { const o = i * PSTR; if (t >= P[o + 6] && t < P[o + 7]) alive++; }
+      const stp = max(1, Math.ceil(alive / (lod ? 230 : 540))), wide = sqrt(stp); let cnt = 0, nbig = 0;
+      for (let i = 0; i < PN; i++) { const o = i * PSTR, t0 = P[o + 6]; if (t < t0 || t >= P[o + 7]) continue; if ((cnt++ % stp) !== 0 && P[o + 8] <= 1) continue; if (NV + 3 > MAXV) break;
+        const ta = t - t0, sd = P[o + 9], sz = P[o + 8];
+        if (sz > 1) { cnt--; if (nbig++ < (lod ? 10 : 44)) lump(P[o] + P[o + 3] * ta, P[o + 1] + P[o + 4] * ta - .5 * GRAV * ta * ta, P[o + 2] + P[o + 5] * ta, (.035 + .075 * (sz - 1)) * (lod ? 2 : 1), (sd * 65521) | 0, G_REGO, .62 + .3 * frac(sd * 13.7), ta * (1.5 + 4 * frac(sd * 9.1))); continue; }
+        const tb = max(0, ta - .02), clump = sz > .92, cls = sz < .7 ? .012 + .017 * sz : sz < .92 ? .03 + .07 * (sz - .7) : .04 + .2 * (sz - .92);
+        const px = P[o] + P[o + 3] * ta, py = P[o + 1] + P[o + 4] * ta - .5 * GRAV * ta * ta, pz = P[o + 2] + P[o + 5] * ta;
+        let qx = P[o] + P[o + 3] * tb, qy = P[o + 1] + P[o + 4] * tb - .5 * GRAV * tb * tb, qz = P[o + 2] + P[o + 5] * tb;
+        let wd = lod ? (.1 + .07 * sz) * wide : cls * wide * 1.4; if (eye) wd = cls * wide * clamp(len3(ex - px, ey - py, ez - pz) / 6, .8, clump ? 1.5 : 12);
+        let vx0 = px - qx, vy0 = py - qy, vz0 = pz - qz, vl = len3(vx0, vy0, vz0); const ml = wd * 1.35;
+        if (vl < ml || clump) { if (vl < 1e-4) { vx0 = 0; vy0 = 1; vz0 = 0; vl = 1; } vx0 /= vl; vy0 /= vl; vz0 /= vl; qx = px - vx0 * ml; qy = py - vy0 * ml; qz = pz - vz0 * ml; } else { vx0 /= vl; vy0 /= vl; vz0 /= vl; }
+        let wx, wy, wz; if (eye) { const dx = ex - px, dy = ey - py, dz = ez - pz; wx = vy0 * dz - vz0 * dy; wy = vz0 * dx - vx0 * dz; wz = vx0 * dy - vy0 * dx; } else { const a = sd * 97, cx = cos(a), cz = sin(a), cy = sin(a * 1.7) * .6; wx = vy0 * cz - vz0 * cy; wy = vz0 * cx - vx0 * cz; wz = vx0 * cy - vy0 * cx; }
+        let wl = len3(wx, wy, wz); if (wl < 1e-5) { wx = 1; wy = 0; wz = 0; wl = 1; } wl = wd * .5 / wl; wx *= wl; wy *= wl; wz *= wl;
+        const nxp = .3 * cos(sd * 61), nzp = .3 * sin(sd * 61), shd = clump ? .8 : SH * (.5 + .6 * frac(sd * 7.3)), u = frac(sd * 3.1), v = frac(sd * 5.7);
+        vx(px + wx, py + wy, pz + wz, u, v, G_REGO, nxp, .92, nzp, shd); vx(px - wx, py - wy, pz - wz, u + .02, v, G_REGO, nxp, .92, nzp, shd); vx(qx, qy, qz, u, v + .02, G_REGO, nxp, .92, nzp, shd); } }
+    const st4 = NV;
+    strips(max(0, rSplit - 1), nr);          // the old furrow, farther back, with what is left
+    API._stat = [st1 - st0, st2 - st1, st3 - st2, st4 - st3, NV - st4];
+    sinkClose(B);
+  }
+
+  /* ------------------------------------------------------------------ hit: a ray against what is above the ground */
+  function rayCap(ox, oy, oz, dx, dy, dz, ax, ay, az, bx, by, bz, r) {
+    const ux = bx - ax, uy = by - ay, uz = bz - az, mx = ox - ax, my = oy - ay, mz = oz - az, uu = ux * ux + uy * uy + uz * uz, ud = ux * dx + uy * dy + uz * dz, um = ux * mx + uy * my + uz * mz, md = mx * dx + my * dy + mz * dz, mm = mx * mx + my * my + mz * mz;
+    let best = -1;
+    if (uu > 1e-9) { const a = uu - ud * ud, b = uu * md - um * ud, c = uu * (mm - r * r) - um * um; if (a > 1e-9) { const q = b * b - a * c; if (q >= 0) { const t = (-b - sqrt(q)) / a, sp = um + t * ud; if (t >= 0 && sp >= 0 && sp <= uu) best = t; } } }
+    { const c = mm - r * r, q = md * md - c; if (q >= 0) { const t = c < 0 ? 0 : -md - sqrt(q); if (t >= 0 && (best < 0 || t < best)) best = t; } }
+    { const nx = ox - bx, ny = oy - by, nz = oz - bz, b = nx * dx + ny * dy + nz * dz, c = nx * nx + ny * ny + nz * nz - r * r, q = b * b - c; if (q >= 0) { const t = c < 0 ? 0 : -b - sqrt(q); if (t >= 0 && (best < 0 || t < best)) best = t; } }
+    return best;
+  }
+  let H_t = 0, H_part = null, H_g = null;
+  const H_o = [0, 0, 0], H_d = [0, 0, 0];
+  function capTest(part, ax, ay, az, bx, by, bz, r) {
+    const g = H_g, ha = ay - g(ax, az), hb = by - g(bx, bz); if (ha < -r * .5 && hb < -r * .5) return;
+    if (ha < 0 && hb > 0) { const f = ha / (ha - hb); ax += (bx - ax) * f; ay += (by - ay) * f; az += (bz - az) * f; } else if (hb < 0 && ha > 0) { const f = hb / (hb - ha); bx += (ax - bx) * f; by += (ay - by) * f; bz += (az - bz) * f; }
+    const t = rayCap(H_o[0], H_o[1], H_o[2], H_d[0], H_d[1], H_d[2], ax, ay, az, bx, by, bz, r); if (t < 0 || (H_part && t >= H_t)) return;
+    const px = H_o[0] + H_d[0] * t, py = H_o[1] + H_d[1] * t, pz = H_o[2] + H_d[2] * t; if (py < g(px, pz) - .03) return;
+    H_t = t; H_part = part;
+  }
+  function hit(rig, origin, dir, pad, groundY) {
+    if (!rig || !rig.live || !origin || !dir) return null; const dl = len3(dir[0], dir[1], dir[2]); if (!(dl > 1e-9)) return null;
+    pad = fin(+pad, 0); H_g = groundY || rig.gnd || ((x, z) => rig.g0 + rig.gsx * (x - rig.x) + rig.gsz * (z - rig.z)); H_o[0] = origin[0]; H_o[1] = origin[1]; H_o[2] = origin[2]; H_d[0] = dir[0] / dl; H_d[1] = dir[1] / dl; H_d[2] = dir[2] / dl; H_part = null; H_t = 0;
+    const K = rig.key, ks = rig.ks, KF = rig.KF, G = rig.GR, T = rig.tip, NK = rig.NK, M = rig.M, FR = rig.FR, AJ = rig.AJ, fat = rig.fat || 1;
+    capTest('key', G[0], G[1], G[2], KF[0], KF[1], KF[2], K.rs * 1.7 * ks * fat + pad);
+    capTest('key', T[0], T[1], T[2], T[0], T[1], T[2], K.Rb * 1.08 * ks + pad);
+    { const x0 = (K.family === 'flat' ? .1 : K.L * .55) * ks, x1 = K.L * ks, yo = (K.family === 'flat' ? -.1 : -.24) * ks, r = (K.family === 'flat' ? .19 : .26) * ks;
+      capTest('key', KF[0] + KF[3] * x0 + KF[6] * yo, KF[1] + KF[4] * x0 + KF[7] * yo, KF[2] + KF[5] * x0 + KF[8] * yo, KF[0] + KF[3] * x1 + KF[6] * yo, KF[1] + KF[4] * x1 + KF[7] * yo, KF[2] + KF[5] * x1 + KF[8] * yo, r + pad); }
+    for (let i = 0; i < 6; i += 2) capTest('neck', NK[i * 3], NK[i * 3 + 1], NK[i * 3 + 2], NK[i * 3 + 6], NK[i * 3 + 7], NK[i * 3 + 8], .09 * fat + pad);
+    { const l = .5 * BSC; capTest('body', M[0] - M[9] * l, M[1] - M[10] * l, M[2] - M[11] * l, M[0] + M[9] * l, M[1] + M[10] * l, M[2] + M[11] * l, .3 * BSC + pad);
+      for (let i = 0; i < 2; i++) { const o = 72 + i * 12; capTest('body', FR[o], FR[o + 1], FR[o + 2], FR[o] + FR[o + 9] * ABL, FR[o + 1] + FR[o + 10] * ABL, FR[o + 2] + FR[o + 11] * ABL, (i ? .13 : .2) * BSC + pad); } }
+    for (let a = 0; a < 2; a++) { const j = a * 12; for (let k = 0; k < 3; k++) capTest('arm', AJ[j + k * 3], AJ[j + k * 3 + 1], AJ[j + k * 3 + 2], AJ[j + k * 3 + 3], AJ[j + k * 3 + 4], AJ[j + k * 3 + 5], (.1 + .02 * k) * BSC + pad); }
+    return H_part ? { t: H_t / dl, part: H_part } : null;
+  }
+
+  API.dustShade = 1.7; API.farFat = 2.3;
+  return Object.assign(API, { create, update, emit, emitGround, hit, BREACH_T, BREACH_HIT, REACH, GRAVITY: GRAV });
+})();
+
+
 /* astro.js : the EVA-suited crew of Jupiter 2011: the five living crew, their duplicates, and other players in co-op.
    Needs prims.js (makeBatch, V3, ik2, TL). Defines one global, ASTRO. No DOM, no clock, no Math.random.
    ASTRO.GESTURES === true marks this rig (gestures, look, fear, hurt, the pistol, levels of detail) from the one before it.
@@ -6170,7 +7050,7 @@ function buildPropsMesh(withSentinels) {
   const g = (x, z) => groundY(x, z), sx = START.x, sz = START.z; const up = h => [0, h, 0];
   if (GK) {
     GEAR.crate(B, sx + 12.5, sz - 12, .4, groundY, 0); GEAR.crate(B, sx + 13.9, sz - 11, 1.9, groundY, 1); GEAR.crate(B, sx + 6.5, sz - 12.5, -.7, groundY, 2);   // the March camp: she came down beside it, not in it
-    GEAR.flag(B, sx + 4.5, sz - 15, groundY); GEAR.rover(B, sx + 10, sz - 9, -.6, groundY); GEAR.antenna(B, sx + 14.5, sz - 15.5, groundY);
+    if (typeof FLAG === 'undefined' || !FLAG.create) GEAR.flag(B, sx + 4.5, sz - 15, groundY); GEAR.rover(B, sx + 10, sz - 9, -.6, groundY); GEAR.antenna(B, sx + 14.5, sz - 15.5, groundY);
     for (const l of W.lamps) GEAR.lamp(B, l.x, l.z, groundY, (l.x * 31 + l.z * 7) | 0);
   } else {
   for (const [dx, dz, h, w] of [[4, 2, .5, .7], [5.2, 1.4, .35, .5], [-4, 3, .6, .6]]) { const y = g(sx + dx, sz + dz); B.box([sx + dx, y + h, sz + dz], [w, 0, .2 * w], up(h), [-.2 * w, 0, w], WL.CRATE, 1); }
@@ -15171,6 +16051,7 @@ function step(dt, cmd) {
         else if (f.kind === 'kei' && KEI.hit) { const h = KEI.hit(f.rig, o, dir, A.beam ? .3 : 0); if (h && h.t < bt) { best = f; bt = h.t; leg = h.leg; }
           else if (!h) { const along = dx * dir[0] + dz * dir[2]; if (along > 0 && along < bt) { const px = dx - dir[0] * along, pz = dz - dir[2] * along, hy = o[1] + dir[1] * along - groundY(f.x, f.z), sc = f.vsc || 1; if (Math.hypot(px, pz) < .42 * sc * wide && hy > 1.1 * sc / wide && hy < 3.9 * sc * wide) { best = f; bt = along; leg = -1; } } } }   // a shot through the middle of it counts even where the model has a gap
         else { const along = dx * dir[0] + dz * dir[2]; if (along <= 0 || along >= bt) continue; const px = dx - dir[0] * along, pz = dz - dir[2] * along, hy = o[1] + dir[1] * along - groundY(f.x, f.z); if (Math.hypot(px, pz) < (f.kind === 'kei' ? .7 : .38) * wide && hy > 0 && hy < (f.kind === 'kei' ? 4.6 : 1.95)) { best = f; bt = along; leg = -1; } } }
+      if (FLAG_OK) flagShot(o, dir, best ? bt : 70, arm);
       { const cy = Math.cos(yw), sy = Math.sin(yw), m = [o[0] + dir[0] * .55 + cy * .2, o[1] + dir[1] * .55 - .16, o[2] + dir[2] * .55 + sy * .2], L = best ? bt : 70; (S.tracers || (S.tracers = [])).push({ a: m, b: [o[0] + dir[0] * L, o[1] + dir[1] * L, o[2] + dir[2] * L], t0: S.t, kind: A.beam ? 'beam' : A.rocket ? 'rocket' : null }); if (S.tracers.length > 12) S.tracers.shift(); }
       if (best) { const hk = armHit(arm, bt); p.hitT = 0; hudDirty = true; best.active = true; if (AU.ctx) sfx.tick();
         if (best.kind === 'kei' && best.bur) burHit(best, hk, !!A.beam);
@@ -15181,7 +16062,7 @@ function step(dt, cmd) {
         else if ((best.hp -= hk > 1.2 ? 2 : 1) <= 0) { best.stun = 14; best.hp = (best.v ? best.v.hp : 2); } } } } }
   if (cmd.ability && p.pulses > 0 && p.fireT > 1) { p.pulses--; p.fireT = 0; S.white = .6; if (AU.ctx) sfx.pulse(); for (const f of S.foes) if (Math.hypot(f.x - p.x, f.z - p.z) < 16) f.stun = 7; }
   if (S.white > 0) S.white = Math.max(0, S.white - dt * 2);
-  S.shake = Math.max(0, S.shake - dt * 2.5); dustStep(dt); brassStep(dt);
+  S.shake = Math.max(0, S.shake - dt * 2.5); dustStep(dt); brassStep(dt); flagStep(dt);
   // foes
   S.flowT -= dt; if (S.flowT <= 0) { S.flowT = .25; flowField(); }
   const fx = Math.sin(p.yaw) * Math.cos(p.pitch), fz = -Math.cos(p.yaw) * Math.cos(p.pitch); let nearest = 99;
@@ -15263,7 +16144,7 @@ function skyStep(dt) {
   // the moment she opens, the loop screams: her transmitter dies in the middle of a word
   if (!K.open) { K.open = 1; S.burst = 1.4; S.white = Math.max(S.white, .18); if (AU.ctx) { sfx.zap(); sfx.bad(); } }
   if (!K.hit && tt > BRK_IMPACT) { K.hit = 1; S.white = Math.max(S.white, .55); K.boom = tt + 13; }
-  if (K.boom && !K.boomed && tt > K.boom) { K.boomed = 1; S.shake = 1; if (AU.ctx) sfx.rumble(1.6); say('SUIT', 'GROUND SHOCK. NOTHING ON THE LOOP.'); }
+  if (K.boom && !K.boomed && tt > K.boom) { K.boomed = 1; S.shake = 1; if (FLAG_OK) flagEv('shock', .16); if (AU.ctx) sfx.rumble(1.6); say('SUIT', 'GROUND SHOCK. NOTHING ON THE LOOP.'); }
 }
 /* The ascent stage leaving without you: a hard-edged plume, because there is no air to spread it. */
 /* Gas has no surface. Every puff is written with a thinness in the spare vertex channel (0 solid, 1 nothing) and the
@@ -15471,7 +16352,7 @@ function burStep(f, dt, p, fd, touch) {
        metre behind a walking man, inside its reach) and a run is not. Change direction, run, or be in the air. The first of a run is aimed at where you stand. */
     const lead = Ts * (tg !== p ? .3 : S.burN ? clamp(1 - 1.1 / (3.4 * Ts), .3, .85) : 0), ax = tg.x + (tg.vx || 0) * lead - f.x, az = tg.z + (tg.vz || 0) * lead - f.z, ad = Math.hypot(ax, az);
     burTurn(f, Math.atan2(ax, -az), f.dep > .7 ? 3.2 : 1.6, dt); spd = f.dep > .55 ? BUR.under : BUR.cruise;
-    if (f.dep > .9 && ad < rch + .3) { f.bs = 'breach'; f.bt = 0; f.br = 0; f.struck = 0; if (ad > .3) f.heading = Math.atan2(ax, -az); if (tg === p) S.burN = (S.burN || 0) + 1; }
+    if (f.dep > .9 && ad < rch + .3) { f.bs = 'breach'; f.bt = 0; f.br = 0; f.struck = 0; burEvent(f, 'dome', p); if (ad > .3) f.heading = Math.atan2(ax, -az); if (tg === p) S.burN = (S.burN || 0) + 1; }
     else if (f.bt > 5) { f.bs = 'cruise'; f.bt = 0; f.cd = 2 + S.rng() * 2; f.side = -f.side; } }
   else if (f.bs === 'breach') { depT = 0; const T = BURROW.BREACH_T || 1.6, H = BURROW.BREACH_HIT === undefined ? .5 : BURROW.BREACH_HIT, b0 = f.br; f.br = Math.min(1, f.br + dt / T);
     if (b0 < H && f.br >= H) { const sp = rig.strike || [f.x + Math.sin(f.heading) * 1.4, 0, f.z - Math.cos(f.heading) * 1.4], sx = p.x - sp[0], sz = p.z - sp[2], sd = Math.hypot(sx, sz); f.struck = 1;
@@ -15488,27 +16369,49 @@ function burStep(f, dt, p, fd, touch) {
   if (f.spd > 1.5 && f.dep < .9) { f.pd = (f.pd || 0) + f.spd * dt; }
   return false; }
 /* A hit on the key or on what is out of the ground. */
-function burHit(f, hk, beam) { if (f.deadT !== undefined) return; f.hits = (f.hits || 0) + 1; f.stun = Math.max(f.stun, beam ? 6 : 3 * Math.max(.6, hk)); if (AU.ctx) sfx.kei(.7, 0);
-  if (!beam) { f.hp -= hk > 1.2 ? 2 : hk < .6 ? 0 : 1; if (f.hp <= 0) { f.deadT = 0; f.stun = 1e9; f.bs = 'dead'; f.br = 0; if (AU.ctx) { sfx.legs(.9, 0); noise(AU.suit, now(), 1.4, 'lowpass', 240, .8, .5, 50); } } } }
+function burHit(f, hk, beam) { if (f.deadT !== undefined) return; f.hits = (f.hits || 0) + 1; f.stun = Math.max(f.stun, beam ? 6 : 3 * Math.max(.6, hk)); if (AU.ctx) { sfx.kei(.7, 0); burEvent(f, 'thrash', P()); }
+  if (!beam) { f.hp -= hk > 1.2 ? 2 : hk < .6 ? 0 : 1; if (f.hp <= 0) { f.deadT = 0; f.stun = 1e9; f.bs = 'dead'; f.br = 0; if (AU.ctx) { sfx.legs(.9, 0); burEvent(f, 'die', P()); } } } }
 /* What it sounds like. There is no air: everything arrives through the ground, up the boots and into the suit, so it is
    low, close and without much direction. A bed of grinding that follows how hard it is working (rig.grind) and how
    near it is; stones cracking in it; and the events. After a breach the regolith it threw comes down for a long time in
    this gravity, and what lands on the helmet is the one thing you hear directly. */
 function burSound(dt, p) {
-  if (!AU.ctx || !BUR_OK) return; const C = AU.ctx, t = now(); let g = 0, pan = 0, hard = 0;
-  if (S.mode !== 'ship' && !S.over && !S.cine) for (const f of S.foes) if (f.bur && f.active && f.deadT === undefined) { const dx = f.x - p.x, dz = f.z - p.z, d = Math.hypot(dx, dz) || 1, gr = clamp(f.rig.grind === undefined ? (f.spd / 7) * (.5 + .5 * f.dep) : f.rig.grind, 0, 1), k = gr * Math.pow(clamp(1 - d / 38, 0, 1), 1.7); if (k > g) { g = k; pan = clamp((dx * Math.cos(p.yaw) + dz * Math.sin(p.yaw)) / d, -1, 1) * .35; hard = gr; } }
+  if (!AU.ctx || !BUR_OK) return; const C = AU.ctx, t = now(); let g = 0, pan = 0, hard = 0, L = null;
+  if (S.mode !== 'ship' && !S.over && !S.cine) for (const f of S.foes) if (f.bur && f.active && f.deadT === undefined) { if (f.hush > 0) f.hush -= dt; const dx = f.x - p.x, dz = f.z - p.z, d = Math.hypot(dx, dz) || 1, gr = clamp(f.rig.grind === undefined ? (f.spd / 7) * (.5 + .5 * f.dep) : f.rig.grind, 0, 1) * (f.hush > 0 ? .1 : 1), k = gr * Math.pow(clamp(1 - d / 38, 0, 1), 1.7); if (k > g) { g = k; pan = clamp((dx * Math.cos(p.yaw) + dz * Math.sin(p.yaw)) / d, -1, 1) * .35; hard = gr; L = f; } }
   let B = AU.bur; if (!B) { if (g < .003) return; B = AU.bur = {}; const mk = (type, f, q) => { const s = C.createBufferSource(); s.buffer = AU.nb; s.loop = true; const fl = C.createBiquadFilter(); fl.type = type; fl.frequency.value = f; fl.Q.value = q; const gn = C.createGain(); gn.gain.value = 0; s.connect(fl); fl.connect(gn); s.start(t, Math.random()); return { s, fl, gn }; };
-    B.pan = C.createStereoPanner(); B.pan.connect(AU.suit); B.lo = mk('lowpass', 90, .9); B.mid = mk('bandpass', 330, 1.6); B.lo.gn.connect(B.pan); B.mid.gn.connect(B.pan); B.tick = 0; }
-  B.lo.gn.gain.setTargetAtTime(g * 2.6, t, .08); B.lo.fl.frequency.setTargetAtTime(70 + 130 * hard, t, .1); B.mid.gn.gain.setTargetAtTime(g * g * 1.5, t, .06); B.mid.fl.frequency.setTargetAtTime(240 + 260 * hard, t, .12); B.pan.pan.setTargetAtTime(pan, t, .15);
-  B.tick -= dt * (2 + 26 * g); if (B.tick <= 0 && g > .02) { B.tick = .4 + Math.random(); const v = g * (.5 + Math.random()); if (Math.random() < .35) fx('thud', { dest: B.pan, gain: v * 1.3, rate: .5 + Math.random() * .5 }) || noise(B.pan, t, .05, 'lowpass', 200, 1, v); else noise(B.pan, t, .02 + Math.random() * .05, 'bandpass', 300 + Math.random() * 500, 2.5, v * 1.2); }
+    B.pan = C.createStereoPanner(); B.pan.connect(AU.suit); B.lo = mk('lowpass', 90, .9); B.mid = mk('bandpass', 330, 1.6); B.scr = mk('bandpass', 1500, 5); B.lo.gn.connect(B.pan); B.mid.gn.connect(B.pan); B.scr.gn.connect(B.pan); B.tick = 0; B.ph = 0; B.beat = 0; B.dm = 3; B.rat = 3; }
+  const deep = L ? L.dep > .62 : false, ex = L ? clamp(L.rig.exposed === undefined ? 1 - L.dep : L.rig.exposed, 0, 1) : 0, sp = L ? L.spd : 0;
+  /* The bed. Near the surface it is a grinding hiss; deep, only the low part of it gets through. The steel bit ploughing at ground level is the thin hard band on top. */
+  B.lo.gn.gain.setTargetAtTime(g * (deep ? 3.2 : 2.4), t, .08); B.lo.fl.frequency.setTargetAtTime(deep ? 60 + 50 * hard : 70 + 130 * hard, t, .1);
+  B.mid.gn.gain.setTargetAtTime(g * g * (deep ? .25 : 1.5), t, .06); B.mid.fl.frequency.setTargetAtTime(240 + 260 * hard, t, .12);
+  B.scr.gn.gain.setTargetAtTime(g * ex * (deep ? 0 : .34), t, .05); B.scr.fl.frequency.setTargetAtTime(1250 + 700 * clamp(sp / 6, 0, 1), t, .2); B.pan.pan.setTargetAtTime(pan, t, .15);
+  if (!L || g < .012) return;
+  /* The stroke: two forelimbs sculling in turn, a plunge and then a rasping sweep, faster the faster it goes. */
+  if (!deep && sp > .5 && !(L.stun > 0) && L.bs !== 'breach') { const cyc = Math.min(2.6, (1 + .26 * sp) / sp); B.ph += dt / cyc * 2;
+    if (B.ph >= 1) { B.ph -= Math.floor(B.ph); B.beat ^= 1; const side = B.beat ? .1 : -.1; B.pan.pan.setTargetAtTime(clamp(pan + side, -1, 1), t, .03);
+      tone(B.pan, t, .11, 'sine', 96, 48, g * 1.5); noise(B.pan, t + .05, Math.min(.34, cyc * .36), 'bandpass', 540, 1.3, g * 1.5, 180); } }
+  /* Stones: cracked under it, and ticking off the steel when the key is up. */
+  B.tick -= dt * (2 + 26 * g); if (B.tick <= 0) { B.tick = .4 + Math.random(); const v = g * (.5 + Math.random());
+    if (Math.random() < .35) fx('thud', { dest: B.pan, gain: v * 1.3, rate: .5 + Math.random() * .5 }) || noise(B.pan, t, .05, 'lowpass', 200, 1, v); else noise(B.pan, t, .02 + Math.random() * .05, 'bandpass', 300 + Math.random() * 500, 2.5, v * 1.2);
+    if (ex > .4 && !deep && Math.random() < .6) tone(B.pan, t + Math.random() * .2, .018, 'triangle', 2100 + Math.random() * 1500, 1300, v * ex * .3); }
+  /* Deep: a crack and a spit of grit every few metres of travel. */
+  if (deep) { B.dm -= sp * dt; if (B.dm <= 0) { B.dm = 2 + Math.random() * 3; noise(B.pan, t, .035, 'bandpass', 620, 3, g * 2.4); noise(B.pan, t + .03, .28, 'bandpass', 1500, .7, g * .5, 700); } }
+  /* Prowling, the key turns on its shaft a quarter turn at a time: a dry ratchet. */
+  if (!deep && sp < 3.3 && ex > .5 && !(L.stun > 0)) { B.rat -= dt; if (B.rat <= 0) { B.rat = 2.4 + Math.random() * 3; const n = 4 + ((Math.random() * 3) | 0); for (let i = 0; i < n; i++) tone(B.pan, t + i * .052, .014, 'square', 760 + i * 46, 430, g * .36); } }
 }
-function burEvent(f, e, p) { if (!AU.ctx) return; const t = now(), d = Math.hypot(f.x - p.x, f.z - p.z), near = Math.pow(clamp(1 - d / 34, 0, 1), 1.4); if (near <= 0) return;
-  if (e === 'dive') { noise(AU.suit, t, .8, 'lowpass', 300, .8, .7 * near, 55); tone(AU.suit, t, .7, 'sine', 70, 38, .35 * near); }
-  else if (e === 'surface') { noise(AU.suit, t, .55, 'lowpass', 70, .8, .6 * near, 320); fx('thud', { dest: AU.suit, gain: .7 * near, rate: .7 }); }
-  else if (e === 'breach') { fx('boom', { dest: AU.suit, gain: 1.5 * near, rate: .55 }) || noise(AU.suit, t, .5, 'lowpass', 110, 1, 1.4 * near); fx('thud', { dest: AU.suit, gain: 1.4 * near, rate: .5 }); noise(AU.suit, t, 1.1, 'lowpass', 420, .7, .8 * near, 80); S.shake = Math.max(S.shake, .9 * near); S.burst = Math.max(S.burst, .5 * near);
-    if (d < 7) { const n = Math.round(46 * (1 - d / 7)); for (let i = 0; i < n; i++) { const tt = t + .5 + Math.pow(Math.random(), 1.6) * 4.2, v = (.05 + Math.random() * .12) * (1 - d / 9); tone(AU.suit, tt, .012 + Math.random() * .02, 'triangle', 700 + Math.random() * 900, 380, v); if (i % 3 === 0) noise(AU.suit, tt, .02, 'bandpass', 900, 3, v * 1.6); } } }
-  else if (e === 'slam') { fx('thud', { dest: AU.suit, gain: 1.6 * near, rate: .62 }) || noise(AU.suit, t, .12, 'lowpass', 140, 1, 1.2 * near); tone(AU.suit, t, .16, 'sine', 62, 34, .7 * near); S.shake = Math.max(S.shake, .7 * near); }
-  else if (e === 'sink') { noise(AU.suit, t, .9, 'lowpass', 220, .9, .55 * near, 60); } }
+function burEvent(f, e, p) { if (!AU.ctx) return; const t = now(), d = Math.hypot(f.x - p.x, f.z - p.z), near = Math.pow(clamp(1 - d / 34, 0, 1), 1.4); if (near <= 0) return; const D = AU.suit;
+  const ring = (at, v, fs) => { for (let i = 0; i < fs.length; i++) tone(D, at, .95 - i * .2, 'sine', fs[i], fs[i] * .994, v * [.2, .12, .075, .05][i] * near); };
+  if (e === 'dive') { noise(D, t, .8, 'lowpass', 300, .8, .7 * near, 55); tone(D, t, .7, 'sine', 70, 38, .35 * near); noise(D, t, .55, 'bandpass', 1500, 4, .16 * near, 420); }
+  else if (e === 'surface') { noise(D, t, .55, 'lowpass', 70, .8, .6 * near, 320); fx('thud', { dest: D, gain: .7 * near, rate: .7 }); noise(D, t, .09, 'bandpass', 800, 2.5, .5 * near); }
+  else if (e === 'dome') { noise(D, t, .42, 'lowpass', 55, 1, 1.0 * near, 230); for (let i = 0; i < 4; i++) tone(D, t + .06 + i * .085, .07, 'triangle', 120 + i * 38, 84 + i * 26, .2 * near); }
+  else if (e === 'breach') { f.hush = 1.05; fx('boom', { dest: D, gain: 1.5 * near, rate: .55 }) || noise(D, t, .5, 'lowpass', 110, 1, 1.4 * near); fx('thud', { dest: D, gain: 1.4 * near, rate: .5 }); noise(D, t, .5, 'lowpass', 420, .7, .8 * near, 80); noise(D, t + .2, .95, 'highpass', 2600, .5, .07 * near); S.shake = Math.max(S.shake, .9 * near); S.burst = Math.max(S.burst, .5 * near);
+    if (d < 7) { const n = Math.round(46 * (1 - d / 7)); for (let i = 0; i < n; i++) { const tt = t + .5 + Math.pow(Math.random(), 1.6) * 5.6, v = (.05 + Math.random() * .12) * (1 - d / 9); tone(D, tt, .012 + Math.random() * .02, 'triangle', 700 + Math.random() * 900, 380, v); if (i % 3 === 0) noise(D, tt, .02, 'bandpass', 900, 3, v * 1.6); } } }
+  else if (e === 'slam') { ring(t, 1, [431, 1017, 1683, 2377]); fx('thud', { dest: D, gain: 1.6 * near, rate: .62 }) || noise(D, t, .12, 'lowpass', 140, 1, 1.2 * near); tone(D, t, .16, 'sine', 62, 34, .7 * near); noise(D, t, .03, 'bandpass', 2300, 3, .4 * near);
+    fx('thud', { dest: D, gain: 1.1 * near, rate: .5, at: .34 }) || noise(D, t + .34, .14, 'lowpass', 120, 1, .9 * near); for (let i = 0; i < 6; i++) noise(D, t + .42 + i * .085 + Math.random() * .03, .065, 'bandpass', 360 + Math.random() * 240, 1.5, .45 * near); S.shake = Math.max(S.shake, .7 * near); }
+  else if (e === 'sink') { noise(D, t, .9, 'lowpass', 220, .9, .55 * near, 60); }
+  else if (e === 'thrash') { for (let i = 0; i < 10; i++) { const tt = t + Math.pow(Math.random(), 1.3) * 1.0; tone(D, tt, .03, 'triangle', 1500 + Math.random() * 1500, 900, .11 * near); noise(D, tt, .05, 'bandpass', 420 + Math.random() * 300, 2, .32 * near); } noise(D, t + 1.0, .7, 'lowpass', 200, .8, .3 * near, 60); }
+  else if (e === 'die') { noise(D, t, .35, 'lowpass', 150, 1, .9 * near); noise(D, t + .3, 1.9, 'lowpass', 260, .7, .5 * near, 55); for (let i = 0; i < 5; i++) tone(D, t + .5 + i * .38 + Math.random() * .1, .16, 'triangle', 92 - i * 5, 70 - i * 4, .13 * near); }
+  else if (e === 'topple') { ring(t, .8, [517, 1243, 2011]); fx('thud', { dest: D, gain: .9 * near, rate: .8 }) || noise(D, t, .1, 'lowpass', 160, 1, .7 * near); noise(D, t + .05, .5, 'lowpass', 300, .8, .25 * near, 80); S.shake = Math.max(S.shake, .25 * near); } }
 function spawnKei(lo, hi, vid, ahead) { const opts = [], pz = P().z; for (let i = 0; i < MW * MH; i++) if (S.flow[i] > lo && S.flow[i] < hi && (!ahead || (((i / MW) | 0) + .5) * CS < pz - 16)) opts.push(i); if (!opts.length) return null; const i = opts[(S.rng() * opts.length) | 0]; const f = mkFoe('kei', (i % MW + .5) * CS, (((i / MW) | 0) + .5) * CS, -1, S.foes.length + 20 + ((S.t * 3) | 0), vid); f.active = !ahead; f.amb = !!ahead; S.foes.push(f); return f; }
 function crewTaken(f, quiet, stunT) {
   const c = CREW[f.crew]; f.alive = false; if (f.chaser) f.chaser.kin = false;
@@ -15540,6 +16443,27 @@ function ejectCase(p) {
 }
 function brassStep(dt) { for (const c of S.brass) { if (c.gnd) continue; c.vy -= 1.24 * dt; c.x += c.vx * dt; c.y += c.vy * dt; c.z += c.vz * dt; c.a += c.sp * dt;
     const g = groundY(c.x, c.z) + .008; if (c.y <= g && c.vy < 0) { c.y = g; c.gnd = 1; c.a = c.ax; } } }
+/* The flag at the March camp is cloth on a pole (flag.js), and nothing moves it but what the run does to it: the pod's engine on
+   the way down, the ground shock of things landing, a body shouldering through it, a round going through it. There is no air
+   to stop it either, so what the landing started is still swinging when the hatch opens. */
+const FLAG_OK = typeof FLAG !== 'undefined' && !!FLAG.create && typeof START !== 'undefined';
+const FLAG_AT = { x: (typeof START !== 'undefined' ? START.x : 0) + 4.5, z: (typeof START !== 'undefined' ? START.z : 0) - 15 };
+function flagOf() { if (!FLAG_OK || !S) return null; if (!S.flag) { let rig = null; try { rig = FLAG.create(((S.seed || 7) * 31 + 5) | 0, FLAG_AT.x, FLAG_AT.z, groundY); } catch (e) { rig = null; } S.flag = { rig, ev: null, kn: 0, gy: groundY(FLAG_AT.x, FLAG_AT.z) }; } return S.flag.rig ? S.flag : null; }
+function flagEv(k, v) { const F = flagOf(); if (F) (F.ev || (F.ev = {}))[k] = v; }
+function flagBody(F, x, y, z, vx, vz, r, solid) {
+  const dx = x - FLAG_AT.x, dz = z - FLAG_AT.z, u = clamp(dx, 0, 1.4), d = Math.hypot(dx - u, dz), sp = Math.hypot(vx, vz), dp = Math.hypot(dx, dz);
+  if (d < r + .9 && (!F.bd || d < F.bd)) { F.bd = d; (F.ev || (F.ev = {})).pass = { p: [x, y, z], v: [vx, 0, vz], r }; }
+  if (dp < .34 && sp > .25 && F.kn <= 0) { F.kn = .7; const k = clamp(sp * 2.6, 1, 9) / sp; (F.ev || (F.ev = {})).knock = { j: [vx * k, 0, vz * k], h: 1.05 }; }
+  return solid && dp < .2 && dp > 1e-4 ? [dx / dp * (.2 - dp), dz / dp * (.2 - dp)] : null; }
+function flagStep(dt) { const F = flagOf(); if (!F) return; F.kn -= dt; F.bd = 0;
+  if (!S.cine) { const p = P(), pd = Math.hypot(p.x - FLAG_AT.x, p.z - FLAG_AT.z);
+    if (pd < 4) { const o = flagBody(F, p.x, (p.y === undefined ? groundY(p.x, p.z) : p.y) + (p.lift || 0) + 1.6, p.z, p.vx || 0, p.vz || 0, .34, true); if (o) { p.x += o[0]; p.z += o[1]; } }
+    for (const f of S.foes) { if (Math.abs(f.x - FLAG_AT.x) > 4 || Math.abs(f.z - FLAG_AT.z) > 4 || (f.bur && f.dep > .5)) continue; const v = f.spd || 0, h = f.heading || 0; flagBody(F, f.x, groundY(f.x, f.z) + (f.kind === 'kei' ? 2.0 : 1.6), f.z, Math.sin(h) * v, -Math.cos(h) * v, f.kind === 'kei' ? .5 : .34, false); } }
+  try { FLAG.update(F.rig, dt, F.ev || undefined); } catch (e) { F.rig = null; } F.ev = null; }
+function flagShot(o, dir, bt, arm) { const F = flagOf(); if (!F) return; let h = null; try { h = FLAG.hit(F.rig, o, dir); } catch (e) { } if (!h || h.t >= bt) return;
+  const A = ARM_SPEC[arm] || ARM_SPEC.tp82, sp = A.beam ? 3000 : A.rocket ? clamp(40 + h.t * 22, 40, 380) : 315, r = A.beam ? .004 : A.rocket ? .0065 : .0046;
+  if (h.part === 'cloth') FLAG.update(F.rig, 0, { pass: { p: h.p, v: [dir[0] * sp, dir[1] * sp, dir[2] * sp], r } });
+  else if (!A.beam) { const j = A.rocket ? .9 : 1.5; FLAG.update(F.rig, 0, { knock: { j: [dir[0] * j, dir[1] * j, dir[2] * j], h: h.p[1] - F.gy } }); } }
 function dustStep(dt) { for (let i = S.dust.length - 1; i >= 0; i--) { const g = S.dust[i]; g.vy -= 1.24 * dt; g.x += g.vx * dt; g.y += g.vy * dt; g.z += g.vz * dt; if (g.y <= groundY(g.x, g.z)) S.dust.splice(i, 1); } }
 function end(kind) { S.over = kind; S.overT = 0; if (!AU.ctx) return; if (kind === 'dup') { sfx.breach(); sfx.kei(.9, 0); VOICE.utter(S.crew.id, 'death', null); } if (kind === 'crush') sfx.rumble(1.2); }
 
@@ -15590,7 +16514,7 @@ function startCine() {
   for (const k in keys) keys[k] = false;
 }
 function cineStep(dt) {
-  const c = S.cine; S.t += dt;
+  const c = S.cine; S.t += dt; if (FLAG_OK) flagStep(dt);
   if (c.phase === 'descent') { c.t += dt;
     if (c.t === dt && AU.ctx) { NASA.cine = NASA.play('land', 2, 44, { gain: .4, dest: AU.radio, fade: 1 }); sfx.alarm(); }
     /* The retro lights on the call (or late and rough on its own if the call is missed) and burns until the tanks are
@@ -15599,11 +16523,12 @@ function cineStep(dt) {
     if (q0.done && c.ignT === undefined) { c.ignT = c.t; S.shake = Math.max(S.shake, q0.done > 0 ? .8 : 1.2); if (AU.ctx) sfx.ignite(q0.done > 0 ? 1 : 1.4); }
     if (c.q[2].done > 0 && c.gearT === undefined) { c.gearT = c.t; S.shake = Math.max(S.shake, .5); if (AU.ctx) sfx.gear(); }
     c.eng = lerp(c.eng, lit ? 1 : 0, Math.min(1, dt * (lit ? 5 : 14)));
+    if (FLAG_OK) { if (c.eng > .03 && c.h < 90) flagEv('jet', { o: [START.x, groundY(START.x, START.z) + c.h + .5, START.z], d: [0, -1, 0], k: c.eng }); }
     if (!out) c.h = cineAlt(c.t) - 9 + DROP;
     else if (!c.td2) { if (c.cutT === undefined) { c.cutT = c.t; if (AU.ctx) { sfx.bad(); sfx.buzz(); } } c.vy -= 2.7 * dt; c.h += c.vy * dt;
-      if (c.h <= 0 && !c.td) { c.h = 0; c.td = 1; c.tdT = c.t; if (!q3.done) { q3.done = -1; c.fails++; } c.imp = clamp(-c.vy / 3, .9, 2) * (q3.done < 0 ? 1.25 : 1); c.vy = 1.9; S.shake = 1.6 * c.imp;
+      if (c.h <= 0 && !c.td) { c.h = 0; c.td = 1; c.tdT = c.t; if (!q3.done) { q3.done = -1; c.fails++; } c.imp = clamp(-c.vy / 3, .9, 2) * (q3.done < 0 ? 1.25 : 1); c.vy = 1.9; S.shake = 1.6 * c.imp; if (FLAG_OK) flagEv('shock', { k: .42 * c.imp, d: [FLAG_AT.x - START.x, FLAG_AT.z - START.z] });
         if (NASA.cine) NASA.cine.stop(.2); if (AU.ctx) { sfx.touchdown(c.imp); sfx.alarm(); sfx.ring(11); } }
-      else if (c.h <= 0 && c.vy < 0) { c.h = 0; c.vy = 0; c.td2 = c.t; S.shake = Math.max(S.shake, 1.3); if (AU.ctx) sfx.touchdown(.6); } }
+      else if (c.h <= 0 && c.vy < 0) { c.h = 0; c.vy = 0; c.td2 = c.t; S.shake = Math.max(S.shake, 1.3); if (FLAG_OK) flagEv('shock', { k: .2, d: [FLAG_AT.x - START.x, FLAG_AT.z - START.z] }); if (AU.ctx) sfx.touchdown(.6); } }
     c.dust = lerp(c.dust, c.eng * clamp(1 - c.h / 70, 0, 1), Math.min(1, dt * (lit ? 3 : 9)));
     if (AU.ctx && !c.td) { const pre = c.ignT === undefined ? 1 : 0, q1 = c.q[1], hold = c.t > q1.t && !q1.done && keys[q1.key]; let m = 0;   // each jet is a thump of gas against the hull
       for (let i = 0; i < 3; i++) { const f = i === 2 ? rcsFire(c.t + .17, 2, c.seed + pre * 3) : (hold && q1.key === (i ? 'KeyD' : 'KeyA')) ? [1, 1] : rcsFire(c.t + i * .31, i, c.seed + pre); if (f && f[0]) m |= 1 << i; }
@@ -15840,8 +16765,9 @@ function render(dt, now) {
   if (!frozen) {
     // characters into the dynamic batch
     const B = R.batch; B.reset(); const smear = [];
-    if (inGame && sceneOn) { const ce = cam.e; for (const f of (S.watch && !S.watch.hide ? S.foes.concat([S.watch.f]) : S.foes)) { const d = Math.hypot(f.x - ce[0], f.z - ce[2]); if (d > 170 || S.cine) continue; const st = { x: f.x, z: f.z, heading: f.heading, speed: f.spd, scale: 1.45 * (f.vsc || 1), stun: f.down ? 1 : Math.max(0, f.stun), alert: f.chgS ? 1 : f.alert, active: f.active, open: f.open, dup: f.kind !== 'crew', charge: f.chgS === 1 ? clamp(f.chgT / f.v.chg.wind, 0, 1) : 0 }; if (f.kind === 'crew') { st.gest = f.gest || null; st.pointYaw = f.pointYaw; st.lookYaw = f.lookYaw; st.fear = f.panic; st.hurt = f.down ? 1 : 0; st.gun = f.ammo > 0 && !f.down && !f.cy ? (f.aimT > 0 ? 2 : f.panic > .15 || f.fired ? 1 : 0) : 0; st.aim = f.aimAt; st.fire = f.flash > 0 ? f.flash / .09 : 0; if (f.gest === 'down' && ASTRO.GESTURES) st.stun = 0; }
-        const n0 = B.n; if (f.bur) { const lod = d > 22 ? 1 : 0; f.rig.fat = d > 22 ? 1.8 : 1; BURROW.update(f.rig, { x: f.x, z: f.z, heading: f.heading, speed: f.spd, depth: f.dep, breach: f.br, stun: f.deadT !== undefined ? 0 : Math.max(0, f.stun), alert: f.alert, look: f.active ? Math.atan2(ce[0] - f.x, -(ce[2] - f.z)) : undefined, dead: f.deadT }, dt, groundY); BURROW.emit(B, f.rig, lod); BURROW.emitGround(B, f.rig, groundY, lod); } else if (f.kind === 'kei') { if (f.active) st.look = Math.atan2(ce[0] - f.x, -(ce[2] - f.z)); f.rig.fat = (d > 22 ? 1.8 : 1) * (f.vfat || 1); KEI.update(f.rig, st, dt, groundY); KEI.emit(B, f.rig, d > 22 ? 1 : 0); } else { ASTRO.update(f.rig, st, dt, f.cy ? (x, z) => groundY(x, z) + f.cy : groundY); ARM_NOW = f.crew !== undefined && CREW[f.crew] ? armId(CREW[f.crew].id) : null; ASTRO.emit(B, f.rig, d > 16 ? 1 : 0); ARM_NOW = null; } if (S.watch && f === S.watch.f) { const k = clamp((d - 14) / 20, 0, 1); for (let i = n0; i < B.n; i++) { B.d[i * STRIDE + 9] *= 1 + 1.9 * k; B.d[i * STRIDE + 10] += .09 * k; } }   // far off against a black sky a dark thing is nothing at all: up there it catches the sun
+    if (inGame && sceneOn) { const ce = cam.e; { const F = flagOf(); if (F) { const fx = FLAG_AT.x - ce[0], fz = FLAG_AT.z - ce[2], d2 = fx * fx + fz * fz; if (d2 < 78400) { const n0 = B.n; FLAG.emit(B, F.rig, d2 > 900 ? 1 : 0); smear.push([n0, B.n - n0, 0]); } } }
+      for (const f of (S.watch && !S.watch.hide ? S.foes.concat([S.watch.f]) : S.foes)) { const d = Math.hypot(f.x - ce[0], f.z - ce[2]); if (d > 170 || S.cine) continue; const st = { x: f.x, z: f.z, heading: f.heading, speed: f.spd, scale: 1.45 * (f.vsc || 1), stun: f.down ? 1 : Math.max(0, f.stun), alert: f.chgS ? 1 : f.alert, active: f.active, open: f.open, dup: f.kind !== 'crew', charge: f.chgS === 1 ? clamp(f.chgT / f.v.chg.wind, 0, 1) : 0 }; if (f.kind === 'crew') { st.gest = f.gest || null; st.pointYaw = f.pointYaw; st.lookYaw = f.lookYaw; st.fear = f.panic; st.hurt = f.down ? 1 : 0; st.gun = f.ammo > 0 && !f.down && !f.cy ? (f.aimT > 0 ? 2 : f.panic > .15 || f.fired ? 1 : 0) : 0; st.aim = f.aimAt; st.fire = f.flash > 0 ? f.flash / .09 : 0; if (f.gest === 'down' && ASTRO.GESTURES) st.stun = 0; }
+        const n0 = B.n; if (f.bur) { const lod = d > 30 ? 1 : 0; BURROW.update(f.rig, { x: f.x, z: f.z, heading: f.heading, speed: f.spd, depth: f.dep, breach: f.br, stun: f.deadT !== undefined ? 0 : Math.max(0, f.stun), alert: f.alert, look: f.active ? Math.atan2(ce[0] - f.x, -(ce[2] - f.z)) : undefined, dead: f.deadT }, dt, groundY); BURROW.emit(B, f.rig, lod); BURROW.emitGround(B, f.rig, groundY, lod, ce); } else if (f.kind === 'kei') { if (f.active) st.look = Math.atan2(ce[0] - f.x, -(ce[2] - f.z)); f.rig.fat = (d > 22 ? 1.8 : 1) * (f.vfat || 1); KEI.update(f.rig, st, dt, groundY); KEI.emit(B, f.rig, d > 22 ? 1 : 0); } else { ASTRO.update(f.rig, st, dt, f.cy ? (x, z) => groundY(x, z) + f.cy : groundY); ARM_NOW = f.crew !== undefined && CREW[f.crew] ? armId(CREW[f.crew].id) : null; ASTRO.emit(B, f.rig, d > 16 ? 1 : 0); ARM_NOW = null; } if (S.watch && f === S.watch.f) { const k = clamp((d - 14) / 20, 0, 1); for (let i = n0; i < B.n; i++) { B.d[i * STRIDE + 9] *= 1 + 1.9 * k; B.d[i * STRIDE + 10] += .09 * k; } }   // far off against a black sky a dark thing is nothing at all: up there it catches the sun
         smear.push([n0, B.n - n0, f.kind === 'kei' ? (f.stun > 0 ? .45 : .02 + f.alert * .14) : f.kind === 'dup' ? (f.active ? .05 : 0) : 0]); }
       if (!S.cine) { const ce2 = cam.e; const nb0 = B.n;
         emitTracers(B, cam, dt); emitBreakup(B, cam); if (S.depart !== undefined) emitDepart(B, cam, S.depart); else if (S.stage === 3 && S.launchT > LAUNCH_HOLD) emitDepart(B, cam, S.launchT - LAUNCH_HOLD);
