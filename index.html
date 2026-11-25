@@ -6195,32 +6195,45 @@ const SHIPMAP = (() => {
 
 /* gun.js : the first-person sidearm. One global, SIDEARM. Needs prims.js only (V3, TL, the batch layout). No DOM, no randomness, no clock.
 
-   A full-size all-steel single-stack hammer-fired service pistol of the 1911 pattern at true scale (216 mm long, 139 mm tall,
-   23.3 mm slide, 127 mm barrel, grip raked 17 degrees), held in the right hand of a pressurised EVA glove.
+   The NASA crew survival pistol: a self-loading descendant of the Soviet TP-82 cosmonaut pistol, true scale (255 mm long).
+   What it keeps of the TP-82: the three-barrel cluster (two 12.5 mm smoothbores side by side over one rifled barrel), the
+   break-action monoblock and hinge knuckle ahead of the trigger guard with the side lever that opens it, the two outside
+   hammers on ball fences, the sheet-steel frame, the bakelite fore-end and grip, the second lever under the guard, the stock
+   lug at the heel. What NASA changed: the rifled barrel is fed from a box magazine in the grip by a bolt carrier that runs
+   back out of the receiver between the outside hammers (its own hammer is the centre one, a serrated spur over the tang); a
+   winter guard, a wide trigger and a big magazine button for a pressurised glove; cocking wings; white thermal-control paint
+   chipped back to the steel at the edges, dry-film grey on everything that moves; lock-wired screws; a tether ring and coiled
+   lanyard; Velcro and a bayonet stud for the suit holster; the agency roundel (layer TL.NASA, or TL.PATCH where there is
+   none) in the grip, on both lockplates and on the rear of the bolt carrier, which is the one the wearer sees; stencilled
+   property marks, part number and a caution placard.
 
-   LOCAL SPACE (what emit writes): origin on the bore axis at the rear face of the slide in battery, +X the shooter's right,
-   +Y up, -Z toward the muzzle. Metres.
+   LOCAL SPACE (what emit writes): origin on the bore axis of the firing (rifled, lower) barrel at the rear face of the bolt
+   carrier in battery, +X the shooter's right, +Y up, -Z toward the muzzle. Metres.
 
    SIDEARM.emit(B, st)   append pistol + hand to batch B (B.d, B.n, B.max). st, every field optional:
-       slide   0..1     0 in battery, 1 fully back (55 mm). The barrel unlocks and tilts, the guide rod shows under it, and the
-                        hammer is pushed down past full cock while the slide rides over it.
-       hammer  0..1     0 down on the firing pin stop, 1 cocked (default 1). Turns about its pin.
+       slide   0..1     0 in battery, 1 fully back (46 mm). The bolt carrier runs back out of the receiver over the centre
+                        hammer, pushing it past full cock, and opens the top of the receiver behind the breech bridge.
+       hammer  0..1     the centre hammer: 0 down on the firing pin, 1 cocked (default 1). Turns about its pin.
        trigger 0..1     0: finger laid along the frame above the guard. By .3 the finger is on the trigger; from .25 to 1 the
                         trigger and the fingertip come back 3 mm together.
-       rounds  number   default 7. 0 with the slide back: the slide stop rises into its notch and the magazine follower shows
-                        through the port. More than 0 with the slide back: the next round shows instead.
+       rounds  number   default 12. 0 with the carrier back: the hold-open catch stands up in front of the bolt and the
+                        magazine follower shows in the open receiver. More than 0 with it back: the next round shows instead.
        flash   0..1     muzzle flash (emissive only): a hard ball and six straight spikes, the way a flash looks in vacuum.
        seed    number   varies the flash shape; give each shot a different one.
-       hand    bool     default true. false leaves the glove off and adds the right grip panel the palm otherwise hides.
+       hand    bool     default true. false leaves the glove off and adds what the glove otherwise hides (right half of the
+                        grip, the lever under the guard) and lets the lanyard hang free.
        t       seconds  any running time: a very small tremor about the wrist. 0 or absent: none.
        xf      [12]     optional 3x4 row-major matrix (local -> wherever you want it); positions and normals go through it,
                         so the caller need not walk the batch a second time.
+   SIDEARM.thirdPerson(B, xf, st)   a light version (under 600 vertices, no hand) for pistols seen from metres away, same
+                         local space. xf as above (may be null); st optional: slide, hammer, flash, seed as above.
    SIDEARM.VIEW          { x, y, z, yaw, pitch, roll }: where to put the local origin relative to the eye, in VIEW space
                          (x right, y up, z NEGATIVE in front of the eye):  v = [x,y,z] + Ry(yaw) Rx(pitch) Rz(roll) p
                          yaw > 0 swings the muzzle toward +X (the game's heading sense), pitch > 0 raises it, roll > 0 leans the
                          top of the pistol toward +X. Then world = eye + R*v.x + U*v.y - F*v.z.
-   SIDEARM.MUZZLE        [x, y, z] local, centre of the muzzle crown (slide in battery).
-   SIDEARM.PORT          [x, y, z] local, centre of the ejection port (slide in battery; it travels +Z with the slide).
+   SIDEARM.MUZZLE        [x, y, z] local, centre of the muzzle crown of the rifled barrel.
+   SIDEARM.PORT          [x, y, z] local, centre of the ejection port: the cut in the right wall of the receiver (it is in the
+                         receiver, so unlike a slide's port it does not travel).
    SIDEARM.TRIS          triangles in one emit with the hand, at rest.
 
    Everything rigid is built once, below, in millimetres, into Float32Arrays; emit only copies them through a 3x4 matrix each. */
@@ -6235,9 +6248,10 @@ const SIDEARM = (() => {
      Every vertex carries an explicit outward normal: the game lights both faces, but the tone baked in done() depends on it. */
   // one texel inside a scribe-free cell of each page, so a part is one flat tone and `shade` alone decides it
   const UVC = []; UVC[TL.WHITE] = [.14453125, .14453125]; UVC[TL.SUIT] = [.20703125, .14453125]; UVC[TL.DARK] = [.32421875, .14453125]; UVC[TL.METAL] = [.33984375, .14453125];
-  const mt = (L, s, e) => ({ L, s, e: e || 0 });
+  // material: layer, shade, emissive, bake kind (0 metal and paint, 1 cloth and rubber: matte, so the baked shading runs deeper, 2 leave the shade alone)
+  const mt = (L, s, e, k) => ({ L, s, e: e || 0, k: k || 0 });
   let G = [];
-  const vx = (p, n, M, sh, uv) => { G.push(p[0], p[1], p[2], uv ? uv[0] : UVC[M.L][0], uv ? uv[1] : UVC[M.L][1], M.L, n[0], n[1], n[2], sh === undefined ? M.s : sh, M.e, 0); };
+  const vx = (p, n, M, sh, uv) => { G.push(p[0], p[1], p[2], uv ? uv[0] : UVC[M.L][0], uv ? uv[1] : UVC[M.L][1], M.L, n[0], n[1], n[2], sh === undefined ? M.s : sh, M.e, M.k); };
   const fnorm = (a, b, c, out) => { let n = nrm(cross(sub(b, a), sub(c, a))); if (out && dot(n, out) < 0) n = mul(n, -1); return n; };
   // flat triangle / quad; `out` is a rough outward direction that orients the normal
   const T = (a, b, c, M, out) => { const n = fnorm(a, b, c, out); vx(a, n, M); vx(b, n, M); vx(c, n, M); };
@@ -6364,301 +6378,288 @@ const SIDEARM = (() => {
      light with no n.l term at all, so without this every face of a part is the same grey and the form disappears. The key
      comes from above and from the shooter's left, which is where the viewer always is. */
   const KEY = nrm([-.55, .8, .2]);
-  function done(kind) {   // kind: 0 steel, 1 cloth and rubber (matte, so the shading runs deeper), 2 leave the shade alone
+  function done(all) {   // all: bake every vertex as this kind, whatever its material says
     const n = G.length / 12, A = new Float32Array(G.length);
     for (let i = 0; i < n; i++) { const o = i * 12; let nx = G[o + 6], ny = G[o + 7], nz = G[o + 8]; const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
       A[o] = G[o] * .001; A[o + 1] = G[o + 1] * .001; A[o + 2] = G[o + 2] * .001; A[o + 3] = G[o + 3]; A[o + 4] = G[o + 4]; A[o + 5] = G[o + 5]; A[o + 6] = nx; A[o + 7] = ny; A[o + 8] = nz;
-      const d = nx * KEY[0] + ny * KEY[1] + nz * KEY[2];
+      const d = nx * KEY[0] + ny * KEY[1] + nz * KEY[2], kind = all === undefined ? G[o + 11] : all;
       A[o + 9] = G[o + 9] * (kind === 2 ? 1 : kind === 1 ? clamp(.70 + .42 * d + .10 * ny, .28, 1.18) : clamp(.74 + .30 * d + .08 * ny, .46, 1.16)); A[o + 10] = G[o + 10]; }
     G = []; return A;
   }
 
   /* =====================================================================================================================
-     THE PISTOL.  s = millimetres forward of the slide's rear face, y = millimetres above the bore axis.                    */
-  const ST = (s, e) => mt(TL.METAL, s, e);
-  const M_SLIDE = ST(.40), M_TOP = ST(.38), M_EDGE = ST(.82), M_LAND = ST(.46), M_GFLOOR = ST(.12), M_GWALL = ST(.27), M_GWALLD = ST(.18), M_IN = ST(.10), M_REAR = ST(.42);
-  const M_BLUE = ST(.26), M_BLUE_E = ST(.62), M_SIGHT = ST(.17), M_SIGHT_E = ST(.40), M_DOT = mt(TL.WHITE, .82), M_BRIGHT = ST(1.25), M_BARREL = ST(.8), M_PIN = ST(.74);
+     THE PISTOL.  s = millimetres forward of the carrier's rear face, y = millimetres above the bore of the rifled barrel. */
+  const NASA_L = TL.NASA !== undefined ? TL.NASA : TL.PATCH;
+  const ST = (s, e) => mt(TL.METAL, s, e), WH = s => mt(TL.WHITE, s), DK = s => mt(TL.DARK, s);
+  // white thermal-control paint and the steel it chips back to; parkerising; dry-film lubricant grey; bakelite
+  const M_PAINT = WH(.84), M_CHIP = ST(.5), M_PARK = ST(.36), M_PARK_E = ST(.9), M_DRY = ST(.62), M_DRY_D = ST(.4), M_DRY_E = ST(1.35), M_BAKE = DK(1.9), M_BAKE_E = DK(3.5), M_BAKE_D = DK(.95);
+  const M_BLACK = ST(.05), M_INK = ST(.1), M_RIB = ST(.2), M_BRIGHT = ST(1.5), M_PIN = ST(.95), M_FLOOR = ST(.3), M_DOT = WH(.92), M_BRASS = ST(1.45), M_SIGHT = ST(.17), M_SIGHT_E = ST(.45);
 
-  // ---- slide section: flat sides, a 14.3 mm radius arch over the top that breaks from the flats at a visible shoulder
-  const SL = 186, HW = 11.65, YB = -11, YJ = 6.5, RT = 14.3, YC = -1.8, PH0 = Math.asin(HW / RT), NA = 12, CH = .45;
-  const arcA = k => -PH0 + 2 * PH0 * k / NA;
-  const arcP = (a, s, lift) => P3((RT + (lift || 0)) * Math.sin(a), YC + (RT + (lift || 0)) * Math.cos(a), s), arcN = a => [Math.sin(a), Math.cos(a), 0];
-  const PORT0 = 62, PORT1 = 93, PORT_Y = 1.0, PORT_K = 8;   // ejection port: s range, lower edge height, first arch segment it removes
-  const TRAVEL = 55;
-  // cocking serrations: nine slanted grooves cut into both flats and run out through the shoulder
-  const GN_ = 9, GP = 3.0, GW = 1.7, GD = .7, GY0 = -9.2, SLANT = Math.tan(15 * RAD), GS0 = 6;
-  const YRUN = YC + Math.sqrt(RT * RT - (HW - GD) * (HW - GD)), ARUN = Math.asin((HW - GD) / RT);   // where a groove floor meets the arch
-  const gs = (i, y) => GS0 + GP * i + SLANT * (y - GY0);
+  const BF = 72, MZ = 238, TRAVEL = 46, FX = 12.5, BUTT = -122;                  // breech face, muzzle, carrier travel, frame half width, underside of the butt
+  const UX = 8.8, UY = 14.4, RU = 8.3, RUB = 6.35, RL = 6.6, RLB = 4.5, WM = 9.8, RIBW = 3;   // the two smoothbores (centres, outer and bore radius), the rifled barrel, monoblock foot, top rib
+  const TR = Math.tan(16 * RAD), sF = y => 59 + TR * (y + 58), sB = y => sF(y) - 55.1;       // front strap, and the back of the bakelite grip: s at height y
+  const KN = [126, -16], HAM = [5, -15], PV = [27, 1], TRG = [77, -21];           // hinge pin, centre hammer pin, outside hammer pivots, trigger pin
 
-  function buildSlide() {
-    // closed section, wound counter-clockwise seen from the muzzle side of the XY plane: under, right flat, over the arch, left flat
-    const sec = [[-(HW - .6), YB], [-4.4, YB], [-4.4, -6.8], [4.4, -6.8], [4.4, YB], [HW - .6, YB], [HW, YB + .6]];
-    for (let k = NA; k >= 0; k--) sec.push([RT * Math.sin(arcA(k)), YC + RT * Math.cos(arcA(k))]);
-    sec.push([-HW, YB + .6]);
-    // outer walls 6 = right flat, 7..18 = arch segments k = 11..0, 19 = left flat, 20 = left under-chamfer (notched, built by hand)
-    const manual = i => i === 6 || i === 19 || i === 20 || i === 7 || i === 18 || (i >= 7 && i <= 7 + (NA - 1 - PORT_K));
-    const muz = []; for (let k = 0; k < 12; k++) { const a = k / 12 * TAU; muz.push([5.95 * Math.sin(a), 5.95 * Math.cos(a)]); }   // the barrel's way out of the front face
-    extrude(sec, XY, { h0: 0, h1: SL, r: CH, M: M_REAR, W: M_TOP, E: M_EDGE, skip: manual, crease: 20, hole1: muz });
-    const s0 = CH, s1 = SL - CH;
-    // arch segments the port interrupts
-    for (let k = PORT_K; k < NA - 1; k++) { const a = arcA(k), b = arcA(k + 1); for (const [u, v] of [[s0, PORT0], [PORT1, s1]]) QN(arcP(a, u), arcP(a, v), arcP(b, v), arcP(b, u), arcN(a), arcN(a), arcN(b), arcN(b), M_TOP); }
-    const ZS = 37;   // forward of this the shoulder segments are plain
-    for (const sg of [-1, 1]) {
-      const X = sg * HW, XF = sg * (HW - GD), nx = [sg, 0, 0], aJ = sg * PH0, aR = sg * ARUN, aE = sg * arcA(NA - 1), F = (s, y) => P3(X, y, s);
-      // shoulder segment forward of the serrations (the right one also stops for the port)
-      for (const [u, v] of (sg > 0 ? [[ZS, PORT0], [PORT1, s1]] : [[ZS, s1]])) QN(arcP(aJ, u), arcP(aJ, v), arcP(aE, v), arcP(aE, u), arcN(aJ), arcN(aJ), arcN(aE), arcN(aE), M_TOP);
-      // ... and through them: the upper part whole, the lower part only where a land stands
-      QN(arcP(aR, s0), arcP(aR, ZS), arcP(aE, ZS), arcP(aE, s0), arcN(aR), arcN(aR), arcN(aE), arcN(aE), M_TOP);
-      for (let i = 0; i <= GN_; i++) { const u0 = i ? gs(i - 1, YJ) + GW : s0, v0 = i < GN_ ? gs(i, YJ) : ZS, u1 = i ? gs(i - 1, YRUN) + GW : s0, v1 = i < GN_ ? gs(i, YRUN) : ZS;
-        QN(arcP(aJ, u0), arcP(aJ, v0), arcP(aR, v1), arcP(aR, u1), arcN(aJ), arcN(aJ), arcN(aR), arcN(aR), M_LAND);
-        // land on the flat
-        if (i < GN_) Q(F(i ? gs(i - 1, GY0) + GW : s0, GY0), F(gs(i, GY0), GY0), F(gs(i, YJ), YJ), F(u0, YJ), M_LAND, nx); }
-      for (let i = 0; i < GN_; i++) { const a0 = gs(i, GY0), a1 = gs(i, YJ), a2 = gs(i, YRUN), fl = (s, y) => P3(XF, y, s);
-        Q(fl(a0, GY0), fl(a0 + GW, GY0), fl(a2 + GW, YRUN), fl(a2, YRUN), M_GFLOOR, nx);                                   // floor
-        Q(fl(a0, GY0), F(a0, GY0), F(a1, YJ), fl(a2, YRUN), M_GWALLD, [0, 0, -1]);                                         // wall facing the muzzle
-        Q(fl(a0 + GW, GY0), F(a0 + GW, GY0), F(a1 + GW, YJ), fl(a2 + GW, YRUN), M_GWALL, [0, 0, 1]);                       // wall facing the shooter
-        Q(fl(a0, GY0), fl(a0 + GW, GY0), F(a0 + GW, GY0), F(a0, GY0), M_GWALLD, [0, 1, 0]); }                              // foot of the groove
-      // the rest of the flat is one outline: under the serrations, forward to the muzzle, minus the port (right) or the two notches (left)
-      const gEnd0 = gs(GN_ - 1, GY0) + GW, gEnd1 = gs(GN_ - 1, YJ) + GW, yb = YB + .6;
-      let o;
-      if (sg > 0) o = [[s0, yb], [s1, yb], [s1, YJ], [PORT1, YJ], [PORT1, PORT_Y], [PORT0, PORT_Y], [PORT0, YJ], [gEnd1, YJ], [gEnd0, GY0], [s0, GY0]];
-      else { o = [[s0, yb]]; for (let k = 4; k >= 0; k--) o.push([TD_S + TD_R * Math.cos(k * PI / 4), yb + TD_R * Math.sin(k * PI / 4)]);
-        o.push([SSN0, yb], [SSN0, SSN_Y], [SSN1, SSN_Y], [SSN1, yb], [s1, yb], [s1, YJ], [gEnd1, YJ], [gEnd0, GY0], [s0, GY0]); }
-      poly(o, (s, y, h) => P3(h, y, s), X, M_SLIDE, nx);
-      // worn bright line along the shoulder
-      for (const [u, v] of (sg > 0 ? [[ZS, PORT0], [PORT1, s1]] : [[ZS, s1]])) { const aw = sg * (PH0 - 3.6 * RAD); Q(P3(sg * (HW + .04), YJ - .7, u), P3(sg * (HW + .04), YJ - .7, v), arcP(aw, v, .05), arcP(aw, u, .05), ST(.7), [sg, .5, 0]); }
-      // under-chamfer and the ledge that overhangs the frame
-      const cn = nrm([sg, -1, 0]), ch = (u, v) => QN(F(u, yb), F(v, yb), P3(sg * (HW - .6), YB, v), P3(sg * (HW - .6), YB, u), cn, cn, cn, cn, M_SLIDE);
-      if (sg < 0) { ch(s0, TD_S - TD_R); ch(TD_S + TD_R, SSN0); ch(SSN1, s1); }
-    }
-    // the two notches in the lower left edge: slide-stop notch and the half-moon disassembly notch, cut through the rail lip
-    { const X = -HW, XI = -9.3, yb = YB + .6, w = (s, y) => [P3(X, y, s), P3(XI, y, s)];
-      const cut = pts => { let cs = 0, cy = 0; for (const q of pts) { cs += q[0] / pts.length; cy += q[1] / pts.length; }
-        for (let i = 0; i < pts.length - 1; i++) { const a = w(pts[i][0], pts[i][1]), b = w(pts[i + 1][0], pts[i + 1][1]); Q(a[0], a[1], b[1], b[0], M_GWALL, [0, cy - (pts[i][1] + pts[i + 1][1]) / 2, (pts[i][0] + pts[i + 1][0]) / 2 - cs]); }
-        poly(pts, (s, y, h) => P3(h, y, s), XI, M_IN, [-1, 0, 0]); };
-      cut([[SSN0, YB], [SSN0, SSN_Y], [SSN1, SSN_Y], [SSN1, YB]]);
-      const hm = [[TD_S - TD_R, YB]]; for (let k = 4; k >= 0; k--) hm.push([TD_S + TD_R * Math.cos(k * PI / 4), yb + TD_R * Math.sin(k * PI / 4)]); hm.push([TD_S + TD_R, YB]); cut(hm); }
-    // ---- ejection port: lowered, cut from 18 degrees right of the crown down the right flat. The walls show the slide's thickness.
-    { const RI = 9.0, aT = arcA(PORT_K), xT = RT * Math.sin(aT), yT = YC + RT * Math.cos(aT), yTi = Math.sqrt(RI * RI - xT * xT), xBi = Math.sqrt(RI * RI - PORT_Y * PORT_Y);
-      Q(P3(xT, yT, PORT0), P3(xT, yT, PORT1), P3(xT, yTi, PORT1), P3(xT, yTi, PORT0), M_GWALL, [1, 0, 0]);                 // upper lip
-      Q(P3(HW, PORT_Y, PORT0), P3(HW, PORT_Y, PORT1), P3(xBi, PORT_Y, PORT1), P3(xBi, PORT_Y, PORT0), M_LAND, [0, 1, 0]);  // lower lip
-      // front wall of the port: the ring of slide between the outside and the barrel tunnel
-      const outer = [[xT, yT]]; for (let k = PORT_K + 1; k <= NA; k++) outer.push([RT * Math.sin(arcA(k)), YC + RT * Math.cos(arcA(k))]); outer.push([HW, PORT_Y]);
-      const ia0 = Math.atan2(xT, yTi), ia1 = Math.atan2(xBi, PORT_Y), inner = outer.map((_, i) => { const a = mix(ia0, ia1, i / (outer.length - 1)); return [RI * Math.sin(a), RI * Math.cos(a)]; });
-      for (let i = 0; i < outer.length - 1; i++) Q(P3(outer[i][0], outer[i][1], PORT1), P3(outer[i + 1][0], outer[i + 1][1], PORT1), P3(inner[i + 1][0], inner[i + 1][1], PORT1), P3(inner[i][0], inner[i][1], PORT1), M_GWALLD, [0, 0, 1]);
-      // ... and the rear wall, round the breech face
-      for (let i = 0; i < outer.length - 1; i++) Q(P3(outer[i][0], outer[i][1], PORT0), P3(outer[i + 1][0], outer[i + 1][1], PORT0), P3(inner[i + 1][0], inner[i + 1][1], PORT0), P3(inner[i][0], inner[i][1], PORT0), M_GWALL, [0, 0, -1]);
-      // far inside of the tunnel, seen across the port when the barrel is not under it
-      lathe(P3(0, 0, PORT0), [0, 0, -1], [[0, RI], [PORT1 - PORT0, RI]], { n: 9, a0: -150 * RAD, a1: 18 * RAD, ref: [0, 1, 0], inner: true, M: M_IN });
-      // breech face, with the firing pin hole and the extractor claw standing on its right edge
-      const bf = []; for (let k = 0; k < 14; k++) { const a = k / 14 * TAU; bf.push([RI * Math.sin(a), RI * Math.cos(a)]); }
-      poly(bf, XY, PORT0, ST(.30), [0, 0, -1]);
-      lathe(P3(0, 0, PORT0 + .05), [0, 0, -1], [[0, 1.3], [0, 0]], { n: 8, M: ST(.05) });
-      cbox(6.6, 8.9, -1.6, 2.4, -(PORT0 + 3.2), -(PORT0 - .2), .3, 'x', ST(.55), ST(.45), M_EDGE); }
-    // ---- rear face furniture: firing-pin stop plate, the firing pin in it, and the round end of the extractor beside it
-    extrude([[-5.9, -6.8], [5.9, -6.8], [5.9, 5.4], [5.3, 6.0], [-5.3, 6.0], [-5.9, 5.4]], XY, { h0: -.3, h1: .2, r: .22, M: ST(.52), W: ST(.3), E: ST(.9), cap1: false });
-    lathe(P3(0, 0, -.32), [0, 0, 1], [[0, 2.35, ST(.06)], [0, 1.75, ST(.95)], [0, 0]], { n: 10 });
-    lathe(P3(7.5, 3.0, 0), [0, 0, 1], [[0, 2.75, ST(.08)], [.1, 2.3, M_EDGE], [.36, 2.0, ST(.6)], [.36, 0]], { n: 10 });
-    // ---- rear sight: dovetailed block with a square notch and a ramp falling away toward the muzzle; two dots
-    extrude([[-8.4, 9.3], [8.4, 9.3], [7.5, 12.6], [6.7, 16.7], [1.8, 16.7], [1.8, 14.0], [-1.8, 14.0], [-1.8, 16.7], [-6.7, 16.7], [-7.5, 12.6]], XY, { h0: 4.2, h1: 13.2, r: .35, M: M_SIGHT, W: ST(.2), E: M_SIGHT_E });
-    extrude([[13.2, 9.3], [20.2, 10.6], [13.2, 16.2]], SIDE, { h0: -6.4, h1: 6.4, r: .3, M: ST(.2), W: ST(.24), E: M_SIGHT_E });
-    for (const x of [-4.25, 4.25]) lathe(P3(x, 14.9, 4.16), [0, 0, 1], [[0, .95], [0, 0]], { n: 8, M: M_DOT });
-    // ---- front sight: ramped blade on a pad, dot on the face the shooter sees
-    cbox(-3.1, 3.1, 11.4, 12.95, -184.6, -175.4, .3, 'y', ST(.24), ST(.2), M_SIGHT_E, { cap0: false });
-    extrude([[176.3, 12.6], [183.8, 12.6], [183.8, 13.3], [179.3, 16.7], [176.3, 16.7]], SIDE, { h0: -1.6, h1: 1.6, r: .25, M: M_SIGHT, W: ST(.2), E: M_SIGHT_E });
-    lathe(P3(0, 15.25, 176.26), [0, 0, 1], [[0, .9], [0, 0]], { n: 8, M: M_DOT });
-    // ---- recoil spring tunnel under the muzzle (it slides back into the dust cover)
-    { const RH = 7.0, cy = -15, prof = [[-RH, YB + .2]]; for (let k = 0; k <= 8; k++) { const a = PI + k / 8 * PI; prof.push([RH * Math.cos(a), cy + RH * Math.sin(a)]); } prof.push([RH, YB + .2]);
-      const rings = [143.8, 144.6, SL - .4, SL].map((s, j) => prof.map(p => { const k = j === 0 || j === 3 ? .93 : 1; return P3(p[0] * k, p[1] < cy ? cy + (p[1] - cy) * k : p[1], s); }));
-      loft(rings, { closed: false, M: M_SLIDE, out: (j, i, p) => [p[0], p[1] - cy + 2, 0], Ms: (j) => j === 1 ? M_SLIDE : M_EDGE });
-      const cap = prof.map(p => [p[0] * .93, p[1] < cy ? cy + (p[1] - cy) * .93 : p[1]]); poly(cap, XY, SL, ST(.34), [0, 0, -1]); poly(cap, XY, 143.8, ST(.3), [0, 0, 1]); }
-    // ---- barrel bushing: flange with the tab that hooks the spring plug, bored for the barrel
-    { const RF = 10.9, RB = 7.95, T0 = SL, T1 = SL + 2.3, out = [], hole = [];
-      const rOut = a => { // a measured from straight up, clockwise seen from the muzzle. Round above, a waisted tab below that ends in the plug notch
-        const d = Math.abs(a > PI ? a - TAU : a); if (d < 140 * RAD) return RF; const x = Math.sin(d), y = Math.cos(d);   // direction, y negative here
-        // tab side: line from (7.0,-8.35) to (5.35,-12.7); notch: circle R 5.9 about (0,-15)
-        const tl = (7.0 * (-12.7 + 8.35) - (-8.35) * (5.35 - 7.0)) / (x * (-12.7 + 8.35) - y * (5.35 - 7.0)), b = -15 * y, c = 225 - 5.9 * 5.9, disc = b * b - c, tn = disc > 0 ? b - Math.sqrt(disc) : 1e9;
-        return Math.min(tl, tn); };
-      const half = [0, 14, 28, 42, 56, 70, 84, 98, 112, 126, 140, 148.6, 157.16, 164, 172, 180], angs = half.concat(half.slice(1, -1).reverse().map(a => 360 - a));
-      for (const ad of angs) { const a = ad * RAD, r = rOut(a); out.push([r * Math.sin(a), r * Math.cos(a)]); }
-      for (let k = 0; k < 16; k++) { const a = k / 16 * TAU; hole.push([RB * Math.sin(a), RB * Math.cos(a)]); }
-      extrude(out, XY, { h0: T0, h1: T1, r: .4, M: ST(.34), W: ST(.28), E: M_BLUE_E, cap0: false, holes: [hole], crease: 40 });
-      lathe(P3(0, 0, T1), [0, 0, 1], [[0, RB, ST(.07)], [1.6, 7.45]], { n: 16, inner: true }); }
-    // ---- recoil spring plug, bored for the full-length guide rod
-    lathe(P3(0, -15, 180), [0, 0, -1], [[0, 5.45, ST(.36)], [8.0, 5.45, M_BLUE_E], [8.6, 4.9, ST(.44)], [8.6, 3.5, ST(.06)], [6.5, 3.2]], { n: 12 });
+  // disc carrying the agency roundel; right and up are unit vectors in its plane as the reader sees them
+  function roundel(c, right, up, r, n) { const nn = cross(right, up), M = mt(NASA_L, 1), p = a => add(c, add(mul(right, r * Math.cos(a)), mul(up, r * Math.sin(a)))), uv = a => [.5 + .5 * Math.cos(a), .5 - .5 * Math.sin(a)];
+    for (let k = 0; k < n; k++) { const a0 = k / n * TAU, a1 = (k + 1) / n * TAU; vx(c, nn, M, undefined, [.5, .5]); vx(p(a0), nn, M, undefined, uv(a0)); vx(p(a1), nn, M, undefined, uv(a1)); } }
+  /* Stencil lettering: a 3 x 5 cell face, each glyph cut into as few rectangles as cover it. o is the lower left corner of the
+     first cell, right and up unit vectors in the plane, h the cap height. Returns the length written. */
+  const FONT = { A: '010101111101101', B: '110101110101110', C: '011100100100011', D: '110101101101110', E: '111100110100111', F: '111100110100100', G: '011100101101011', H: '101101111101101', I: '111010010010111',
+    J: '001001001101010', K: '101101110101101', L: '100100100100111', M: '101111111101101', N: '101111111111101', O: '111101101101111', P: '110101110100100', R: '110101110101101', S: '011100010001110',
+    T: '111010010010010', U: '101101101101111', V: '101101101101010', W: '101101111111101', X: '101101010101101', Y: '101101010010010', Z: '111001010100111', 0: '111101101101111', 1: '010110010010111',
+    2: '110001010100111', 3: '110001010001110', 4: '101101111001001', 5: '111100110001110', 6: '011100111101111', 7: '111001010010010', 8: '111101111101111', 9: '111101111001110', '-': '000000111000000',
+    '/': '001001010100100', '.': '000000000000010' };
+  function text(str, o, right, up, h, M) { const px = h / 5, nn = cross(right, up); let cx = 0;
+    for (const ch of str) { const g = FONT[ch]; if (g) { const on = (c, r) => c >= 0 && c < 3 && r >= 0 && r < 5 && g[r * 3 + c] === '1', rects = [], cov = [];
+        for (let c = 0; c < 3; c++) for (let r = 0; r < 5; r++) if (on(c, r) && !on(c, r - 1)) { let e = r; while (on(c, e + 1)) e++; if (e > r) { rects.push([c, r, c, e]); for (let k = r; k <= e; k++) cov[k * 3 + c] = 1; } }
+        for (let r = 0; r < 5; r++) for (let c = 0; c < 3; c++) if (on(c, r) && !on(c - 1, r)) { let e = c, need = false; while (on(e + 1, r)) e++; for (let k = c; k <= e; k++) if (!cov[r * 3 + k]) need = true; if (need) rects.push([c, r, e, r]); }
+        const P = (c, r) => add(o, add(mul(right, (cx + c) * px), mul(up, (5 - r) * px)));
+        for (const [c0, r0, c1, r1] of rects) { const a = P(c0, r0), b = P(c1 + 1, r0), c = P(c1 + 1, r1 + 1), d = P(c0, r1 + 1); for (const q of [a, b, c, a, c, d]) vx(q, nn, M); } }
+      cx += ch === ' ' ? 2.4 : ch === '.' ? 2.6 : 4; }
+    return cx * px; }
+  // a line of small print too fine to read: word-length dashes
+  function greek(o, right, up, h, words, M) { const nn = cross(right, up); let x = 0; for (const w of words) { const a = mad(o, right, x), b = mad(a, right, w), c = mad(b, up, h), d = mad(a, up, h); for (const q of [a, b, c, a, c, d]) vx(q, nn, M); x += w + h * .7; } }
+  // drilled-head hex screw standing on a surface (c the centre of its foot, ax the unit outward direction), and the lock wire that ties two of them
+  function hexs(c, ax, r, h) { lathe(c, ax, [[0, r, ST(.6)], [h, r, ST(1.2)], [h, 0]], { n: 6 }); }
+  function lockwire(a, b, dir, sag) { const pts = []; for (let k = 0; k <= 4; k++) { const t = k / 4; pts.push(add(vmix(a, b, t), mul(dir, sag * 4 * t * (1 - t)))); } tube(pts, pts.map(() => .42), { n: 3, up: dir, M: ST(1.3) }); }
+  function slot(c, ax, along, r, w) { const sd = cross(ax, along), p = (a, b) => add(c, add(mul(along, a * r), mul(sd, b * w))); Q(p(-1, -1), p(1, -1), p(1, 1), p(-1, 1), M_BLACK, ax); }
+
+  /* The barrel cluster in section: runs of [x, y, nx, ny], counter-clockwise, split where the surface creases. off grows the
+     section outward, res scales the number of facets, mono gives the monoblock (squared off underneath to sit on the action flats).
+     Runs: 0 rifled barrel (or monoblock foot), 1 right web (or wall), 2 right smoothbore, 3 4 5 the top rib, 6 left smoothbore, 7 left web (or wall). */
+  function CL(off, res, mono) {
+    const runs = [], ru = RU + off, n = Math.max(3, Math.round(11 * res));
+    const arc = (cx, cy, r, a0, a1, m) => { const q = []; for (let k = 0; k <= m; k++) { const a = (a0 + (a1 - a0) * k / m) * RAD; q.push([cx + r * Math.cos(a), cy + r * Math.sin(a), Math.cos(a), Math.sin(a)]); } return q; };
+    const flat = (a, b) => { const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1; return [[a[0], a[1], dy / l, -dx / l], [b[0], b[1], dy / l, -dx / l]]; };
+    const aR = Math.acos(-(UX - RIBW) / ru) / RAD, yr = UY + ru * Math.sin(aR * RAD), yt = UY + RU + .9 + off; let ur, ul;
+    if (mono) { const a0 = -Math.acos((WM - UX) / ru) / RAD, y0 = UY + ru * Math.sin(a0 * RAD); ur = arc(UX, UY, ru, a0, aR, n); ul = arc(-UX, UY, ru, 180 - aR, 180 - a0, n);
+      runs.push(flat([-WM, -7.6], [WM, -7.6]), flat([WM, -7.6], [WM, y0]), ur, flat([RIBW, yr], [RIBW, yt]), flat([RIBW, yt], [-RIBW, yt]), flat([-RIBW, yt], [-RIBW, yr]), ul, flat([-WM, y0], [-WM, -7.6]));
+    } else { const lo = arc(0, 0, RL + off, 155, 385, Math.max(3, Math.round(10 * res))); ur = arc(UX, UY, ru, -98, aR, n); ul = arc(-UX, UY, ru, 180 - aR, 278, n);
+      runs.push(lo, flat(lo[lo.length - 1], ur[0]), ur, flat([RIBW, yr], [RIBW, yt]), flat([RIBW, yt], [-RIBW, yt]), flat([-RIBW, yt], [-RIBW, yr]), ul, flat(ul[ul.length - 1], lo[0])); }
+    return runs;
+  }
+  const ring3 = (runs, s) => runs.map(r => r.map(q => ({ p: P3(q[0], q[1], s), n: [q[2], q[3], 0] })));
+  const loopOf = runs => { const p = []; for (const r of runs) for (const q of r) { const l = p[p.length - 1]; if (!l || Math.hypot(l[0] - q[0], l[1] - q[1]) > 1e-6) p.push([q[0], q[1]]); } const a = p[0], b = p[p.length - 1]; if (Math.hypot(a[0] - b[0], a[1] - b[1]) < 1e-6) p.pop(); return p; };
+  // skin two rings of the same section. M: a material or k => material for run k (null skips the run). flat: one normal per facet.
+  function skin(A, Bq, M, flat) { for (let k = 0; k < A.length; k++) { const Mk = typeof M === 'function' ? M(k) : M; if (!Mk) continue;
+    for (let i = 0; i < A[k].length - 1; i++) { const a = A[k][i], b = A[k][i + 1], c = Bq[k][i + 1], d = Bq[k][i]; if (flat) Q(a.p, b.p, c.p, d.p, Mk, add(a.n, b.n)); else QN(a.p, b.p, c.p, d.p, a.n, b.n, b.n, a.n, Mk); } } }
+
+  // ---- barrels: painted tubes, bare at the muzzle, the band and front sight, the parkerised monoblock they are brazed into
+  function buildBarrels() {
+    const c0 = CL(0, 1), tubeM = k => k === 4 ? M_RIB : M_PAINT;
+    skin(ring3(c0, 101.2), ring3(c0, 223.7), tubeM);
+    const c1 = CL(0, .7), cf = CL(-.7, .7); skin(ring3(c1, 232.9), ring3(c1, MZ - .7), k => k === 4 ? M_RIB : M_PARK); skin(ring3(c1, MZ - .7), ring3(cf, MZ), M_PARK_E, true);
+    // muzzle face and the three bores
+    { let face = loopOf(cf); const circ = (cx, cy, r, m) => { const q = []; for (let k = 0; k < m; k++) { const a = -k / m * TAU; q.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]); } return q; };
+      for (const h of [circ(UX, UY, RUB + .6, 10), circ(-UX, UY, RUB + .6, 10), circ(0, 0, RLB + .8, 12)]) face = bridge(face, h);
+      poly(face, XY, MZ, ST(.55), [0, 0, -1]);
+      for (const sg of [-1, 1]) { lathe(P3(sg * UX, UY, MZ), [0, 0, 1], [[0, RUB + .6, ST(1), 1.1], [.6, RUB, ST(.4), .4], [34, RUB, ST(.4), 0]], { n: 10, inner: true }); lathe(P3(sg * UX, UY, MZ - 34), [0, 0, 1], [[0, 0], [0, RUB]], { n: 5, M: ST(0) }); }
+      // the rifled bore: six lands and grooves twisting away into the dark
+      const rings = [], sh = [.34, .1, 0], dep = [MZ - .7, MZ - 9, MZ - 36]; for (let j = 0; j < 3; j++) { const ring = []; for (let i = 0; i < 12; i++) { const a = i / 12 * TAU + (MZ - .7 - dep[j]) * .017, r = i & 1 ? RLB + .25 : RLB; ring.push(P3(r * Math.sin(a), r * Math.cos(a), dep[j])); } rings.push(ring); }
+      loft(rings, { M: ST(.4), out: (j, i, p) => [-p[0], -p[1], 0], sh: (j, i) => sh[j] * (i & 1 ? .6 : 1.3) });
+      lathe(P3(0, 0, MZ), [0, 0, 1], [[0, RLB + .8, ST(1.15)], [.7, RLB + .25]], { n: 12, inner: true }); lathe(P3(0, 0, MZ - 36), [0, 0, 1], [[0, 0], [0, RLB + .3]], { n: 6, M: ST(0) }); }
+    // muzzle band, its clamp lug and screw under the rifled barrel, and the ramped front sight on it
+    { const b0 = CL(0, .6), b1 = CL(1.6, .6), b2 = CL(.4, .6);
+      skin(ring3(b0, 223.7), ring3(b1, 224.5), M_PARK_E, true); skin(ring3(b1, 224.5), ring3(b1, 232.1), k => k === 4 ? M_RIB : M_PARK); skin(ring3(b1, 232.1), ring3(b2, 232.9), M_PARK_E, true);
+      cbox(-3.6, 3.6, -14.4, -7.6, -231.6, -225, .5, 'x', M_PARK, M_PARK, M_PARK_E);
+      for (const sg of [-1, 1]) hexs(P3(sg * 3.6, -11.4, 228.3), [sg, 0, 0], 2.4, 1.5);
+      extrude([[224.8, 24.6], [232.6, 24.6], [232.6, 26.2], [228.6, 30.4], [224.8, 30.4]], SIDE, { h0: -1.7, h1: 1.7, r: .3, M: M_SIGHT, W: ST(.22), E: M_SIGHT_E });
+      lathe(P3(0, 28.5, 224.76), [0, 0, 1], [[0, 1.05], [0, 0]], { n: 8, M: M_DOT }); }
+    // monoblock: a black seam against the standing breech, a bright step down to the tubes
+    { const m1 = CL(1.5, .75, true), m0 = CL(.4, .75, true), m2 = CL(.7, .75, true), body = k => k === 0 ? null : k === 4 ? M_RIB : M_PARK;
+      skin(ring3(m0, BF + .1), ring3(m1, BF + 1.3), k => k === 0 ? null : M_BLACK, true);
+      skin(ring3(m1, BF + 1.3), ring3(m1, 100.4), body);
+      skin(ring3(m1, 100.4), ring3(m2, 101.2), k => k === 0 ? null : M_PARK_E, true);
+      poly(loopOf(m2), XY, 101.2, M_PARK, [0, 0, -1]); }
+    for (const sg of [-1, 1]) { Q(P3(sg * (WM + .06), 2.6, BF + 1.4), P3(sg * (WM + .06), 2.6, 90), P3(sg * (WM + .06), 2, 90), P3(sg * (WM + .06), 2, BF + 1.4), M_BLACK, [sg, 0, 0]); lathe(P3(sg * WM, -2.4, 86), [sg, 0, 0], [[0, 1.5, M_BLACK], [.2, 1.3, M_PIN], [.2, 0]], { n: 6 }); }
+    // the lump under the rifled barrel that carries the hook
+    cbox(-6.2, 6.2, -8.2, -4.2, -135, -101, 0, 'x', M_PARK);
+    // roll marks along the outside of each smoothbore
+    { const h = 3.2; let a = 150 * RAD, n = [Math.cos(a), Math.sin(a), 0], up = [Math.sin(a), -Math.cos(a), 0], c = [-UX + (RU + .1) * n[0], UY + (RU + .1) * n[1], -203];
+      text('NASA SEB13100872-301', mad(c, up, -h / 2), [0, 0, 1], up, h, M_INK);
+      a = 30 * RAD; n = [Math.cos(a), Math.sin(a), 0]; up = [-Math.sin(a), Math.cos(a), 0]; c = [UX + (RU + .1) * n[0], UY + (RU + .1) * n[1], -150];
+      text('9X19  12.5X70', mad(c, up, -h / 2), [0, 0, -1], up, h, M_INK); }
     return done();
   }
-  // left lower edge: slide-stop notch (the stop's lug sits under it when the slide is 55 mm back) and the disassembly half-moon
-  const SSN0 = 121.5, SSN1 = 128.5, SSN_Y = -7.4, TD_S = 101.5, TD_R = 2.6;
-
-  // ---- barrel: chamber and hood under the port, tube to the crowned muzzle, rifled bore falling away into the dark
-  function buildBarrel() {
-    const A = [0, 0, -1], O = P3(0, 0, 0);
-    lathe(O, A, [[PORT0 + .3, 0, ST(.3)], [PORT0 + .3, 8.75, M_BRIGHT], [81.5, 8.75, ST(.2)], [81.5, 8.0, ST(.16)], [84.5, 8.0, ST(.2)], [84.5, 8.75, M_BRIGHT], [94, 8.75, ST(1.0)], [99.5, 7.35]], { n: 12 });
-    lathe(O, A, [[99.5, 7.35, M_BARREL], [188.3, 7.35, ST(1.05)], [189.5, 6.7, ST(.8)], [189.5, 6.25, ST(.42)], [188.6, 5.85, ST(.12)], [188.6, 5.72]], { n: 16 });
-    // six lands and grooves with the 1911's left-hand twist, darker with every step down the bore
-    const rings = [], sh = [.11, .05, .018, 0], dep = [188.6, 181, 170, 152]; for (let j = 0; j < 4; j++) { const ring = []; for (let i = 0; i < 12; i++) { const a = i / 12 * TAU + (188.6 - dep[j]) * .0155, r = i & 1 ? 5.72 : 5.5; ring.push(P3(r * Math.sin(a), r * Math.cos(a), dep[j])); } rings.push(ring); }
-    loft(rings, { M: ST(.3), out: (j, i, p) => [-p[0], -p[1], 0], sh: (j, i) => sh[j] * (i & 1 ? .6 : 1.3) });
-    lathe(P3(0, 0, 152), [0, 0, 1], [[0, 0], [0, 7.0]], { n: 8, M: ST(0) });
-    return done();
-  }
-
-  /* ---- frame geometry shared by several parts ---- */
-  const TR = Math.tan(17 * RAD), FX = 9.5, FTOP = -11.25, BUTT = -119, ROOF = -26.5;
-  const sF = y => 58.5 + TR * (y + 53), sB = y => -13.7 + TR * (y + 119);       // front strap and back strap lines, s at height y
-  const FWD = [Math.cos(17 * RAD), -Math.sin(17 * RAD)], BACK = [-FWD[0], -FWD[1]];   // (s, y) unit vectors square to the grip, pointing forward / rearward
-  const M_FRAME = ST(.36), M_FRAME_E = ST(.74), M_CTRL = ST(.25), M_CTRL_E = ST(.66), M_GRIP = mt(TL.DARK, 1.25), M_GRIP_E = mt(TL.DARK, 2.3);
-  const HAM = [2.0, -17.0], SAF = [-4.0, -17.8], SSP = [87, -16.6];              // hammer pin, thumb-safety pin (centre of the tang radius), slide-stop pin
-  const seamB = y => sB(y) + 6.5;                                                // where the frame ends and the backstrap parts begin
 
   function buildFrame() {
-    // ---- flat sides: one slab 19 mm wide. Rear: the tang radius, then the seat the grip safety and mainspring housing close.
-    { const o = [[97, FTOP, 0], [SAF[0] + .6, FTOP, .45]];
-      for (const a of [100, 124, 148, 172, 196, 220, 244, 268]) o.push([SAF[0] + 6.55 * Math.cos(a * RAD), SAF[1] + 6.55 * Math.sin(a * RAD), .45]);
-      o.push([3, -24.6, 0], [14, -25.4, 0], [19.2, -27.2, 0], [20.2, -30, 0], [seamB(-33), -33, 0], [seamB(BUTT), BUTT, 0], [31.5, BUTT, 0], [51.7, -53, 0], [53.1, -48.5, 0], [59.4, ROOF, 0], [97, ROOF, 0]);
-      extrude(o, SIDE, { h0: -FX, h1: FX, M: M_FRAME, W: ST(.3), E: M_FRAME_E, crease: 28 }); }
-    // ---- dust cover: U channel that wraps the recoil spring tunnel, rounded underneath, open at the front
-    { const sec = (yBrk, yBot, hw, top) => { const p = [[-hw, top], [-hw, yBrk]]; for (let k = 1; k <= 7; k++) { const a = k / 8 * PI; p.push([-hw * Math.cos(a), yBrk - (yBrk - yBot) * Math.sin(a)]); } p.push([hw, yBrk], [hw, top]); return p; };
-      const st = [[97, -24.4, ROOF, FX], [104, -18.5, -24.2, FX], [142.4, -18.5, -24.2, FX], [143, -18.3, -23.7, FX - .5]], inner = sec(-15, -22.45, 7.45, FTOP);
-      const rings = st.map(q => sec(q[1], q[2], q[3], FTOP).map(p => P3(p[0], p[1], q[0])));
-      loft(rings, { closed: false, out: (j, i, p) => [p[0], p[1] + 14, 0], Ms: j => j === 2 ? M_FRAME_E : M_FRAME });
-      const lip = sec(-18.3, -23.7, FX - .5, FTOP); for (let i = 0; i < lip.length - 1; i++) Q(P3(lip[i][0], lip[i][1], 143), P3(lip[i + 1][0], lip[i + 1][1], 143), P3(inner[i + 1][0], inner[i + 1][1], 143), P3(inner[i][0], inner[i][1], 143), ST(.42), [0, 0, -1]);
-      loft([143, 124].map(s => inner.map(p => P3(p[0], p[1], s))), { closed: false, out: (j, i, p) => [-p[0], -p[1] - 14, 0], M: M_IN });
-      poly(inner, XY, 124, ST(.05), [0, 0, -1]);
-      for (const sg of [-1, 1]) Q(P3(sg * 7.45, FTOP, 97), P3(sg * FX, FTOP, 97), P3(sg * (FX - .5), FTOP, 143), P3(sg * 7.45, FTOP, 143), ST(.3), [0, 1, 0]); }
-    // ---- front strap, rounded across, carried up behind the trigger as the back wall of the guard
-    { const path = [[sF(BUTT), BUTT, 6.5], [sF(-53), -53, 6.5], [59.9, -48.5, 5.2], [66.2, ROOF, 4.0], [67.2, ROOF + 3, 4.0]];
-      const rings = path.map(q => { const r = []; for (let k = 0; k <= 8; k++) { const a = (-90 + k * 22.5) * RAD, d = q[2] * (Math.cos(a) - 1); r.push(P3(FX * Math.sin(a), q[1] + FWD[1] * d, q[0] + FWD[0] * d)); } return r; });
-      loft(rings, { closed: false, M: M_FRAME, out: (j, i, p) => [p[0], 0, -(-p[2] - (path[j][0] - 12))] });
-      for (let k = 0; k < 8; k++) T(P3(0, BUTT, sF(BUTT) - 6.5), rings[0][k], rings[0][k + 1], ST(.3), [0, -1, 0]); }
-    // ---- trigger guard: one bar bent into the loop, oval in section, swelling into the frame at the front root
-    { const path = [[106.5, -21.4, 9.3, 5.8], [105.2, -26.9, 7.7, 4.3], [103.5, -32.8, 5.7, 2.95], [101, -39.2, 5, 2.35], [97.3, -44.9, 5, 2.15], [92.4, -48.8, 5, 2.1], [86.5, -50.6, 5, 2.1], [79, -50.9, 5, 2.1], [70, -50.9, 5, 2.1], [63.5, -50.9, 5, 2.2], [57, -51.7, 5.8, 3.4]];
-      const rings = path.map((q, j) => { const a = path[Math.max(j - 1, 0)], b = path[Math.min(j + 1, path.length - 1)], l = Math.hypot(b[0] - a[0], b[1] - a[1]), N = [-(b[1] - a[1]) / l, (b[0] - a[0]) / l], r = [];
-        for (let k = 0; k < 10; k++) { const f = k / 10 * TAU, c = Math.cos(f), sn = Math.sin(f), cx = Math.sign(c) * Math.pow(Math.abs(c), .72), cn = Math.sign(sn) * Math.pow(Math.abs(sn), .72); r.push(P3(q[2] * cx, q[1] + N[1] * q[3] * cn, q[0] + N[0] * q[3] * cn)); } return r; });
-      loft(rings, { M: M_FRAME, sh: (j, i) => M_FRAME.s * (i > 5 ? .8 : 1) }); }
-    // ---- mainspring housing: flat, serrated down the back, pinned at the heel, with the lanyard loop under it
-    const dsec = []; dsec.push([-FX, 6.5], [-FX, 2.2], [-8.86, .64]); for (let k = 0; k <= 8; k++) dsec.push([-7.3 + k * 1.825, 0]); dsec.push([8.86, .64], [FX, 2.2], [FX, 6.5]);
-    const dring = (s, y, n, dep) => dsec.map(p => { const e = p[1] > 6 ? (dep || 6.5) : p[1]; return P3(p[0], y - n[1] * e, s - n[0] * e); });
-    { const r0 = dring(sB(BUTT), BUTT, BACK), r1 = dring(sB(-72), -72, BACK);
-      loft([r0, r1], { closed: false, out: (j, i, p) => [p[0] * (i < 3 || i > 10 ? 3 : .3), BACK[1], -BACK[0]], Ms: (j, i) => i >= 3 && i <= 10 ? ST(i & 1 ? .34 : .15) : M_CTRL });
-      poly(dsec.map(p => [p[0], sB(BUTT) - BACK[0] * p[1]]), XS, BUTT, ST(.24), [0, -1, 0]);
-      poly(dsec.map(p => [p[0], sB(-72) - BACK[0] * p[1]]), (x, s, h) => P3(x, -72 - BACK[1] * (sB(-72) - s) / BACK[0], s), 0, ST(.2), [0, 1, 0]);
-      for (const sg of [-1, 1]) lathe(P3(sg * FX, -108.5, sB(-108.5) + 3.4), [sg, 0, 0], [[0, 1.9, ST(.1)], [.25, 1.6, M_PIN], [.25, 0]], { n: 8 });
-      // lanyard loop: a bent wire staple under the heel
-      const lp = []; for (let k = 0; k <= 8; k++) { const a = (180 + k * 22.5) * RAD; lp.push(P3(0, BUTT + .4 + 4.2 * Math.sin(a) * 1.15, sB(BUTT) + 4.6 + 4.2 * Math.cos(a))); }
-      tube(lp, lp.map(() => 1.15), { n: 6, up: [1, 0, 0], M: ST(.5) }); }
-    // ---- grip safety: the arm down the backstrap ...
-    { const stn = [[sB(-71.4), -71.4, BACK, 6.5], [sB(-50), -50, BACK, 6.5], [sB(-42) - .1, -42, [-.975, .22], 7], [11.0, -36.5, [-1, .08], 9], [10.4, -31.5, [-.95, -.3], 11], [8.0, -28.0, [-.75, -.66], 11], [4.5, -26.2, [-.4, -.92], 10]];
-      loft(stn.map(q => dring(q[0], q[1], nrm([q[2][0], q[2][1], 0]), q[3])), { closed: false, M: M_CTRL, out: (j, i, p) => [p[0] * (i < 3 || i > 10 ? 3 : .3), stn[j][2][1], -stn[j][2][0]] });
-      poly(dsec.map(p => [p[0], sB(-71.4) - BACK[0] * p[1]]), (x, s, h) => P3(x, -71.4 - BACK[1] * (sB(-71.4) - s) / BACK[0], s), 0, ST(.2), [0, -1, 0]); }
-    // ---- ... and the beavertail swept up over the web of the hand, hollowed on top for the hammer
-    { const stn = [[5, -26.4, -13.5, -13.6, 9.2], [-2, -24.6, -12.4, -12.5, 9.2], [-9.6, -23.6, -12.0, -21.4, 9.9], [-14, -23.0, -12.2, -21.4, 10.5], [-18.5, -22.6, -11.8, -21.2, 10.9], [-22.5, -21.2, -10.8, -19.8, 10.6], [-26, -17.4, -9.0, -15.2, 9.0], [-28.6, -12.6, -7.2, -10.0, 6.0], [-30.4, -8.8, -6.0, -6.2, 1.5]];
-      const rings = stn.map(([s, yb, yt, yp, w]) => { const pw = Math.min(4.7, w * .8), ye = yb + (yt - yb) * .5, r = [[w, yt], [pw, yt], [pw, yp], [-pw, yp], [-pw, yt], [-w, yt], [-w, ye]];
-        for (let k = 1; k <= 6; k++) { const a = k / 7 * PI; r.push([-w * Math.cos(a), ye - (ye - yb) * Math.sin(a)]); } r.push([w, ye]); return r.map(p => P3(p[0], p[1], s)); });
-      loft(rings, { Ms: (j, i) => i === 2 ? ST(.12) : i === 1 || i === 3 ? ST(.16) : i === 0 || i === 4 ? M_CTRL_E : M_CTRL, cap1: M_CTRL }); }
-    // ---- magazine floorplate standing proud of the well, and the frame's butt around it
-    { const o = [[-6.9, 0], [6.9, 0], [7.6, 3], [7.6, 44], [5.6, 46.8], [-5.6, 46.8], [-7.6, 44], [-7.6, 3]].map(p => [p[0], p[1] + sB(BUTT) + 9.2, .7]);
-      extrude(o, XS, { h0: BUTT - 3.3, h1: BUTT - .3, M: ST(.2), W: ST(.5), E: ST(.85), crease: 50 }); }
-    // ---- full-length recoil spring guide rod: it stays put, so it shows under the barrel when the slide is back
-    lathe(P3(0, -15, 108), [0, 0, -1], [[0, 3.05, ST(.8)], [80.3, 3.05, ST(1.0)], [80.9, 2.5, ST(.62)], [80.9, 1.1, ST(.1)], [80.2, .9, ST(.1)], [80.2, 0]], { n: 10 });
-    // ---- pins through the frame: hammer pin, sear pin, the far end of the slide-stop pin
-    for (const sg of [-1, 1]) for (const [s, y, r] of [[HAM[0], HAM[1], 2.0], [10.5, -25.2, 1.45]]) lathe(P3(sg * FX, y, s), [sg, 0, 0], [[0, r + .3, ST(.08)], [.3, r, M_PIN], [.3, 0]], { n: 8 });
-    lathe(P3(FX, SSP[1], SSP[0]), [1, 0, 0], [[0, 2.7, ST(.08)], [.9, 2.3, ST(.7)], [.9, 0]], { n: 10 });
-    // ---- plunger tube between the slide stop and the safety
-    lathe(P3(-10.1, -20.3, 21.5), [0, 0, -1], [[0, 0, M_PIN], [0, .9, M_PIN], [1.6, .9, M_CTRL_E], [1.6, 1.85, M_CTRL], [33.4, 1.85, M_CTRL_E], [33.4, .9, M_PIN], [35, .9, M_PIN], [35, 0]], { n: 8 });
-    // ---- magazine catch: chequered button on the left, slotted lock on the right
-    lathe(P3(-FX, -33.4, 65.2), [-1, 0, 0], [[0, 3.6, M_CTRL], [2.3, 3.6, M_CTRL_E], [2.7, 3.2, ST(.16)], [2.7, 1.9, ST(.4)], [2.7, 0]], { n: 10 });
-    lathe(P3(FX, -33.4, 65.2), [1, 0, 0], [[0, 3.3, ST(.08)], [.35, 3.0, ST(.3)], [.35, 0]], { n: 10 });
-    Q(P3(FX + .4, -33.0, 62.6), P3(FX + .4, -33.0, 67.8), P3(FX + .4, -33.8, 67.8), P3(FX + .4, -33.8, 62.6), ST(.05), [1, 0, 0]);
-    // ---- thumb safety, down (fire): plate round its pin, and the shelf the thumb rides
-    { const o = []; for (const a of [90, 126, 162, 198, 234, 270]) o.push([SAF[0] + 5.3 * Math.cos(a * RAD), SAF[1] + 5.3 * Math.sin(a * RAD)]);
-      o.push([4, -23.7], [12, -23.6], [17.4, -22.4], [19.8, -20.3], [17.2, -17.7], [10, -15.2], [3, -13.2]);
-      extrude(o, SIDE, { h0: -11.75, h1: -FX, r: .45, M: M_CTRL, W: ST(.2), E: M_CTRL_E, cap1: false });
-      extrude([[1.5, -20.9], [16.8, -19.6], [19.9, -20.5], [19.6, -22.8], [12, -23.8], [3, -24]], SIDE, { h0: -16.6, h1: -11.75, r: .5, M: M_CTRL, W: M_CTRL, E: M_CTRL_E, cap1: false });
-      for (let k = 0; k < 5; k++) { const s = 4 + k * 2.9; Q(P3(-12.3, -20.67 + .085 * (s - 1.5), s), P3(-16.1, -20.67 + .085 * (s - 1.5), s), P3(-16.1, -20.6 + .085 * (s - .4), s + 1.1), P3(-12.3, -20.6 + .085 * (s - .4), s + 1.1), ST(.1), [0, 1, 0]); }
-      lathe(P3(-11.75, SAF[1], SAF[0]), [-1, 0, 0], [[0, 2.1, ST(.1)], [.3, 1.8, M_PIN], [.3, 0]], { n: 8 }); }
+    // ---- the lower: one slab of pressed and welded sheet 25 mm wide, from the hinge knuckle back to the tang and down to the heel
+    { const o = []; for (const a of [90, 60, 30, 0, -30, -60, -90]) o.push([KN[0] + 8 * Math.cos(a * RAD), KN[1] + 8 * Math.sin(a * RAD)]);
+      o[0][2] = 0;
+      o.push([sF(-24), -24], [sF(BUTT), BUTT], [sB(BUTT) + 5, BUTT], [sB(-36) + 5, -36], [5, -27], [-9, -22.6], [-15.4, -18.8], [-17.2, -14.6], [-15.6, -11], [-11, -8.8], [-4, -8, 0, M_FLOOR]);
+      extrude(o, SIDE, { h0: -FX, h1: FX, r: .55, M: M_PAINT, W: M_PAINT, E: M_CHIP, crease: 35 });
+      // the slot the centre hammer swings in, cut the length of the tang that keeps it off the glove
+      const sl = [[4.6, -7.92], [-4, -7.92], [-11, -8.72], [-15.65, -10.9], [-17.3, -14.6], [-15.9, -17.8]]; for (let k = 0; k < sl.length - 1; k++) Q(P3(-4.5, sl[k][1], sl[k][0]), P3(4.5, sl[k][1], sl[k][0]), P3(4.5, sl[k + 1][1], sl[k + 1][0]), P3(-4.5, sl[k + 1][1], sl[k + 1][0]), M_BLACK, [0, 1, 0]); }
+    // ---- receiver walls standing on it; the right one is cut down for the ejection port
+    for (const sg of [-1, 1]) { const o = [[4.6, -8, 0], [72, -8, 0], [72, 4.2]]; if (sg > 0) o.push([48, 4.2], [48, -4, .3], [24, -4, .3], [24, 4.2]); o.push([7.6, 4.2], [4.6, 1.2]);
+      extrude(o, SIDE, sg > 0 ? { h0: 11, h1: FX, r: .5, M: M_PAINT, E: M_CHIP, cap0: false } : { h0: -FX, h1: -11, r: .5, M: M_PAINT, E: M_CHIP, cap1: false }); }
+    // ---- standing breech: the bridge over the bolt tunnel, a ball fence behind each smoothbore with its striker bushing
+    extrude([[51, 4.2, 0], [72, 4.2, 0], [72, 16.5], [56, 16.5], [51, 12.5]], SIDE, { h0: -FX, h1: FX, r: .5, M: M_PAINT, E: M_CHIP });
+    Q(P3(-11, 4.2, 50.9), P3(11, 4.2, 50.9), P3(11, -8, 50.9), P3(-11, -8, 50.9), M_BLACK, [0, 0, 1]); Q(P3(-8.6, 6.6, 50.9), P3(8.6, 6.6, 50.9), P3(8.6, 4.2, 50.9), P3(-8.6, 4.2, 50.9), M_BLACK, [0, 0, 1]);
+    for (const sg of [-1, 1]) { blob(P3(sg * UX, UY, BF), [10.3, 0, 0], [0, 0, 14], [0, 10.3, 0], M_PAINT, 12, 4, { p1: PI / 2 });
+      lathe(P3(sg * 13.6, 17.2, 60.6), nrm([sg * .22, .16, 1]), [[-2.5, 2.7, M_PARK], [5.4, 2.7, M_PARK_E], [5.9, 2.2, ST(.6)], [5.9, 0]], { n: 6 }); }
+    // ---- rear sight in the valley between the fences: square notch, two dots, a ramp falling away toward the muzzle
+    extrude([[-6.5, 13], [6.5, 13], [6.5, 27], [5.2, 30.4], [1.8, 30.4], [1.8, 27.4], [-1.8, 27.4], [-1.8, 30.4], [-5.2, 30.4], [-6.5, 27]], XY, { h0: 53.5, h1: 59.5, r: .35, M: M_SIGHT, W: ST(.2), E: M_SIGHT_E });
+    extrude([[59.5, 16], [68, 16], [68, 19.5], [59.5, 29.6]], SIDE, { h0: -6.5, h1: 6.5, r: .3, M: ST(.2), W: ST(.24), E: M_SIGHT_E });
+    for (const x of [-3.6, 3.6]) lathe(P3(x, 28.8, 53.45), [0, 0, 1], [[0, 1.0], [0, 0]], { n: 8, M: M_DOT });
+    // ---- the two outside hammers, down on their strikers: boss, neck, head, and the spur swept back to a wide thumb pad
+    for (const sg of [-1, 1]) { const o = [[54.4, 20.6], [54.4, 14.6], [52, 12.4], [47.5, 9.6], [42, 6.4], [36.5, 2.8], [33, -.6]];
+      for (const a of [-20, -60, -100, -140, 180, 140]) o.push([PV[0] + 5.8 * Math.cos(a * RAD), PV[1] + 5.8 * Math.sin(a * RAD)]);
+      o.push([27.5, 7.2], [34, 11.2], [40.5, 15.6], [39.5, 19.4], [35.5, 22.8], [32, 25.6], [30.4, 28.2], [31.8, 30.4], [36, 29.2], [41, 26.4], [46.5, 24], [51.5, 23], [53.6, 22.2]);
+      extrude(o, SIDE, Object.assign({ r: .55, M: M_DRY, W: M_DRY_D, E: M_DRY_E, crease: 32 }, sg > 0 ? { h0: 13.3, h1: 17.1, cap0: false } : { h0: -17.1, h1: -13.3, cap1: false }));
+      cbox(sg > 0 ? 13.3 : -21.6, sg > 0 ? 21.6 : -13.3, 27.6, 30.9, -37.4, -30.6, .5, 'y', M_DRY, M_DRY_D, M_DRY_E, { cap0: false });
+      for (const s of [31.8, 33.7, 35.6]) Q(P3(sg * 14, 30.95, s), P3(sg * 21, 30.95, s), P3(sg * 21, 30.95, s + .9), P3(sg * 14, 30.95, s + .9), M_BLACK, [0, 1, 0]);
+      const pc = P3(sg * 17.1, PV[1], PV[0]); lathe(pc, [sg, 0, 0], [[0, 3.3, ST(.25)], [1, 3.3, M_PARK_E], [1.3, 2.8, ST(.7)], [1.3, 0]], { n: 8 }); slot(add(pc, [sg * 1.34, 0, 0]), [sg, 0, 0], nrm([0, .5, 1]), 2.7, .45); }
+    // ---- winter trigger guard: a strap of sheet bent into a loop deep and long enough for a pressurised glove
+    { const c = [[115.8, -21], [116.3, -30], [115.3, -39.8], [112.4, -49.4], [107, -57], [99.5, -61.3], [90, -62.9], [80, -62.4], [70, -60.4], [62, -58.4], [55.5, -58.6]], out = [], inn = [];
+      for (let k = 0; k < c.length; k++) { const a = c[Math.max(k - 1, 0)], b = c[Math.min(k + 1, c.length - 1)], l = Math.hypot(b[0] - a[0], b[1] - a[1]), n = [(b[1] - a[1]) / l, -(b[0] - a[0]) / l]; out.push([c[k][0] + n[0] * 1.7, c[k][1] + n[1] * 1.7]); inn.unshift([c[k][0] - n[0] * 1.7, c[k][1] - n[1] * 1.7]); }
+      extrude(out.concat(inn), SIDE, { h0: -7, h1: 7, r: .7, M: M_PAINT, E: M_CHIP, crease: 40 }); }
+    // ---- hinge pin through the knuckle, slotted, and the retaining screw it is lock-wired to
+    for (const sg of [-1, 1]) { const pc = P3(sg * FX, KN[1], KN[0]); lathe(pc, [sg, 0, 0], [[0, 5.4, ST(.2)], [.4, 5.2, M_PARK_E], [1.4, 4.7, M_PARK], [1.4, 0]], { n: 10 }); slot(add(pc, [sg * 1.44, 0, 0]), [sg, 0, 0], nrm([0, 1, .6]), 4.2, .55);
+      const sc = P3(sg * FX, -11.6, 113.5); hexs(sc, [sg, 0, 0], 2.3, 1.6); lockwire(add(sc, [sg * 1, 1.6, -1.6]), add(pc, [sg * 1, 3.2, 3.6]), [sg, 0, 0], .9); }
+    // ---- rivets holding the walls to the lower
+    for (const sg of [-1, 1]) for (const [s, y] of (sg < 0 ? [[66.5, -2.6], [64.5, -20.6], [-3, -14.5]] : [[66.5, -2.6], [64.5, -20.6], [-3, -14.5], [15, -2.6]])) lathe(P3(sg * FX, y, s), [sg, 0, 0], [[0, 1.75, M_PAINT], [.7, 1.1, M_PAINT], [.7, 0]], { n: 5 });
+    // ---- LEFT: the lever that opens the action, pivoted on the bar with its paddle above the front of the guard
+    { const o = []; for (const a of [60, 20, -20, -60, -100]) o.push([104 + 4.2 * Math.cos(a * RAD), -15.5 + 4.2 * Math.sin(a * RAD)]);
+      o.push([98, -18.6], [88, -18.2], [86, -20.6], [84, -22.2], [72.5, -22.8], [70, -21], [70, -13.5], [72.5, -11.8], [84, -12.2], [87, -14.2], [98, -12.6], [102, -11.6]);
+      extrude(o, SIDE, { h0: -14.4, h1: -FX, r: .5, M: M_DRY, W: M_DRY_D, E: M_DRY_E, cap1: false, crease: 32 });
+      cbox(-16.8, -14.4, -21.4, -13.2, -84.6, -72, .55, 'x', M_DRY, M_DRY_D, M_DRY_E, { cap1: false });
+      for (const s of [74, 76.6, 79.2, 81.8]) Q(P3(-16.85, -14.2, s), P3(-16.85, -14.2, s + 1.1), P3(-16.85, -20.4, s + 1.1), P3(-16.85, -20.4, s), M_BLACK, [-1, 0, 0]);
+      const pc = P3(-14.4, -15.5, 104); lathe(pc, [-1, 0, 0], [[0, 2.9, ST(.25)], [.8, 2.9, M_PARK_E], [1.1, 2.4, ST(.7)], [1.1, 0]], { n: 8 }); slot(add(pc, [-1.14, 0, 0]), [-1, 0, 0], nrm([0, 1, -.4]), 2.3, .4); }
+    // ---- LEFT: magazine release, a big button behind the guard where a gloved thumb finds it
+    lathe(P3(-FX, -26.6, 61.5), [-1, 0, 0], [[0, 3.1, ST(.16)], [.3, 2.7, M_DRY_D], [1.8, 2.7, M_DRY_E], [2.1, 2.2, M_DRY], [1.8, 1.2, ST(.4)], [1.8, 0]], { n: 8 });
+    // ---- LEFT: safety, a slider in a vertical track beside the hammer, down on F
+    { Q(P3(-FX - .06, 3, 11.4), P3(-FX - .06, 3, 7.4), P3(-FX - .06, -6.6, 7.4), P3(-FX - .06, -6.6, 11.4), M_BLACK, [-1, 0, 0]);
+      cbox(-15.2, -FX, -6, -1.2, -12.6, -6.2, .5, 'x', M_DRY, M_DRY_D, M_DRY_E, { cap1: false });
+      for (const y of [-2.6, -4.2]) Q(P3(-15.25, y, 12), P3(-15.25, y, 6.8), P3(-15.25, y - .8, 6.8), P3(-15.25, y - .8, 12), M_BLACK, [-1, 0, 0]);
+      text('S', P3(-FX - .08, .4, 17.6), [0, 0, 1], [0, 1, 0], 2.4, M_INK); text('F', P3(-FX - .08, -5.4, 17.6), [0, 0, 1], [0, 1, 0], 2.4, M_INK); }
+    // ---- roundel and property marks on the left lockplate; roundel under the port and a caution placard on the right
+    roundel(P3(-FX - .08, -11.2, 50.5), [0, 0, 1], [0, 1, 0], 9, 16);
+    text('U.S. PROPERTY', P3(-FX - .08, -12.6, 39.4), [0, 0, 1], [0, 1, 0], 2.4, M_INK); text('S/N 1009', P3(-FX - .08, -17.4, 39.4), [0, 0, 1], [0, 1, 0], 2.4, M_INK);
+    roundel(P3(FX + .08, -13, 36), [0, 0, -1], [0, 1, 0], 7.4, 16);
+    { const X = FX + .08, R = [0, 0, -1], Uu = [0, 1, 0], at = (s, y) => P3(X, y, s), bar = (s0, y0, s1, y1) => Q(at(s0, y1), at(s1, y1), at(s1, y0), at(s0, y0), M_INK, [1, 0, 0]);
+      bar(76, -22.6, 108, -22.2); bar(76, -10.4, 108, -10); bar(76, -22.6, 76.4, -10); bar(107.6, -22.6, 108, -10);
+      for (let k = 0; k < 8; k++) { const s = 77.2 + k * 3.8; Q(at(s, -12.6), at(s + 1.9, -12.6), at(s + 3.2, -10.9), at(s + 1.3, -10.9), M_INK, [1, 0, 0]); }
+      text('CAUTION', at(78, -17.2), R, Uu, 3.2, M_INK); greek(at(78, -19.4), R, Uu, 1.1, [5, 3, 6.5, 2.5, 4], M_INK); greek(at(78, -21.3), R, Uu, 1.1, [3.5, 6, 2, 5], M_INK); }
+    // ---- the joint where the walls stand on the lower, and paint knocked off down to the steel where holster, hand and brass get at it
+    { const seam = (x, s0, s1) => Q(P3(x, -7.82, s0), P3(x, -7.82, s1), P3(x, -8.18, s1), P3(x, -8.18, s0), M_INK, [Math.sign(x), 0, 0]);
+      seam(-FX - .05, 14, 41.2); seam(-FX - .05, 59.8, 71.4); seam(FX + .05, 5.4, 30.2); seam(FX + .05, 41.8, 71.4);
+      for (const c of [[[119, -23.3], [121.6, -22.5], [123.2, -21.1], [122.2, -20.3], [120, -21.5], [118.3, -22.3]], [[-9.2, -12.4], [-6.6, -11.5], [-5.2, -12.6], [-6.8, -13.9], [-8.7, -13.6]], [[16.5, 3.5], [20, 3.6], [22.4, 2.9], [20.6, 2.2], [18, 2.6]], [[96.5, -23.3], [100.5, -23.2], [102, -22.2], [98.6, -21.9]]]) poly(c, SIDE, -FX - .05, M_CHIP, [-1, 0, 0]);
+      for (const c of [[[27, -4.9], [31, -4.7], [34.6, -5.4], [33, -6.5], [29.5, -6.9], [27.4, -6]], [[120, -21.7], [122.6, -20.2], [122, -19], [119.6, -20.3]], [[49.5, 3.6], [53, 3.5], [54.2, 2.6], [51, 2.3]]]) poly(c, SIDE, FX + .05, M_CHIP, [1, 0, 0]); }
+    // ---- bakelite fore-end under the barrels, steel iron at the knuckle end, one gripping groove a side
+    { const F = [[13, 7], [13.4, 1.5], [12.4, .8], [12.4, -.6], [13.3, -1.3], [13, -12], [11, -19], [6.5, -23], [0, -24]], half = F.length;
+      const sec = (s, kx, ky) => { const r = []; for (let i = 0; i < half; i++) r.push(P3(-F[i][0] * kx, F[i][1] < -1.3 ? -1.3 + (F[i][1] + 1.3) * ky : F[i][1], s)); for (let i = half - 2; i >= 0; i--) r.push(P3(F[i][0] * kx, F[i][1] < -1.3 ? -1.3 + (F[i][1] + 1.3) * ky : F[i][1], s)); return r; };
+      const rings = [sec(134.8, 1, 1), sec(138, 1, 1), sec(162, 1, .82), sec(185, .95, .6), sec(188.4, .74, .38)], nq = 2 * half - 2, fuv = (j, i) => [(12 + i * 13) / 256, (200 - [0, 4, 30, 55, 60][j] * 3.2) / 256];
+      loft(rings, { closed: false, out: (j, i, p) => [p[0], p[1] + 4, 0], uv: fuv, Ms: (j, i) => j === 0 ? M_PARK : (i === 2 || i === nq - 3) ? M_BAKE_D : M_BAKE });
+      const face = (r, n, M) => { const c = [0, 0, 0]; for (const p of r) { c[0] += p[0] / r.length; c[1] += p[1] / r.length; c[2] += p[2] / r.length; } for (let i = 0; i < r.length - 1; i++) { vx(c, n, M); vx(r[i], n, M); vx(r[i + 1], n, M); } };
+      face(rings[0], [0, 0, 1], M_PARK); face(rings[4], [0, 0, -1], M_BAKE);
+      // Velcro pile for the holster on the left, a bayonet stud on the right
+      const vq = [[-13.62, -2.6, -144], [-13.62, -2.6, -168], [-13.42, -9.4, -168], [-13.42, -9.4, -144]], vn = [-1, 0, 0], VM = mt(TL.SUIT, .62, 0, 1), vuv = [[.02, .01], [.3, .01], [.3, .075], [.02, .075]];
+      for (const k of [0, 1, 2, 0, 2, 3]) vx(vq[k], vn, VM, undefined, vuv[k]);
+      for (const [s0, y0, s1, y1] of [[143.4, -2.2, 168.6, -2.8], [143.4, -9.2, 168.6, -9.8], [143.4, -2.2, 144.2, -9.8], [167.8, -2.2, 168.6, -9.8]]) Q(P3(-13.7, y0, s0), P3(-13.7, y0, s1), P3(-13.5, y1, s1), P3(-13.5, y1, s0), M_INK, vn);
+      hexs(P3(-12.9, -4.6, 178), [-1, 0, 0], 2.3, 1.4); { const pc = P3(12.9, -4.6, 178); lathe(pc, [1, 0, 0], [[0, 2.6, ST(.25)], [.7, 2.6, M_PARK_E], [.9, 2.1, ST(.7)], [.9, 0]], { n: 8 }); slot([13.84, -4.6, -178], [1, 0, 0], nrm([0, 1, 1]), 2, .4); }
+      lathe(P3(13.1, -5.8, 156), [1, 0, 0], [[0, 3.1, M_PARK], [3.2, 3.1, M_PARK], [3.2, 5.6, M_PARK_E], [4.9, 5.6, M_PARK_E], [5.5, 4.9, M_PARK], [5.5, 0]], { n: 8 }); }
+    // ---- magazine floorplate, the steel heel with the T rail the machete stock slides onto, the tether staple and its ring
+    extrude([[-9.8, 2], [9.8, 2], [9.8, 40], [7.5, 44.5], [-7.5, 44.5], [-9.8, 40]], XS, { h0: BUTT - 3.4, h1: BUTT - .2, r: .7, M: ST(.3), W: M_PARK, E: M_PARK_E, crease: 50 });
+    extrude([[-10, BUTT + .2], [10, BUTT + .2], [10, BUTT - 2.6], [4.2, BUTT - 2.6], [4.2, BUTT - 4.6], [8.8, BUTT - 4.6], [8.8, BUTT - 7.6], [-8.8, BUTT - 7.6], [-8.8, BUTT - 4.6], [-4.2, BUTT - 4.6], [-4.2, BUTT - 2.6], [-10, BUTT - 2.6]], XY, { h0: -19, h1: 1.2, r: .35, M: M_PARK, W: M_PARK, E: M_PARK_E });
+    { const lp = []; for (let k = 0; k <= 6; k++) { const a = (-90 + k * 30) * RAD; lp.push(P3(0, BUTT - 3.4 + 2.6 * Math.sin(a), -19 - 4.6 * Math.cos(a))); } tube(lp, lp.map(() => .95), { n: 4, up: [1, 0, 0], M: M_PARK_E });
+      const rp = []; for (let k = 0; k <= 8; k++) { const a = k / 8 * TAU; rp.push(add(RINGC, add(mul([1, 0, 0], 5.2 * Math.cos(a)), mul(RINGD, 5.2 * Math.sin(a))))); } tube(rp, rp.map(() => .8), { n: 3, up: cross([1, 0, 0], RINGD), M: M_BRIGHT }); }
+    // ---- what the open receiver shows: the mouth of the magazine and its feed lips
+    Q(P3(-8.4, -7.9, 71), P3(8.4, -7.9, 71), P3(8.4, -7.9, 37), P3(-8.4, -7.9, 37), M_BLACK, [0, 1, 0]);
+    for (const sg of [-1, 1]) Q(P3(sg * 8.4, -7.85, 70), P3(sg * 8.4, -7.85, 38), P3(sg * 5.6, -6.1, 38), P3(sg * 5.6, -6.1, 66), ST(.8), [sg * .4, 1, 0]);
+    return done();
+  }
+  const RINGD = nrm([0, -.55, .83]), RINGC = [0, BUTT - 5.6, 26.9], LAN0 = mad(RINGC, RINGD, 5.2);   // tether ring: the way it hangs, its centre, where the lanyard clips on (x y z, millimetres)
+
+  /* ---- bolt carrier: the bolt that runs in the tunnel under the breech bridge, and behind it the tall saddle that rides the
+     receiver walls between the outside hammers, with the cocking wings a glove can find and the firing-pin plate on its rear face */
+  function buildCarrier() {
+    const top = [[12.5, 10.4], [11.3, 13], [8.4, 15.2], [4.6, 16.3]];
+    { const o = [[-12.5, 4.6, 0], [12.5, 4.6, 0]].concat(top, [[2.3, 16.5, 0, ST(.14)], [2.3, 15.6, 0, ST(.22)], [-2.3, 15.6, 0, ST(.14)], [-2.3, 16.5, 0]], top.map(p => [-p[0], p[1]]).reverse());
+      extrude(o, XY, { h0: 4.3, h1: 50, r: .5, M: M_DRY, W: M_DRY, E: M_DRY_E, cap0: false, crease: 28 }); }
+    // the cap on its rear end stands a little taller: the agency roundel is set in it over the firing-pin plate
+    { const cap = [[12.5, 12.4], [11, 16.2], [7.6, 18.8], [3, 19.6]], o = [[-12.5, -8], [12.5, -8]].concat(cap, cap.map(p => [-p[0], p[1]]).reverse());
+      extrude(o, XY, { h0: 0, h1: 4.3, r: .6, M: M_DRY, W: M_DRY, E: M_DRY_E, crease: 28 }); }
+    lathe(P3(0, 10.9, .1), [0, 0, 1], [[0, 7.9, M_DRY_E], [.5, 7.4, ST(1.3)], [.5, 6.9, ST(.4)], [.25, 6.8]], { n: 16 });
+    roundel(P3(0, 10.9, -.15), [1, 0, 0], [0, 1, 0], 6.8, 16);
+    extrude([[-5, -6.8], [5, -6.8], [5, 1.6], [3.8, 2.8], [-3.8, 2.8], [-5, 1.6]], XY, { h0: -.45, h1: .1, r: .25, M: ST(1.1), W: ST(.5), E: M_DRY_E, cap1: false });
+    lathe(P3(0, -1.6, -.47), [0, 0, 1], [[0, 2.3, ST(.06)], [0, 1.7, M_BRIGHT], [0, 0]], { n: 8 });
+    // cocking wings
+    for (const sg of [-1, 1]) { extrude([[12, 0], [19, 0], [20.4, 1.5], [20.4, 5], [18.8, 8.6], [15.6, 11], [12, 12.4]].map(p => [sg * p[0], p[1]]), XS, { h0: 5, h1: 14.4, r: .7, M: M_DRY, W: M_DRY, E: M_DRY_E, crease: 50 });
+      for (const y of [6.6, 9, 11.4]) Q(P3(sg * 13.2, y + 1, -.04), P3(sg * 19.4, y + 1, -.04), P3(sg * 19.4, y, -.04), P3(sg * 13.2, y, -.04), M_BLACK, [0, 0, 1]); }
+    // the body between the walls (seen through the port and when it overhangs the tang), the extractor on its right
+    for (const sg of [-1, 1]) Q(P3(sg * 10.7, 4.6, 4.3), P3(sg * 10.7, 4.6, 50), P3(sg * 10.7, -5.5, 50), P3(sg * 10.7, -5.5, 4.3), M_DRY_D, [sg, 0, 0]);
+    Q(P3(-10.7, -5.5, 4.3), P3(10.7, -5.5, 4.3), P3(10.7, -5.5, 50), P3(-10.7, -5.5, 50), M_DRY_D, [0, -1, 0]);
+    cbox(10.7, 11.4, -1.7, 1.7, -47, -30, .25, 'x', ST(1.1), ST(.5), M_BRIGHT, { cap0: false });
+    // bolt
+    extrude([[-8.3, -5.5], [8.3, -5.5], [8.3, 4.4], [6.4, 6.2], [-6.4, 6.2], [-8.3, 4.4]], XY, { h0: 50, h1: BF, r: .4, M: ST(.5), W: M_DRY, E: M_DRY_E, cap0: false });
+    Q(P3(-2.2, 6.26, 51), P3(2.2, 6.26, 51), P3(2.2, 6.26, 70.5), P3(-2.2, 6.26, 70.5), ST(1.2), [0, 1, 0]);
     return done();
   }
 
-  // ---- hammer (down), ring spur, serrated on the crown. Rotates about HAM.
+  // ---- centre hammer (down): a flat face on the firing pin, a spur swept back and serrated along its top. Rotates about HAM.
   function buildHammer() {
-    const o = [[-.5, -7.5], [-.5, 5.2], [-1.3, 6.7], [-3.2, 7.7]];
-    const top = [[-4.6, 8.1], [-6.0, 8.3], [-7.4, 8.3], [-8.8, 8.1], [-10.2, 7.6], [-11.5, 6.8], [-12.6, 5.8], [-13.5, 4.6], [-14.2, 3.2]];
-    top.forEach((q, i) => o.push(i & 1 ? [q[0], q[1], .5, ST(.12)] : [q[0], q[1], .5, ST(.5)]));
-    o.push([-14.6, .4], [-14.0, -2.5], [-12.3, -4.9], [-10.2, -6.5], [-6.5, -10.6], [-3.6, -15], [-2.6, -19], [2, -21.5], [5, -19], [4.2, -14], [2.2, -10], [.3, -8.3]);
-    const hole = []; for (let k = 0; k < 10; k++) { const a = k / 10 * TAU; hole.push([-8.0 + 3.3 * Math.cos(a), .8 + 3.3 * Math.sin(a), .35]); }
-    extrude(o, SIDE, { h0: -3.8, h1: 3.8, r: .5, M: ST(.5), W: ST(.3), E: ST(.95), holes: [hole], crease: 36 });
+    const o = [[-.4, -8.6], [-.4, 5.4], [-1.2, 7.2], [-3.2, 8.4]];
+    const topc = [[-5.4, 8.9], [-7.4, 8.6], [-9.4, 8], [-11.4, 7.1], [-13.4, 5.9], [-15.4, 4.4], [-17.4, 2.6]];
+    topc.forEach((q, i) => o.push([q[0], q[1], .4, i & 1 ? ST(.8) : ST(.28)]));
+    o.push([-18.7, .9], [-18.1, -.9], [-16, -1.3], [-12.6, -.9], [-9.8, -2.2], [-8, -5], [-7, -8.6], [-5.2, -12.4], [-3, -14.5], [-.5, -19], [3, -21], [7.5, -21], [10.5, -18], [11, -14], [9, -10.5], [5, -9], [1.5, -8.6]);
+    extrude(o, SIDE, { h0: -3.8, h1: 3.8, r: .5, M: M_DRY, W: M_DRY_D, E: M_DRY_E, crease: 36 });
     return done();
   }
-  // ---- trigger: long shoe with three lightening holes, and the bow running back into the frame
+  // ---- trigger: a wide grooved blade for a gloved finger. Rotates about TRG.
   function buildTrigger() {
-    extrude([[80.4, -25], [81.0, -30], [80.6, -35], [80.9, -40], [81.9, -43.7], [80.3, -44.7], [77.5, -44.3], [74.5, -41], [72.5, -36], [71.0, -31], [70.2, -25]], SIDE, { h0: -3.3, h1: 3.3, r: .55, M: ST(.62), W: ST(.42), E: ST(1.0), crease: 40 });
-    for (const sg of [-1, 1]) { for (const [s, y, r] of [[75.5, -30.6, 1.7], [76.6, -35.6, 1.5], [77.6, -40.1, 1.25]]) lathe(P3(sg * 3.32, y, s), [sg, 0, 0], [[0, r], [0, 0]], { n: 8, M: ST(.06) });
-      cbox(sg * 3.3 - .5, sg * 3.3 + .5, -32.4, -29.4, -71.5, -58, 0, 'x', ST(.3)); }
-    return done();
-  }
-  // ---- slide stop (left): lever from its pin back to the chequered thumb pad. Rotates about SSP when it locks the slide.
-  function buildSlideStop() {
-    const o = []; for (const a of [60, 20, -20, -60, -100, -140]) o.push([SSP[0] + 3.3 * Math.cos(a * RAD), SSP[1] + 3.3 * Math.sin(a * RAD)]);
-    o.push([80, -17.7], [72, -17.5], [66, -17.7], [61.5, -18.3], [59.3, -17.1], [59.0, -13.6], [60, -11.95], [70, -11.85], [71.5, -12.7], [78, -12.9], [84, -12.7], [86.2, -13.3]);
-    extrude(o, SIDE, { h0: -11.9, h1: -FX, r: .45, M: M_CTRL, W: ST(.2), E: M_CTRL_E, cap1: false });
-    extrude([[59.0, -13.6], [60, -11.95], [70, -11.85], [71.2, -12.9], [70.6, -16.6], [61.5, -17.9], [59.3, -17.0]], SIDE, { h0: -13.7, h1: -11.9, r: .5, M: M_CTRL, W: M_CTRL, E: M_CTRL_E, cap1: false });
-    for (let k = 0; k < 4; k++) { const s = 61.2 + k * 2.4; Q(P3(-13.74, -12.9, s), P3(-13.74, -12.9, s + 1.1), P3(-13.74, -16.6, s + 1.1), P3(-13.74, -16.9, s), ST(.1), [-1, 0, 0]); }
-    lathe(P3(-11.9, SSP[1], SSP[0]), [-1, 0, 0], [[0, 2.2, ST(.1)], [.3, 1.9, M_PIN], [.3, 0]], { n: 8 });
+    extrude([[79.6, -23], [81, -30], [80.4, -36], [80.8, -42], [82.4, -47], [80.4, -48.4], [77.2, -47.4], [75.2, -42], [74.2, -36], [73.4, -30], [72.8, -23]], SIDE, { h0: -5, h1: 5, r: .6, M: M_DRY, W: M_DRY_D, E: M_DRY_E, crease: 40 });
+    for (const x of [-2.6, 0, 2.6]) Q(P3(x - .5, -27, 81.05 - .2), P3(x + .5, -27, 81.05 - .2), P3(x + .5, -44, 81.5), P3(x - .5, -44, 81.5), M_BLACK, [0, 0, -1]);
     return done();
   }
 
-  /* ---- grip panel (sg -1 left, +1 right): a swelling slab cut into raised diamonds, plain border, two screws in escutcheons.
-     The diamonds are real pyramids: under the flat lamp it is their baked facet tones that make the panel read as chequering. */
+  /* ---- bakelite grip, one half (sg -1 left, +1 right) from the front edge round to the seam down the back: a swelling
+     shell with raised gripping ribs and the agency roundel in a steel bezel where the Makarov carried its star. */
   function buildGrip(sg) {
-    const NP = 14, NQ = 22, Y0 = -31.5, Y1 = -112.2, F0 = .07, F1 = .93, YT = -26.3, YBT = -116.8;
-    const sR = y => sB(y) + 7.5, WID = sF(-60) - 7.6 - sR(-60), th = f => 2.4 + 4.0 * Math.pow(Math.sin(PI * clamp(f, 0, 1)), .75);
-    const pt = (f, y, lift) => P3(sg * (FX + th(f) + lift), y, sR(y) + f * WID), node = (p, q, lift) => pt(F0 + (F1 - F0) * p / NP, Y0 + (Y1 - Y0) * q / NQ, lift);
-    const LO = -.6, HI = .15, screws = [2, 20], inScrew = (p, q) => screws.some(qc => Math.abs(p - 7) + Math.abs(q - qc) <= 2);
-    const edge = (p, q) => p === 0 || p === NP || q === 0 || q === NQ, out = [sg, 0, 0];
-    const facet = (a, b, pq, M) => { const apx = node(pq[0], pq[1], HI), fake = node(pq[0], pq[1], 1.5), n = fnorm(a, b, fake, out); vx(a, n, M); vx(b, n, M); vx(apx, n, M); };
-    for (let q = 0; q <= NQ; q++) for (let p = 0; p <= NP; p++) { if (((p + q) & 1) === 0 || inScrew(p, q)) continue;
-      const c = [[p - 1, q], [p, q - 1], [p + 1, q], [p, q + 1]].filter(v => v[0] >= 0 && v[0] <= NP && v[1] >= 0 && v[1] <= NQ).map(v => node(v[0], v[1], LO));
-      if (edge(p, q)) { T(c[0], c[1], c[2], M_GRIP, out); continue; }
-      for (let k = 0; k < 4; k++) facet(c[k], c[(k + 1) & 3], [p, q], M_GRIP); }
-    for (const qc of screws) { const cor = qc < 4 ? [[4, qc], [7, qc + 3], [10, qc], [8, 0], [6, 0]] : [[4, qc], [6, NQ], [8, NQ], [10, qc], [7, qc - 3]], c = node(7, qc, HI);
-      for (let k = 0; k < cor.length; k++) { const a = cor[k], b = cor[(k + 1) % cor.length], A = node(a[0], a[1], HI), Bq = node(b[0], b[1], HI); T(c, A, Bq, M_GRIP_E, out);
-        if (!(edge(a[0], a[1]) && edge(b[0], b[1]))) Q(A, Bq, node(b[0], b[1], LO), node(a[0], a[1], LO), mt(TL.DARK, .7), sub(mul(add(A, Bq), .5), c)); }
-      const at = node(7, qc, HI - .2); lathe(at, [sg, 0, 0], [[0, 4.6, ST(.2)], [.7, 4.3, M_PIN], [.7, 3.5, ST(.05)], [.3, 3.35, ST(.4)], [1.0, 2.9, ST(.66)], [1.25, 0]], { n: 10 });
-      const sl = (dy, dz) => add(at, [sg * 1.3, dy, dz]); Q(sl(2.4, .9), sl(2.9, .1), sl(-2.4, -.9), sl(-2.9, -.1), ST(.04), out); }
-    const loopAt = (f0, f1, ya, yb, x) => { const r = []; for (let k = 0; k <= 7; k++) { const f = mix(f0, f1, k / 7); r.push(x === undefined ? pt(f, ya, LO) : x(f, ya)); } for (let k = 7; k >= 0; k--) { const f = mix(f0, f1, k / 7); r.push(x === undefined ? pt(f, yb, LO) : x(f, yb)); } return r; };
-    const eh = f => 1.25 + (th(f) - 2.4) * .3;
-    const rings = [loopAt(F0, F1, Y0, Y1), loopAt(F0 - .035, F1 + .035, Y0 + 1.5, Y1 - 1.5, (f, y) => pt(f, y, .12)), loopAt(0, 1, YT, YBT, (f, y) => P3(sg * (FX + eh(f)), y, sR(y) + f * WID)), loopAt(0, 1, YT, YBT, (f, y) => P3(sg * FX, y, sR(y) + f * WID))];
-    loft(rings, { Ms: j => j === 2 ? mt(TL.DARK, .8) : M_GRIP_E, out: (j, i, p) => [sg * 3, 0, 0].map((v, k) => v + (p[k] - rings[0][i][k]) * (j > 1 ? 1 : .2)) });
+    const U = [3, 4.8, 13, 26, 39, 47.5, 52.8, 55.1], X = [12.6, 15.3, 17.3, 18, 17.2, 14.6, 8.6, 0], YT = [-31, -29.8, -28.4, -27.4, -27, -27.2, -27.6, -28], NI = 8, Yr = [0, -35, -56, -78, -100, -114, BUTT];
+    const NRM = U.map((_, i) => { const a = Math.max(i - 1, 0), b = Math.min(i + 1, NI - 1), dx = X[b] - X[a], du = U[b] - U[a], l = Math.hypot(dx, du); return [du / l, -dx / l]; });
+    const pt = (i, y, lift) => { const t = clamp((-27 - y) / 95, 0, 1), k = 1 + .05 * t * t, fl = (3.4 * Math.sin(PI * Math.pow(t, .8)) + 7 * t * t * t * t) * U[i] / 55.1, n = NRM[i]; return P3(sg * (X[i] * k + n[0] * (lift || 0)), y, sF(y) - U[i] - fl - n[1] * (lift || 0)); };
+    const out = i => [sg * NRM[i][0], 0, NRM[i][1]];
+    const rows = Yr.map((y, j) => U.map((_, i) => pt(i, j ? y : YT[i])));
+    loft(rows, { closed: false, M: M_BAKE, out: (j, i) => out(i), uv: (j, i) => [(100 + U[i] * 3.4) / 256, (20 - (j ? Yr[j] : YT[i]) * 3.4) / 256] });
+    // the edges of the shell: top ledge against the frame, the underside round the heel
+    for (let i = 0; i < 5; i++) { const a = rows[0][i], b = rows[0][i + 1]; Q(a, b, [sg * FX, b[1], b[2]], [sg * FX, a[1], a[2]], M_BAKE_E, [0, 1, 0]); }
+    { const p2 = rows[6].map(p => [p[0], -p[2]]); p2.push([0, sB(BUTT) + 5], [sg * FX, sB(BUTT) + 5], [sg * FX, -rows[6][0][2]]); poly(p2, XS, BUTT, M_BAKE_D, [0, -1, 0]); }
+    // gripping ribs
+    for (const yr of [-41, -50, -59, -97, -106, -115]) { const R = [[yr + 2.7, .05], [yr + 1.5, .95], [yr - 1.5, .95], [yr - 2.7, .05]].map(([y, l]) => [1, 2, 3, 4, 5].map((i, k) => pt(i, y, k === 0 || k === 4 ? 0 : l)));
+      for (let j = 0; j < 3; j++) for (let k = 0; k < 4; k++) { const o = out(k + 1); Q(R[j][k], R[j][k + 1], R[j + 1][k + 1], R[j + 1][k], j === 0 ? M_BAKE_E : j === 1 ? M_BAKE : M_BAKE_D, [o[0], j === 0 ? .6 : j === 2 ? -.6 : 0, o[2]]); } }
+    // the medallion
+    { const y = -78, t = (-27 - y) / 95, c = P3(sg * (17.69 * (1 + .05 * t * t) - 1.2), y, sF(y) - 31 - 2.3);
+      lathe(c, [sg, 0, 0], [[0, 11.4, M_BAKE_E], [2.2, 11.4, ST(1.3)], [2.7, 10.9, ST(1.0)], [2.7, 9.9, ST(.5)], [2.2, 9.7]], { n: 14 });
+      roundel(add(c, [sg * 2.2, 0, 0]), [0, 0, -sg], [0, 1, 0], 9.7, 14); }
     return done();
   }
-  // ---- what the open port shows: the magazine lips, then either the next round or the empty magazine's follower
-  function buildMagTop() {
-    poly([[-7, 25], [7, 25], [7, 61.5], [-7, 61.5]], XS, FTOP + .06, ST(.04), [0, 1, 0]);
-    for (const sg of [-1, 1]) { Q(P3(sg * 7.1, FTOP, 26), P3(sg * 7.1, FTOP, 49), P3(sg * 6.6, -8.4, 49), P3(sg * 6.6, -8.4, 26), ST(.5), [sg, .3, 0]); Q(P3(sg * 6.6, -8.4, 26), P3(sg * 6.6, -8.4, 48), P3(sg * 4.5, -6.9, 45), P3(sg * 4.5, -6.9, 26), ST(.62), [sg * .5, 1, 0]); }
-    cbox(-6.5, -4.7, FTOP, -6.4, -24, -3, .3, 'x', ST(.5), ST(.4), M_EDGE);
+  // ---- only without the glove: the TP-82's second lever under the guard (the grip safety the middle finger squeezes)
+  function buildGripSafety() {
+    extrude([[60.6, -61], [63.6, -66], [63.4, -74], [61.2, -80.4], [58.4, -81.4], [57.8, -77], [59.4, -72], [59.2, -66], [57.4, -62]], SIDE, { h0: -4, h1: 4, r: .5, M: M_DRY, W: M_DRY_D, E: M_DRY_E, crease: 40 });
     return done();
   }
   function buildRound() {
-    lathe(P3(0, -12.4, 27.5), nrm([0, .045, -1]), [[0, 0, ST(1.1)], [0, 5.6, ST(.7)], [.9, 5.6, ST(.4)], [.9, 5.0, ST(.5)], [2.0, 5.0, ST(1.0)], [2.6, 6.05, ST(1.5)], [23.3, 6.05, ST(.95)], [24.2, 5.72, ST(.8)], [28.5, 5.0, ST(.85)], [31.2, 3.1, ST(.9)], [32, 0]], { n: 10, a0: -100 * RAD, a1: 100 * RAD, ref: [0, 1, 0] });
+    lathe(P3(0, -11.5, 39.5), nrm([0, .06, -1]), [[0, 0, M_BRASS], [0, 4.9, ST(.6)], [1.2, 4.4, M_BRASS], [2.4, 4.95, M_BRASS], [19, 4.95, ST(1.0)], [19.6, 4.55, ST(.95)], [25.5, 3.5, ST(.9)], [29.2, 1.2]], { n: 6, a0: -80 * RAD, a1: 80 * RAD, ref: [0, 1, 0] });
     return done();
   }
   function buildFollower() {
-    Q(P3(-5.2, -9.6, 27), P3(5.2, -9.6, 27), P3(5.2, -7.3, 57), P3(-5.2, -7.3, 57), ST(.95), [0, 1, 0]);
-    cbox(-2.1, 2.1, -8.9, -7.2, -50, -36, .5, 'y', ST(1.25), ST(.7), ST(1.4), { cap0: false });
-    Q(P3(-5.2, -9.6, 27), P3(5.2, -9.6, 27), P3(5.2, FTOP, 27), P3(-5.2, FTOP, 27), ST(.5), [0, 0, 1]);
+    Q(P3(-5.4, -7.3, 39), P3(5.4, -7.3, 39), P3(5.4, -5.9, 68), P3(-5.4, -5.9, 68), ST(1.0), [0, 1, 0]);
+    cbox(-2.1, 2.1, -7.4, -5.6, -62, -46, .5, 'y', ST(1.3), ST(.7), M_BRIGHT, { cap0: false });
     return done();
   }
-
+  // the hold-open catch, built down inside the frame; emit lifts it in front of the bolt when the magazine is empty
+  function buildCatch() { cbox(-10.7, -8.5, -15, -8.1, -31, -26.6, .3, 'y', M_BRIGHT, ST(.8), M_BRIGHT, { cap0: false }); return done(); }
   /* =====================================================================================================================
      THE HAND. A right hand in a pressurised EVA glove: fat fingers of woven cloth with moulded rubber caps, a restraint strap
      and its bar across the back, pleated knuckles, the wrist bearing ring and the sleeve running off down and to the right.
      Fingers are built along a bone (local -Z from joint to joint) and placed with boneM, so the index finger can be re-posed. */
-  const M_GLV = mt(TL.SUIT, .52), M_GLV_D = mt(TL.SUIT, .31), M_GLV_L = mt(TL.SUIT, .62), M_RUB = mt(TL.DARK, 1.45), M_RUB_D = mt(TL.DARK, .7), M_STRAP = mt(TL.SUIT, .26), M_RING = ST(.95), M_RING_D = ST(.28), M_SLV = mt(TL.SUIT, .5);
+  const M_GLV = mt(TL.SUIT, .7), M_GLV_D = mt(TL.SUIT, .4), M_GLV_L = mt(TL.SUIT, .84), M_SEAM = mt(TL.SUIT, .3), M_RUB = mt(TL.DARK, 2.9), M_RUB_D = mt(TL.DARK, 1.35), M_STRAP = mt(TL.SUIT, .3), M_RING = ST(.95), M_RING_D = ST(.28), M_SLV = mt(TL.SUIT, .66);
   const UVS = 1 / 110;                                                           // cloth texture repeats per millimetre
-  const DOWN = [-Math.sin(17 * RAD), -Math.cos(17 * RAD)];                       // (s, y) unit vector down the grip
+  const FWD = [Math.cos(16 * RAD), -Math.sin(16 * RAD)], DOWN = [-Math.sin(16 * RAD), -Math.cos(16 * RAD)];   // (s, y) unit vectors square to the grip pointing forward, and down it
   // grip coordinates: u mm forward of the front strap (square to it), a mm down the strap from the guard root, x across
-  const GC = (u, a, x) => P3(x, -53 + u * FWD[1] + a * DOWN[1], 58.5 + u * FWD[0] + a * DOWN[0]);
+  const GC = (u, a, x) => P3(x, -58 + u * FWD[1] + a * DOWN[1], 59 + u * FWD[0] + a * DOWN[0]);
   // 3x4 that carries a bone built along local -Z (origin at the first joint, local +Y toward `hint`) onto the segment a -> b
   function boneM(a, b, hint, o) { const d = nrm(sub(b, a)); let y = sub(hint, mul(d, dot(hint, d))); y = vlen(y) < 1e-9 ? V3.perp(d) : nrm(y); const x = cross(y, mul(d, -1));
     o[0] = x[0]; o[1] = y[0]; o[2] = -d[0]; o[3] = a[0]; o[4] = x[1]; o[5] = y[1]; o[6] = -d[1]; o[7] = a[1]; o[8] = x[2]; o[9] = y[2]; o[10] = -d[2]; o[11] = a[2]; return o; }
@@ -6679,35 +6680,39 @@ const SIDEARM = (() => {
     const ring = (z, r) => { const q = []; for (let i = 0; i < n; i++) { const t = i / n * TAU; q.push([r * Math.cos(t), r * Math.sin(t), -z]); } return q; };
     const uvf = zs => (j, i) => [i / n * TAU * rm * UVS, (v0 + zs[j]) * UVS];
     if (o.ball !== false) blob([0, 0, 0], [r0 * .99, 0, 0], [0, 0, r0 * .99], [0, r0 * .99, 0], M_GLV, n, 3, { p1: PI * .6, sh: (i, j) => j < 2 ? M_GLV.s : M_GLV_D.s });   // closed toward the joint behind, open inside the sleeve
-    if (o.kind === 'tip') { const rc = r1 + .9, zs = [0, .14 * L, .36 * L], rr = [r0 * .93, r0 * 1.02, r1 * 1.0];
+    let zs, rr;
+    if (o.kind === 'tip') { const rc = r1 + .9; zs = [0, .14 * L, .36 * L]; rr = [r0 * .93, r0 * 1.02, r1 * 1.0];
       loft(zs.map((z, j) => ring(z, rr[j])), { M: M_GLV, sh: j => j === 0 ? M_GLV_D.s : M_GLV.s, uv: uvf(zs) });
-      const cz = [.36, .36, .49, .53, .64, .68, .84, .95, 1.0], cr = [r1, rc, rc, rc, rc, rc, rc * .95, rc * .64, 0], cm = [M_RUB_D, M_RUB, M_RUB_D, M_RUB, M_RUB_D, M_RUB, M_RUB, M_RUB];
+      const cz = o.lo ? [.36, .36, .55, .59, .8, .94, 1.0] : [.36, .36, .49, .53, .64, .68, .84, .95, 1.0], cr = o.lo ? [r1, rc, rc, rc, rc, rc * .72, 0] : [r1, rc, rc, rc, rc, rc, rc * .95, rc * .64, 0], cm = o.lo ? [M_RUB_D, M_RUB, M_RUB_D, M_RUB, M_RUB, M_RUB] : [M_RUB_D, M_RUB, M_RUB_D, M_RUB, M_RUB_D, M_RUB, M_RUB, M_RUB];
       loft(cz.map((z, j) => ring(z * L, cr[j])), { Ms: j => cm[j] });
-    } else { const zs = o.lo ? [0, .5 * L, L] : [0, .16 * L, .5 * L, .84 * L, L], rr = o.lo ? [r0 * .95, rm * 1.05, r1 * .95] : [r0 * .92, r0 * 1.02, rm * 1.05, r1 * 1.02, r1 * .92];
+    } else { zs = o.lo ? [0, .5 * L, L] : [0, .16 * L, .5 * L, .84 * L, L]; rr = o.lo ? [r0 * .95, rm * 1.05, r1 * .95] : [r0 * .92, r0 * 1.02, rm * 1.05, r1 * 1.02, r1 * .92];
       loft(zs.map((z, j) => ring(z, rr[j])), { M: M_GLV, sh: j => j === 0 || j === zs.length - 1 ? M_GLV_D.s : M_GLV.s, uv: uvf(zs) }); }
+    // the stitched side seams of the cloth cover
+    if (o.seam) for (const sg of [-1, 1]) for (let j = 0; j < zs.length - 1; j++) { const a = sg * (rr[j] + .3), b = sg * (rr[j + 1] + .3); Q([a, -.75, -zs[j]], [a, .75, -zs[j]], [b, .75, -zs[j + 1]], [b, -.75, -zs[j + 1]], M_SEAM, [sg, 0, 0]); }
     xformG(st, boneM(a, b, hint, []));
   }
   // index finger: knuckle and first joint fixed; the last two segments swing between "laid along the frame" and "on the trigger"
-  const IDX = { mcp: P3(28, -35, 25), pip: P3(22.5, -35, 66.5), dipOn: P3(12, -38, 89.4), tipOn: P3(-13, -39, 90.2), dipOff: P3(20.5, -26, 92), tipOff: P3(18.6, -19.5, 116), ref: P3(0, -36, 70), r: [10.6, 10.0, 9.2, 8.0] };
+  const IDX = { mcp: P3(31, -39, 25), pip: P3(25, -39, 67), dipOn: P3(14, -40.5, 90.6), tipOn: P3(-12, -41.5, 91.2), dipOff: P3(23.4, -28, 92), tipOff: P3(21.8, -21.5, 116), ref: P3(0, -39, 70), r: [10.6, 10.0, 9.2, 8.0] };
   const idxJoints = (k, pull) => { const dOn = add(IDX.dipOn, [0, 0, pull]), tOn = add(IDX.tipOn, [0, 0, pull]), L2 = vlen(sub(IDX.dipOn, IDX.pip)), L3 = vlen(sub(IDX.tipOn, IDX.dipOn));
     const d2 = nrm(vmix(nrm(sub(IDX.dipOff, IDX.pip)), nrm(sub(dOn, IDX.pip)), k)), dip = mad(IDX.pip, d2, L2), d3 = nrm(vmix(nrm(sub(IDX.tipOff, IDX.dipOff)), nrm(sub(tOn, dOn)), k)); return [dip, mad(dip, d3, L3)]; };
-  const ARM = nrm([.28, -.42, .86]), WRIST = P3(13, -66, -66);                    // forearm direction (down, right, back toward the shooter) and the wrist ring's centre
+  const ARM = nrm([.28, -.42, .86]), WRIST = P3(16, -70, -66);                    // forearm direction (down, right, back toward the shooter) and the wrist ring's centre
+  const RREF = nrm(sub([0, 1, 0], mul(ARM, ARM[1]))), RBIN = cross(ARM, RREF), rdir = a => add(mul(RREF, Math.cos(a)), mul(RBIN, Math.sin(a)));   // directions round the wrist ring, 0 = up
 
   function buildHand() {
     // three fingers wrapped round the front strap under the guard: joints in grip coordinates [u, x]
     const fingers = [
-      { a: 11.5, k: 1, j: [[-33.5, 30.5], [9.8, 19], [12.8, -10.8], [-8.5, -22.6]] },
-      { a: 32.5, k: .97, j: [[-32, 30], [9.6, 18.8], [12.4, -10.4], [-7.5, -22.3]] },
-      { a: 52.5, k: .87, j: [[-29, 27.5], [5.5, 20.2], [11.2, -1.5], [2.5, -20.2]] }];
+      { a: 11.5, k: 1, j: [[-33.5, 33.5], [9.8, 21], [12.8, -12], [-7, -25]] },
+      { a: 32.5, k: .97, j: [[-32, 33], [9.6, 20.8], [12.4, -11.6], [-6, -24.8]] },
+      { a: 52.5, k: .87, j: [[-29, 30.5], [5.5, 22.4], [11.2, -2.5], [3, -22.6]] }];
     for (const f of fingers) { const J = f.j.map(q => GC(q[0], f.a, q[1])), ref = GC(-22, f.a, 0), h = i => sub(mul(add(J[i], J[i + 1]), .5), ref), r = [11, 10.5, 10, 9.3].map(v => v * f.k);
-      phalanx(J[0], J[1], r[0] * 1.04, r[1], h(0), { n: 6, lo: true }); phalanx(J[1], J[2], r[1], r[2], h(1), { v0: 40, n: 7 }); phalanx(J[2], J[3], r[2], r[3], h(2), { kind: 'tip', v0: 70, n: 10 }); }
-    phalanx(IDX.mcp, IDX.pip, IDX.r[0] * 1.04, IDX.r[1], [1, 0, 0], { n: 7 });
+      phalanx(J[0], J[1], r[0] * 1.04, r[1], h(0), { n: 6, lo: true }); phalanx(J[1], J[2], r[1], r[2], h(1), { v0: 40, n: 7 }); phalanx(J[2], J[3], r[2], r[3], h(2), { kind: 'tip', v0: 70, n: 8, lo: true }); }
+    phalanx(IDX.mcp, IDX.pip, IDX.r[0] * 1.04, IDX.r[1], [1, 0, 0], { n: 7, seam: true });
     // thumb: out of the palm behind the grip, forward along the left side under the slide
-    const TH = [P3(7, -56, -30), P3(-21, -45.5, 4), P3(-23.6, -39, 37), P3(-22.2, -35.5, 66)], tref = P3(0, -36, 30), th = i => sub(mul(add(TH[i], TH[i + 1]), .5), tref);
-    phalanx(TH[0], TH[1], 16.5, 13.2, th(0), { ball: false, n: 10 }); phalanx(TH[1], TH[2], 12.8, 11.8, th(1), { n: 10, v0: 40 }); phalanx(TH[2], TH[3], 11.6, 10.3, th(2), { kind: 'tip', n: 10, v0: 75 });
+    const TH = [P3(9, -59, -30), P3(-23.5, -48.5, 4), P3(-27, -42, 36), P3(-25, -38, 64)], tref = P3(0, -39, 30), th = i => sub(mul(add(TH[i], TH[i + 1]), .5), tref);
+    phalanx(TH[0], TH[1], 16.5, 13.2, th(0), { ball: false, n: 10, seam: true }); phalanx(TH[1], TH[2], 12.8, 11.8, th(1), { n: 10, v0: 40, seam: true }); phalanx(TH[2], TH[3], 11.6, 10.3, th(2), { kind: 'tip', n: 10, v0: 75, seam: true });
     // back of the hand to the wrist: superellipse sections, squarer at the knuckles, round at the ring
-    const kd = nrm(sub(IDX.mcp, GC(-29, 52.5, 27.5)));
-    const stn = [[P3(30, -64.5, 22), 41, 12, 0], [P3(31, -64.5, 8), 42, 13, 0], [P3(27.5, -65, -9), 41, 16, .1], [P3(21.5, -65.5, -26), 40, 20.5, .3], [P3(17, -66, -41), 39.5, 27, .6], [P3(14.5, -66, -54), 40, 34.5, .9], [mad(WRIST, ARM, -3), 40.5, 40.5, 1], [mad(WRIST, ARM, 1), 41.5, 41.5, 1]];
+    const kd = nrm(sub(IDX.mcp, GC(-29, 52.5, 30.5)));
+    const stn = [[P3(33, -68.5, 22), 41, 12, 0], [P3(34, -68.5, 8), 42, 13, 0], [P3(30.5, -69, -9), 41, 16, .1], [P3(24.5, -69.5, -26), 40, 20.5, .3], [P3(20, -70, -41), 39.5, 27, .6], [P3(17.5, -70, -54), 40, 34.5, .9], [mad(WRIST, ARM, -3), 40.5, 40.5, 1], [mad(WRIST, ARM, 1), 41.5, 41.5, 1]];
     const NS = 18, cen = stn.map(q => q[0]), body = stn.map(([c, hw, ht, k]) => { const ax = nrm(vmix([0, 0, -1], mul(ARM, -1), k)), A = nrm(sub(kd, mul(ax, dot(kd, ax)))), Bv = cross(ax, A), n = mix(3.4, 2, k), r = [];
       for (let i = 0; i < NS; i++) { const t = i / NS * TAU, c0 = Math.cos(t), s0 = Math.sin(t), cw = Math.sign(c0) * Math.pow(Math.abs(c0), 2 / n), sw = Math.sign(s0) * Math.pow(Math.abs(s0), 2 / n); r.push(add(c, add(mul(A, hw * cw), mul(Bv, ht * sw)))); } return r; });
     loft(body, { M: M_GLV, cap0: M_GLV_D, sh: j => j === 6 ? M_GLV_D.s : j === 7 ? .2 : M_GLV.s, uv: (j, i) => [i / NS * 2.4, j * .22] });
@@ -6715,7 +6720,7 @@ const SIDEARM = (() => {
     const dors = (j, t, lift) => { const c = vmix(cen[j], cen[j + 1], t), r = []; for (let i = 0; i <= 9; i++) { const p = vmix(body[j][i], body[j + 1][i], t); r.push(mad(p, nrm(sub(p, c)), lift)); } return r; };
     const dout = (j, i, p) => sub(p, cen[1]);
     for (let k = 0; k < 3; k++) { const ta = .05 + k * .31, tb = ta + .27; loft([dors(0, ta, .15), dors(0, (ta + tb) / 2, 2.1), dors(0, tb, .15)], { closed: false, out: dout, M: M_GLV, sh: j => j === 1 ? M_GLV_L.s : M_GLV_D.s }); }
-    loft([dors(1, .22, .15), dors(1, .3, 1.7), dors(1, .84, 1.7), dors(1, .92, .15)], { closed: false, out: dout, Ms: j => j === 1 ? M_STRAP : mt(TL.SUIT, .18) });
+    loft([dors(1, .22, .15), dors(1, .3, 1.7), dors(1, .84, 1.7), dors(1, .92, .15)], { closed: false, out: dout, Ms: j => j === 1 ? M_STRAP : mt(TL.SUIT, .2) });
     { const a = dors(1, .57, 1.9), c = vmix(a[4], a[5], .5), u = nrm(sub(a[5], a[4])), w = nrm(sub(cen[0], cen[2])), nn = cross(u, w), up = dot(nn, sub(c, cen[1])) < 0 ? mul(nn, -1) : nn;
       obox(mad(c, up, 1.3), mul(u, 4.6), mul(up, 1.3), mul(w, 9.5), [ST(.5), ST(.6), ST(.92), ST(.2), ST(.5), ST(.6)]);
       obox(mad(c, up, 2.65), mul(u, 1.9), mul(up, .08), mul(w, 7.2), mt(TL.SUIT, .2)); }
@@ -6729,35 +6734,61 @@ const SIDEARM = (() => {
       obox(mad(c, up, 1.1), mul(u, 5.4), mul(up, 1.1), mul(w, 5.6), [ST(.5), ST(.6), ST(.95), ST(.2), ST(.5), ST(.6)]);
       obox(mad(c, up, 2.25), mul(u, 2.7), mul(up, .08), mul(w, 3.3), ST(.12)); }
     // web of the hand, packed up under the beavertail
-    blob(P3(2, -39.5, -6), [24, 0, 0], [0, 13.5, 0], [0, 0, 16], M_GLV, 10, 5, { uv: [0, 0, 1.4, .5] });
+    blob(P3(3, -41, -5), [25, 0, 0], [0, 13.5, 0], [0, 0, 16], M_GLV, 10, 5, { uv: [0, 0, 1.4, .5] });
     // wrist bearing ring: two anodised races with the dark seal groove between them, and two lock tabs
     lathe(WRIST, ARM, [[-2, 41, M_RING_D], [0, 44.5, M_RING], [7, 44.5, M_RING_D], [7, 42.6, ST(.16)], [9.5, 42.6, M_RING_D], [9.5, 46.2, M_RING], [17.5, 46.2, ST(.6)], [19.5, 44, M_RING_D], [19.5, 41]], { n: 18, ref: [0, 1, 0] });
-    const rref = nrm(sub([0, 1, 0], mul(ARM, ARM[1]))), rbin = cross(ARM, rref), rdir = a => add(mul(rref, Math.cos(a)), mul(rbin, Math.sin(a)));
     for (const a of [25 * RAD, 118 * RAD]) { const d = rdir(a), tg = cross(ARM, d); obox(mad(mad(WRIST, ARM, 13.5), d, 47.1), mul(tg, 7), mul(d, 1.5), mul(ARM, 3.3), [ST(.5), ST(.5), ST(1.05), ST(.3), ST(.4), ST(.7)]); }
     // sleeve: cloth gathered in folds behind the ring, running out of frame
-    { const ts = [18, 24, 37, 52, 63, 73, 92, 108, 120, 150, 250], rs = [41.5, 45.5, 48.5, 47, 43, 47.5, 51, 50, 46.5, 52, 56], shs = [.3, .47, .55, .47, .26, .47, .55, .48, .28, .5, .5];
-      tube(ts.map(t => mad(WRIST, ARM, t)), rs, { n: 14, up: [0, 1, 0], M: M_SLV, sh: j => shs[j], uv: (j, i) => [i / 14 * 2.6, ts[j] * UVS] }); }
-    // lanyard: from the loop under the butt to a clip on the wrist ring
-    { const A = P3(0, BUTT - 4.4, sB(BUTT) + 4.6), d = rdir(150 * RAD), Bq = mad(mad(WRIST, ARM, 13.5), d, 48.5), C = add(vmix(A, Bq, .45), [0, -24, 0]), pts = [];
-      for (let k = 0; k <= 8; k++) { const t = k / 8; pts.push(add(add(mul(A, (1 - t) * (1 - t)), mul(C, 2 * t * (1 - t))), mul(Bq, t * t))); }
-      tube(pts, pts.map(() => 1.5), { n: 5, up: [1, 0, 0], M: mt(TL.DARK, 1.7) });
-      blob(A, [2.7, 0, 0], [0, 2.7, 0], [0, 0, 2.7], mt(TL.DARK, 2.2), 6, 3);
-      obox(mad(mad(WRIST, ARM, 13.5), d, 47.4), mul(cross(ARM, d), 3), mul(d, 1.9), mul(ARM, 3.3), ST(.85)); }
+    { const ts = [18, 24, 38, 54, 64, 78, 98, 112, 250], rs = [41.5, 45.5, 48.5, 47, 43, 47.5, 51, 47.5, 56], shs = [.36, .6, .7, .6, .32, .6, .7, .4, .66];
+      tube(ts.map(t => mad(WRIST, ARM, t)), rs, { n: 12, up: [0, 1, 0], M: M_SLV, sh: j => shs[j], uv: (j, i) => [i / 12 * 2.6, ts[j] * UVS] }); }
+    // the clip on the wrist ring the lanyard runs to
+    obox(mad(mad(WRIST, ARM, 13.5), rdir(150 * RAD), 47.4), mul(cross(ARM, rdir(150 * RAD)), 3), mul(rdir(150 * RAD), 1.9), mul(ARM, 3.3), ST(.85));
+    return done(1);
+  }
+  /* The coiled lanyard from the tether ring: to the clip on the wrist ring when the glove holds the pistol, hanging free otherwise. */
+  function buildLanyard(toWrist) {
+    const A = LAN0, Bq = toWrist ? mad(mad(WRIST, ARM, 13.5), rdir(150 * RAD), 50.5) : add(A, [5, -64, 16]), C = add(vmix(A, Bq, .5), toWrist ? [-6, -30, 4] : [-12, -4, 16]);
+    const bez = t => add(add(mul(A, (1 - t) * (1 - t)), mul(C, 2 * t * (1 - t))), mul(Bq, t * t)), N = 34, turns = 6, pts = []; let up = [1, 0, 0];
+    for (let k = 0; k <= N; k++) { const t = k / N, c = bez(t), tg = nrm(sub(bez(Math.min(t + .01, 1)), bez(Math.max(t - .01, 0)))), sd = nrm(cross(tg, up)); up = nrm(cross(sd, tg));
+      const env = sstep(.03, .13, t) * sstep(.03, .13, 1 - t), a = t * turns * TAU; pts.push(add(c, add(mul(sd, 4.4 * env * Math.cos(a)), mul(up, 4.4 * env * Math.sin(a))))); }
+    tube(pts, pts.map(() => 1.2), { n: 3, up: [0, 0, 1], M: mt(TL.DARK, 2.0) });
+    // snap hook on the ring, and the weighted end (or the swivel at the wrist)
+    blob(A, [2.6, 0, 0], [0, 2.6, 0], [0, 0, 2.6], ST(.9), 4, 2); blob(Bq, [2.8, 0, 0], [0, 2.8, 0], [0, 0, 2.8], ST(.9), 4, 2);
     return done(1);
   }
   // the two moving segments of the index finger, built in the on-trigger pose; IDXREF holds the inverse of that pose's bone
   const IDXREF = [[], []];
   function buildIndex(seg) { const J = idxJoints(1, 0), h = (a, b) => sub(mul(add(a, b), .5), IDX.ref);
-    if (seg === 0) { phalanx(IDX.pip, J[0], IDX.r[1], IDX.r[2], h(IDX.pip, J[0]), { v0: 40 }); boneM(mul(IDX.pip, .001), mul(J[0], .001), h(IDX.pip, J[0]), IDXREF[0]); }
-    else { phalanx(J[0], J[1], IDX.r[2], IDX.r[3], h(J[0], J[1]), { kind: 'tip', v0: 70 }); boneM(mul(J[0], .001), mul(J[1], .001), h(J[0], J[1]), IDXREF[1]); }
+    if (seg === 0) { phalanx(IDX.pip, J[0], IDX.r[1], IDX.r[2], h(IDX.pip, J[0]), { v0: 40, seam: true }); boneM(mul(IDX.pip, .001), mul(J[0], .001), h(IDX.pip, J[0]), IDXREF[0]); }
+    else { phalanx(J[0], J[1], IDX.r[2], IDX.r[3], h(J[0], J[1]), { kind: 'tip', v0: 70, seam: true }); boneM(mul(J[0], .001), mul(J[1], .001), h(J[0], J[1]), IDXREF[1]); }
     invM(IDXREF[seg].slice(), IDXREF[seg]); return done(1); }
   // muzzle flash, unit-sized: a ball, and one four-finned spike along -Z. Scaled, aimed and given its emissive in emit.
-  const FBALL = (() => { blob([0, 0, 0], [1000, 0, 0], [0, 0, -1000], [0, 1000, 0], mt(TL.WHITE, 0, 1), 16, 7); return done(2); })();
-  const FSPIKE = (() => { const M = mt(TL.WHITE, 0, 1); for (const w of [[60, 0], [0, 60]]) { T([0, 0, 0], [w[0], w[1], -240], [0, 0, -1000], M); T([0, 0, 0], [-w[0], -w[1], -240], [0, 0, -1000], M); } return done(2); })();
+  const FBALL = (() => { blob([0, 0, 0], [1000, 0, 0], [0, 0, -1000], [0, 1000, 0], mt(TL.WHITE, 0, 1, 2), 10, 5); return done(); })();
+  const FSPIKE = (() => { const M = mt(TL.WHITE, 0, 1, 2); for (const w of [[60, 0], [0, 60]]) { T([0, 0, 0], [w[0], w[1], -240], [0, 0, -1000], M); T([0, 0, 0], [-w[0], -w[1], -240], [0, 0, -1000], M); } return done(); })();
+  const FBALL_LO = (() => { blob([0, 0, 0], [1000, 0, 0], [0, 0, -1000], [0, 1000, 0], mt(TL.WHITE, 0, 1, 2), 4, 2); return done(); })();
 
-  const SLIDE = buildSlide(), BARREL = buildBarrel(), FRAME = buildFrame(), HAMMER = buildHammer(), TRIGGER = buildTrigger(), SLIDESTOP = buildSlideStop();
-  const GRIP_L = buildGrip(-1), GRIP_R = buildGrip(1), MAGTOP = buildMagTop(), ROUND = buildRound(), FOLLOWER = buildFollower();
-  const HAND = buildHand(), IDX2 = buildIndex(0), IDX3 = buildIndex(1);
+  /* The same pistol for a crewman's hand seen from metres away: a few dozen facets in three pieces (fixed, carrier, centre hammer). */
+  function buildFar() {
+    const sec = k => [[-3.4, -6], [3.4, -6], [7, 1], [16.6, 9.5], [16.6, 19], [9, 23], [-9, 23], [-16.6, 19], [-16.6, 9.5], [-7, 1]].map(p => [p[0] * k, p[1] * k]);
+    extrude(sec(1), XY, { h0: 101, h1: MZ, M: ST(.1), W: M_PAINT, cap0: false, crease: 75 });
+    extrude(sec(1.1), XY, { h0: BF, h1: 101, M: M_PARK, W: M_PARK, cap0: false, crease: 75 });
+    extrude([[133, -16], [126, -24], [sF(-24), -24], [sF(BUTT), BUTT], [sB(BUTT) + 5, BUTT], [6, -27.5], [-24, -15], [-6, -8], [5, 4.2], [BF, 4.2], [BF, -8], [126, -8]], SIDE, { h0: -FX, h1: FX, M: M_PAINT, W: M_PAINT });
+    cbox(-17, 17, 4.2, 24, -BF, -51, 0, 'x', M_PAINT);
+    extrude([[sF(-30) - 3, -30], [sF(BUTT) - 3, BUTT], [sB(BUTT) - 3, BUTT], [sB(-28), -28]], SIDE, { h0: -17.6, h1: 17.6, M: M_BAKE, W: M_BAKE });
+    extrude([[-15.5, 8], [-10, -21], [10, -21], [15.5, 8]], XY, { h0: 135, h1: 187, M: M_BAKE, W: M_BAKE, cap0: false });
+    { const g = [[116, -23], [116.6, -40], [108, -58], [90, -63], [70, -60.6], [58, -58.6]]; for (let k = 0; k < g.length - 1; k++) Q(P3(-6.5, g[k][1], g[k][0]), P3(6.5, g[k][1], g[k][0]), P3(6.5, g[k + 1][1], g[k + 1][0]), P3(-6.5, g[k + 1][1], g[k + 1][0]), M_PAINT, [0, -1, -.4]); }
+    for (const sg of [-1, 1]) T(P3(sg * 15, -4, 24), P3(sg * 15, 20, 54.4), P3(sg * 15, 30, 31), M_DRY, [sg, 0, 0]);
+    Q(P3(0, -23, 80), P3(0, -23, 73), P3(0, -47, 77), P3(0, -47, 82), M_DRY, [1, 0, 0]);
+    const fixed = done();
+    cbox(-FX, FX, 4.6, 21.6, -50, 0, 0, 'x', M_DRY); const carrier = done();
+    Q(P3(-3.8, -15, -.4), P3(3.8, -15, -.4), P3(3.8, 9, -3), P3(-3.8, 9, -3), M_DRY, [0, 0, 1]); Q(P3(-3.8, 9, -3), P3(3.8, 9, -3), P3(3.8, 2, -17), P3(-3.8, 2, -17), M_DRY, [0, 1, 0]);
+    return [fixed, carrier, done()];
+  }
+
+  const cat = (...a) => { let n = 0; for (const x of a) n += x.length; const o = new Float32Array(n); n = 0; for (const x of a) { o.set(x, n); n += x.length; } return o; };
+  const CARRIER = buildCarrier(), HAMMER = buildHammer(), TRIGGER = buildTrigger(), ROUND = buildRound(), FOLLOWER = buildFollower(), CATCH = buildCatch();
+  const FIXED = cat(buildBarrels(), buildFrame(), buildGrip(-1)), BARE = cat(buildGrip(1), buildGripSafety(), buildLanyard(false)), GLOVE = cat(buildHand(), buildLanyard(true)), IDX2 = buildIndex(0), IDX3 = buildIndex(1);
+  const FAR = buildFar();
 
   /* =====================================================================================================================
      RUN TIME */
@@ -6778,9 +6809,19 @@ const SIDEARM = (() => {
       d[o + 9] = fl ? 0 : A[i + 9]; d[o + 10] = fl ? emis : A[i + 10]; d[o + 11] = 0; }
   }
   const mA = new Float64Array(12), mB = new Float64Array(12), mP = new Float64Array(12), mT = new Float64Array(12), mG = new Float64Array(12);
-  const COCK = 50 * RAD, OVERCOCK = 52 * RAD;
-  const MUZZLE = [0, 0, -.1895], PORT = [.0105, .0055, -.0775];
+  const COCK = 50 * RAD, OVERCOCK = 56 * RAD;
+  const MUZZLE = [0, 0, -MZ / 1000], PORT = [.0118, 0, -.036];
   const WR = mul(WRIST, .001);
+  // muzzle flash in vacuum: no rolling fire, a hard ball of light at the crown and a few straight spikes
+  function flash(P, fl, seed, k) {
+    const sd = (seed || 0) * 12.9898 + 4.1, h = i => { const v = Math.sin(sd + i * 78.233) * 43758.5453; return v - Math.floor(v); };
+    const R = (.013 + .023 * fl) * (.85 + .3 * h(1)), cz = MUZZLE[2] - R * .7, em = 1.3 + 2.7 * fl;
+    mA.set(I12); mA[0] = R; mA[5] = R * (.88 + .24 * h(2)); mA[10] = R * 1.15; mA[11] = cz; P(k ? FBALL_LO : FBALL, mA, em);
+    for (let i = 0; i < 6; i++) { const len = (i ? .05 + .08 * h(10 + i) : .11 + .07 * h(3)) * (.45 + .55 * fl), roll = i / 5 * TAU + h(20 + i) * 1.1, off = i ? (52 + 34 * h(30 + i)) * RAD : 0;
+      const d = [Math.sin(off) * Math.cos(roll), Math.sin(off) * Math.sin(roll), -Math.cos(off)], x = V3.perp(d), y = cross(d, x), w = len * (i ? .95 : 1.25);
+      mA[0] = x[0] * w; mA[1] = y[0] * w; mA[2] = -d[0] * len; mA[3] = 0; mA[4] = x[1] * w; mA[5] = y[1] * w; mA[6] = -d[1] * len; mA[7] = 0; mA[8] = x[2] * w; mA[9] = y[2] * w; mA[10] = -d[2] * len; mA[11] = cz;
+      P(FSPIKE, mA, 3.5 + fl); }
+  }
   function emit(B, st) {
     st = st || {};
     // whole-assembly matrix: the tremor (a small rotation about the wrist), then the caller's st.xf if given
@@ -6791,39 +6832,36 @@ const SIDEARM = (() => {
     if (st.xf) GM = GM ? mm(st.xf, GM, mG) : st.xf;
     const P = (A, m, emis) => put(B, A, m ? (GM ? mm(GM, m, mP) : m) : GM, emis);
     const slide = clamp(st.slide || 0, 0, 1), tr = slide * TRAVEL * .001;
-    mA.set(I12); mA[11] = tr; P(SLIDE, mA);
-    // the barrel rides back a few millimetres locked to the slide, then the link pulls its breech down and it stops
-    const bz = Math.min(slide * TRAVEL, 6.2) * .001, tilt = 1.25 * RAD * sstep(.03, .14, slide);
-    rotX(tilt, 0, -.140, mA); mA[11] += bz; P(BARREL, mA);
-    P(FRAME, null);
-    // hammer: wherever the game says, but never above the slide that is riding over it
+    P(FIXED, null);
+    mA.set(I12); mA[11] = tr; P(CARRIER, mA);
+    // centre hammer: wherever the game says, but never above the carrier that is riding over it
     const hamA = Math.max(clamp(st.hammer === undefined ? 1 : st.hammer, 0, 1) * COCK, sstep(0, .2, slide) * OVERCOCK);
     P(HAMMER, rotX(hamA, HAM[1] * .001, -HAM[0] * .001, mA));
     const trig = clamp(st.trigger || 0, 0, 1), pull = sstep(.25, 1, trig);
-    mA.set(I12); mA[11] = .003 * pull; P(TRIGGER, mA);
-    const rounds = st.rounds === undefined ? 7 : st.rounds, lock = rounds <= 0 ? sstep(.9, .99, slide) : 0;
-    P(SLIDESTOP, rotX(-5.6 * RAD * lock, SSP[1] * .001, -SSP[0] * .001, mA));
-    P(GRIP_L, null); P(MAGTOP, null);
+    P(TRIGGER, rotX(-.125 * pull, TRG[1] * .001, -TRG[0] * .001, mA));
+    const rounds = st.rounds === undefined ? 12 : st.rounds, lock = rounds <= 0 ? sstep(.9, .99, slide) : 0;
+    if (lock > 0) { mA.set(I12); mA[7] = .007 * lock; P(CATCH, mA); }
     if (slide > .12) P(rounds > 0 ? ROUND : FOLLOWER, null);
-    if (st.hand === false) P(GRIP_R, null);
-    else { P(HAND, null);
+    if (st.hand === false) P(BARE, null);
+    else { P(GLOVE, null);
       // index finger: off the trigger and along the frame at 0, on it by .3, then it follows the trigger back
       const J = idxJoints(sstep(0, .3, trig), 3 * pull), pip = mul(IDX.pip, .001), dip = mul(J[0], .001), tip = mul(J[1], .001), ref = mul(IDX.ref, .001);
       P(IDX2, mm(boneM(pip, dip, sub(mul(add(pip, dip), .5), ref), mA), IDXREF[0], mB));
       P(IDX3, mm(boneM(dip, tip, sub(mul(add(dip, tip), .5), ref), mA), IDXREF[1], mB)); }
-    // muzzle flash in vacuum: no rolling fire, a hard ball of light at the crown and a few straight spikes
-    const fl = clamp(st.flash || 0, 0, 1);
-    if (fl > .02) { const sd = (st.seed || 0) * 12.9898 + 4.1, h = i => { const v = Math.sin(sd + i * 78.233) * 43758.5453; return v - Math.floor(v); };
-      const R = (.013 + .023 * fl) * (.85 + .3 * h(1)), cz = MUZZLE[2] - R * .7, em = 1.3 + 2.7 * fl;
-      mA.set(I12); mA[0] = R; mA[5] = R * (.88 + .24 * h(2)); mA[10] = R * 1.15; mA[11] = cz; P(FBALL, mA, em);
-      for (let i = 0; i < 6; i++) { const len = (i ? .05 + .08 * h(10 + i) : .11 + .07 * h(3)) * (.45 + .55 * fl), roll = i / 5 * TAU + h(20 + i) * 1.1, off = i ? (52 + 34 * h(30 + i)) * RAD : 0;
-        const d = [Math.sin(off) * Math.cos(roll), Math.sin(off) * Math.sin(roll), -Math.cos(off)], x = V3.perp(d), y = cross(d, x), w = len * (i ? .95 : 1.25);
-        mA[0] = x[0] * w; mA[1] = y[0] * w; mA[2] = -d[0] * len; mA[3] = 0; mA[4] = x[1] * w; mA[5] = y[1] * w; mA[6] = -d[1] * len; mA[7] = 0; mA[8] = x[2] * w; mA[9] = y[2] * w; mA[10] = -d[2] * len; mA[11] = cz;
-        P(FSPIKE, mA, 3.5 + fl); } }
+    const fl = clamp(st.flash || 0, 0, 1); if (fl > .02) flash(P, fl, st.seed, 0);
   }
-  const VIEW = { x: .088, y: -.104, z: -.30, yaw: -9 * RAD, pitch: 3 * RAD, roll: -6 * RAD };
-  const API = { emit, VIEW, MUZZLE, PORT, TRIS: 0 };
-  { const c = { d: new Float32Array(12 * 3 * 12000), n: 0, max: 36000 }; emit(c, {}); API.TRIS = c.n / 3; }
+  // the light version for a pistol in somebody else's hand, metres away
+  function thirdPerson(B, xf, st) {
+    st = st || {}; const P = (A, m, emis) => put(B, A, m ? (xf ? mm(xf, m, mP) : m) : xf, emis);
+    P(FAR[0], null);
+    const slide = clamp(st.slide || 0, 0, 1); mA.set(I12); mA[11] = slide * TRAVEL * .001; P(FAR[1], mA);
+    const hamA = Math.max(clamp(st.hammer === undefined ? 1 : st.hammer, 0, 1) * COCK, sstep(0, .2, slide) * OVERCOCK);
+    P(FAR[2], rotX(hamA, HAM[1] * .001, -HAM[0] * .001, mA));
+    const fl = clamp(st.flash || 0, 0, 1); if (fl > .02) flash(P, fl, st.seed, 1);
+  }
+  const VIEW = { x: .105, y: -.103, z: -.245, yaw: -14 * RAD, pitch: 4 * RAD, roll: -6 * RAD };
+  const API = { emit, thirdPerson, VIEW, MUZZLE, PORT, TRIS: 0 };
+  { const c = { d: new Float32Array(12 * 30000), n: 0, max: 30000 }; emit(c, {}); API.TRIS = c.n / 3; }
   return API;
 })();
 
@@ -11762,7 +11800,7 @@ function drawHud() {
 }
 
 // ---------------------------------------------------------------- render
-/* The sidearm in view: SIDEARM (gun.js), a true-scale 1911 in an EVA glove. It lags the camera when you turn, bobs with
+/* The sidearm in view: SIDEARM (gun.js), a NASA sidearm derived from the TP-82 in an EVA glove. It lags the camera when you turn, bobs with
    your stride, and on a shot the slide really cycles: back 55 mm in about 50 ms, home again in 70, the hammer falling and
    being re-cocked by it, and on the last round the slide stop holds it open over the empty magazine. */
 const GUN = { sx: 0, sy: 0, lastYaw: 0, lastPitch: 0, xf: new Float32Array(12), mz: [0, 0, 0], trig: 0 };
@@ -11772,7 +11810,7 @@ function emitGun(B, cam, p, dt) {
   const k = 1 - Math.exp(-dt * 10); GUN.sx = lerp(GUN.sx, clamp(-dyw * 1.2, -.05, .05), k); GUN.sy = lerp(GUN.sy, clamp(dp * 1.2, -.04, .04), k);
   const v = Math.hypot(p.vx, p.vz) / 5.8, kick = Math.exp(-p.fireT * 11), t = S.t, air = clamp(p.lift || 0, 0, 2) * .02, V = SIDEARM.VIEW;
   const vx = V.x + GUN.sx + Math.cos(p.bob * 1.6) * .010 * v, vy = V.y + GUN.sy - Math.abs(Math.sin(p.bob * 1.6)) * .012 * v + kick * .014 - p.fovK * .035 - air, vz = V.z + kick * .028;
-  const yw = V.yaw + GUN.sx * 1.5, pt = V.pitch + kick * .2 + p.fovK * .3 - GUN.sy, rl = V.roll - GUN.sx * 2;
+  const yw = V.yaw + GUN.sx * 1.5, pt = V.pitch + kick * .16 + p.fovK * .3 - GUN.sy, rl = V.roll - GUN.sx * 2;
   const cr = Math.cos(rl), sr = Math.sin(rl), cp = Math.cos(pt), sp = Math.sin(pt), cy = Math.cos(yw), sy = Math.sin(yw);
   const m = [cy * cr + sy * sp * sr, cy * sr - sy * sp * cr, -sy * cp, vx, -cp * sr, cp * cr, -sp, vy, sy * cr - cy * sp * sr, sy * sr + cy * sp * cr, cy * cp, vz], xf = GUN.xf, R = cam.r, U = cam.up, F = cam.f, e = cam.e;
   for (let a = 0; a < 3; a++) for (let c = 0; c < 4; c++) xf[a * 4 + c] = R[a] * m[c] + U[a] * m[4 + c] - F[a] * m[8 + c] + (c === 3 ? e[a] : 0);
