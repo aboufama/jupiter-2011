@@ -165,6 +165,7 @@ button:hover,button:focus-visible{border-color:var(--amber);color:var(--amber)}
 #sigHint{letter-spacing:.1em}
 .report.pg2{position:absolute;left:15px;top:15px;right:17px;bottom:17px;width:auto;transform:none;display:flex;flex-direction:column}
 .pg2 .pgfoot{margin-top:auto}
+#encPlay{cursor:pointer;text-decoration:underline;text-underline-offset:2px;letter-spacing:.1em}#encPlay:hover{background:#161616;color:#e6e4dc}
 #fileBack{cursor:pointer;text-decoration:underline;text-underline-offset:2px}#fileBack:hover{background:#161616;color:#e6e4dc}
 .cform{display:grid;grid-template-columns:204px 1fr;gap:0;margin:14px 0 0;border:1.5px solid #161616}
 .croster{border-right:1.5px solid #161616;display:flex;flex-direction:column}
@@ -237,6 +238,7 @@ button:hover,button:focus-visible{border-color:var(--amber);color:var(--amber)}
     </div>
     <h3>4.0 &nbsp;<u>CONDITION OF MATERIAL</u></h3>
     <p>Some audio could not be restored. Portions of this supplement remain withheld: <span class="rd" style="width:11em"></span></p>
+    <p class="encl">Enclosure 1: flight recorder audio, 07:30 UTC, 39 seconds. <a id="encPlay" role="button" tabindex="0">PLAY</a></p>
     <div class="rsign">
       <div>Approved by:<svg viewBox='0 0 170 30'><path d='M4 21 C9 6 15 4 16 14 S10 27 20 15 S27 9 28 17 S34 12 37 15 S44 7 46 16 S55 18 60 11 C64 4 67 22 73 14 S84 9 88 15 S99 16 106 12 S126 17 164 9' fill='none' stroke='#161616' stroke-width='1.5' stroke-linecap='round'/></svg><div class="ln"><span class="rd" style="width:11em"></span><br>Manager, Odyssey Program</div></div>
       <div class="rrecv">Received by:<div class="sigbox" id="sig" role="button" tabindex="0" aria-label="Sign to continue"><svg viewBox='0 0 230 44'><path id="sigInk" pathLength="1" d='M10 34 C12 14 20 4 24 12 S16 40 26 30 C32 24 36 14 40 22 S36 36 44 28 S50 16 54 24 S60 30 64 22 C68 12 72 8 74 18 S70 38 80 26 S92 14 96 24 S104 30 110 22 S118 18 124 25 C140 32 170 20 216 23 M58 10 C74 6 98 7 118 11' fill='none' stroke='#14141a' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/></svg><span class="sigx">X</span></div><div class="ln" id="sigHint">Sign above to continue</div></div>
@@ -10148,6 +10150,13 @@ function auInit() {
   AU.radio = C.createGain(); const hp = C.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 380; const lp = C.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2700;
   const ws = C.createWaveShaper(); const cu = new Float32Array(1024); for (let i = 0; i < 1024; i++) { const x = i / 512 - 1; cu[i] = Math.round(Math.tanh(x * 3) * 9) / 9; } ws.curve = cu;
   AU.drop = C.createGain(); AU.radio.connect(hp); hp.connect(lp); lp.connect(ws); ws.connect(AU.drop); AU.drop.connect(AU.master);
+  /* Recorded voices get their own, cleaner line: the words have to be heard. A wide band with a little presence, a soft
+     limiter and no bit-crush, and while one plays everything else on the loop is pulled down under it. */
+  { AU.bed = C.createGain(); AU.master.disconnect(); AU.master.connect(AU.bed); AU.bed.connect(comp);
+    AU.voice = C.createGain(); const vh = C.createBiquadFilter(); vh.type = 'highpass'; vh.frequency.value = 170; const vp = C.createBiquadFilter(); vp.type = 'peaking'; vp.frequency.value = 2600; vp.Q.value = .9; vp.gain.value = 5;
+    const vl = C.createBiquadFilter(); vl.type = 'lowpass'; vl.frequency.value = 6200; const vs = C.createWaveShaper(), vc = new Float32Array(1024); for (let i = 0; i < 1024; i++) { const x = i / 512 - 1; vc[i] = Math.tanh(x * 1.5) / Math.tanh(1.5); } vs.curve = vc;
+    AU.voiceVol = C.createGain(); AU.voiceVol.gain.value = AU.vol; AU.voice.connect(vh); vh.connect(vp); vp.connect(vl); vl.connect(vs); vs.connect(AU.voiceVol); AU.voiceVol.connect(comp);
+    AU.duck = dur => { const t = C.currentTime, g = AU.bed.gain; g.cancelScheduledValues(t); g.setTargetAtTime(.32, t, .05); g.setTargetAtTime(1, t + Math.max(.3, dur), .35); }; }
   AU.stat = C.createGain(); AU.stat.gain.value = .012; const sb = C.createBiquadFilter(); sb.type = 'bandpass'; sb.frequency.value = 3200; sb.Q.value = .6; loop().connect(sb); sb.connect(AU.stat); AU.stat.connect(AU.master);
   AU.hiss = C.createGain(); AU.hiss.gain.value = .018; const hb = C.createBiquadFilter(); hb.type = 'highpass'; hb.frequency.value = 6000; loop().connect(hb); hb.connect(AU.hiss); AU.hiss.connect(AU.master);
   AU.droneG = C.createGain(); AU.droneG.gain.value = 0; const dl = C.createBiquadFilter(); dl.type = 'lowpass'; dl.frequency.value = 150; AU.dr = [];
@@ -10239,8 +10248,8 @@ const VOICE = {
     if (!AU.ctx) return false; opts = opts || {}; const rate = opts.dup ? .8 : 1;
     if (src.el) { const a = src.el.cloneNode(); a.src = src.el.src; a.playbackRate = rate; if ('preservesPitch' in a) a.preservesPitch = false; a.volume = Math.min(1, AU.vol); a.play().catch(() => { }); this.playing.push(a); a.addEventListener('ended', () => { this.playing = this.playing.filter(p => p !== a); }); noise(AU.radio, now(), .08, 'bandpass', 1800, 1, .3); return true; }
     const [mk, t0, t1] = src.cut, m = this.media[mk], dur = t1 - t0, C = AU.ctx, t = C.currentTime + .05;
-    if (m.buf) { const play = (r, delay, vol) => { const s = C.createBufferSource(); s.buffer = m.buf; s.playbackRate.value = r; const g = C.createGain(); g.gain.value = vol; s.connect(g); g.connect(AU.radio); s.start(t + delay, t0, dur); };
-      if (opts.dup) { play(.82, 0, 1.2); play(.74, .35, .8); } else play(1, 0, 1.5); noise(AU.radio, t, .08, 'bandpass', 1800, 1, .3); return true; }
+    if (m.buf) { const play = (r, delay, vol) => { const s = C.createBufferSource(); s.buffer = m.buf; s.playbackRate.value = r; const g = C.createGain(); g.gain.value = vol; s.connect(g); g.connect(AU.voice || AU.radio); s.start(t + delay, t0, dur); };
+      if (opts.dup) { play(.82, 0, 1.5); play(.74, .35, .8); } else play(1, 0, 2.1); if (AU.duck) AU.duck(dur / rate + (opts.dup ? .5 : .1)); noise(AU.radio, t, .08, 'bandpass', 1800, 1, .3); return true; }
     if (m.el) { try { m.el.currentTime = t0; m.el.playbackRate = rate; m.el.volume = Math.min(1, AU.vol);
         // a streamed element can accept play() and then never produce a sample; if it has not moved, say the line instead
         let failed = false; const fail = () => { if (failed) return; failed = true; try { m.el.pause(); } catch (e) { } m.dead = true; if (opts.fail) opts.fail(); };
@@ -10843,7 +10852,7 @@ const CREW = [
 ];
 const SET = { quality: 1, sens: 1, vol: .85 };
 try { Object.assign(SET, JSON.parse(localStorage.getItem('j2011set') || '{}')); } catch (e) { }
-const saveSet = () => { try { localStorage.setItem('j2011set', JSON.stringify(SET)); } catch (e) { } AU.vol = SET.vol; if (AU.master) AU.master.gain.value = SET.vol; };
+const saveSet = () => { try { localStorage.setItem('j2011set', JSON.stringify(SET)); } catch (e) { } AU.vol = SET.vol; if (AU.master) AU.master.gain.value = SET.vol; if (AU.voiceVol) AU.voiceVol.gain.value = SET.vol; };
 AU.vol = SET.vol;
 
 // ---------------------------------------------------------------- WebGL
@@ -11963,7 +11972,7 @@ function frame(now) {
 }
 
 // ---------------------------------------------------------------- screens
-function show(id) { screen = id === 'end' ? 'ending' : id; for (const s of document.querySelectorAll('.screen')) s.classList.toggle('on', s.id === id); }
+function show(id) { if (id !== 'disc' && window.encStop) window.encStop(); screen = id === 'end' ? 'ending' : id; for (const s of document.querySelectorAll('.screen')) s.classList.toggle('on', s.id === id); }
 function startRun(i, at) { auInit(); if (typeof homeAudio === 'function') homeAudio(false); newGame(i); show('none'); acc = 0;
   if (at === 'ship') { screen = 'play'; shipBegin(); if (cv.requestPointerLock) { try { const r = cv.requestPointerLock(); if (r && r.catch) r.catch(() => { }); } catch (e) { } } return; }   // a death aboard Ithaca puts you back at her hatch, not back on the moon
   if (at === 'impact') { flowField(); S.cine = null; endCine(true); say('SUIT', 'IMPACT. SUIT INTACT.'); if (AU.ctx) sfx.ring(6); return; }   // a death on the surface puts you back at the wreck of the pod, just after she hit
@@ -12039,6 +12048,10 @@ function bindUI() {
       setTimeout(() => { busy = true; turn(pg1, { n: 10, bend: 7, dur: 1250, z: .5, back: 'pback', backHTML: '<i style="top:8%"></i><i style="top:49%"></i><i style="top:90%"></i>' }).then(() => { stage = 2; busy = false; }); }, 1350); };
     c.onclick = sign; c.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') sign(); };
     $('fileBack').onclick = () => show('menu');
+    { const e = $('encPlay'); let src = null; const stop = () => { if (src) { try { src.stop(); } catch (_) { } src = null; } e.textContent = 'PLAY'; };
+      e.onclick = ev => { ev.stopPropagation(); auInit(); if (src) return stop(); const m = VOICE.media.box; if (!m || !m.buf) { e.textContent = 'LOADING'; setTimeout(() => { if (!src) e.textContent = 'PLAY'; }, 1200); return; }
+        src = AU.ctx.createBufferSource(); src.buffer = m.buf; const g = AU.ctx.createGain(); g.gain.value = 1.6; src.connect(g); g.connect(AU.voice); src.onended = () => { if (src) stop(); }; src.start(); if (AU.duck) AU.duck(m.buf.duration); e.textContent = 'STOP'; };
+      window.encStop = stop; }
     const fitDoc = () => { const sc = $('fscale'); if (!F.offsetHeight) return; sc.style.transform = `scale(${Math.min(1.3, (innerHeight - 80) / F.offsetHeight, (innerWidth - 30) / F.offsetWidth).toFixed(4)})`; };   // the whole folder stays in view, like a page on a copy stand
     addEventListener('resize', fitDoc); window.openFile = () => { show('disc'); fitDoc(); };
   }
