@@ -2978,38 +2978,82 @@ const KEI = (() => {
 })();
 
 
-/* astro.js : the EVA-suited crew member of Jupiter 2011 (the "duplicates", and other players in co-op).
-   Needs prims.js (makeBatch, V3, ik2, TL). Defines one global, ASTRO. No DOM access.
+/* astro.js : the EVA-suited crew of Jupiter 2011: the five living crew, their duplicates, and other players in co-op.
+   Needs prims.js (makeBatch, V3, ik2, TL). Defines one global, ASTRO. No DOM, no clock, no Math.random.
+   ASTRO.GESTURES === true marks this rig (gestures, look, fear, hurt, the pistol, levels of detail) from the one before it.
 
-   ASTRO.create(crewIndex, seed)        -> rig (plain data). crewIndex 0..4 picks the face layer; seed varies which way the head tilts, the toe-in,
-                                        the sway and the twitch timing. The rig stands at the origin until update() or pose() places it.
-   ASTRO.update(rig, s, dt, groundY)    s = { x, z, heading, speed, active, open, stun, dup }   (other fields are ignored)
-                                        x, z      world metres
-                                        heading   radians, 0 faces -Z, positive turns toward +X
-                                        speed     m/s, 0..5.6: how fast it means to travel. The stride itself is driven by how far x, z really moved.
-                                        active    false = standing still
-                                        open      0..1 mouth gape. The face layer becomes FACE_OPEN + crew at 0.5; toward 1 the head cranes forward.
-                                        stun      > 0 = knocked to hands and knees; it gets up again when stun returns to 0
-                                        dup       true = a duplicate (stiff quick gait, tilted head that turns ahead of the body, dead over-long arms,
-                                                  a 45 ms twitch every 2 to 8 seconds); false = a living crew member (slow low-gravity lope, arm swing)
-                                        groundY(x, z) -> terrain height. Feet are planted in world space and do not slide. A jump in position
-                                        re-plants the feet. dt <= 0 changes nothing. Travel need not be along heading (backing up, side-stepping).
-   ASTRO.emit(B, rig)                   appends the current pose to batch B as world-space triangles: 2,422, or 2,436 while the mouth is open.
-   ASTRO.pose(rig, s, groundY)          place instantly at s, standing neutrally (on hands and knees if s.stun > 0); no time passes.
+   ASTRO.create(crewIndex, seed)        -> rig (plain data). crewIndex 0 baker, 1 waldron, 2 algo, 3 bart, 4 watkins: the head is sculpted for that person (skull, brow,
+                                        sockets, nose, lips, jaw, ears, neck; hair, moustache, beard and spectacles as geometry) and so, modestly, is the build. seed varies
+                                        the idle timing, which way the weight sits, the toe-in, a duplicate's tilt and twitches: two crew side by side are never in phase.
+   ASTRO.update(rig, s, dt, groundY)    s = { x, z, heading, speed, active, open, stun, dup }  as before, and optionally
+                                            { gun, aim, aimPitch, fire, gest, pointYaw, lookYaw, lookPitch, fear, hurt }.   Absent fields = the old behaviour.
+       x, z        world metres
+       heading     radians, 0 faces -Z, positive turns toward +X
+       speed       m/s, 0..5.6: how fast it means to travel. The stride is driven by how far x, z really moved. Under about 1.5 m/s a careful shuffle; above, the low-gravity
+                   lope with a real flight phase and a landing. Feet are planted in the world and do not skate. It leans into its own acceleration and into its turns (both
+                   taken from the change in x, z and heading between updates), and settles forward and back when it stops.
+       active      false = standing still (it breathes, shifts its weight, looks about)
+       open        0..1 a duplicate's mouth. The jaw really drops: by 0.5 the cavity is wider than any mouth, by 1 the head has tipped back and come up to the glass and the
+                   face it copied is looking out of its throat. The lower face stretches with the jaw.
+       stun        > 0 = knocked to hands and knees; it gets up when stun returns to 0. The pistol goes back in the holster first.
+       dup         true = a duplicate (stiff quick gait, tilted head that turns ahead of the body, dead over-long arms, a twitch every few seconds). Gestures, fear and
+                   hurt are for the living and are ignored for a duplicate; gun, aim, fire, lookYaw work for both.
+       gun         0 holstered (default), 1 drawn and held low (in one hand by the leg; in both hands in front of the chest pack once fear > 0.4), 2 aiming two-handed
+       aim         world heading the pistol points along at gun 2 (same sense as heading). The shoulders take about half of the turn, to 46 degrees, the head inside the
+                   helmet follows the sights, the arms do the rest: exact to about 100 degrees either side of the body, beyond that it points as far round as it can.
+       aimPitch    radians, positive up (to +-0.9)
+       fire        0..1 muzzle flash this frame: an emissive flash at the muzzle (turned differently for each shot) and a recoil kick that decays in 0.1 s
+       gest        'wave'   the whole arm overhead, slowly side to side: for attention at a distance
+                   'beckon' reach out palm up and draw it in: this way
+                   'point'  arm straight out along world heading s.pointYaw and held; the shoulders turn a little with it
+                   'halt'   the flat of the hand out in front: stop
+                   'check'  left forearm across the chest, head down to read the wrist panel
+                   'kneel'  down on the right knee, both hands working at something 0.9 m up in front
+                   'down'   sat slumped on the ground, back against whatever is behind, one leg out, one hand on the suit: a man who cannot stand
+                   null     nothing. One-armed gestures use the right arm, or the left when the right has the pistol (or the thing pointed at is to the left).
+       lookYaw     world heading to look along; lookPitch radians, positive up. The head inside the helmet goes first (+-31 degrees), the helmet follows (+-35), the
+                   shoulders come part of the way (+-29); the rest is for the caller to turn the body. Absent = looks where it is going.
+       fear        0..1: hunched, elbows in, shorter quicker steps, glances over a shoulder (more often the more afraid)
+       hurt        0..1: a limp on the left leg and the left hand held to the side
+       Every one of these is eased in and out inside the rig (gestures 0.4 s, sitting and kneeling 0.5 s, pistol 0.3 s out and 0.25 s up), so the caller sets and clears.
+       groundY(x, z) -> terrain height. A jump in position re-plants the feet. dt <= 0 changes nothing. Travel need not be along heading (backing up, side-stepping).
+   ASTRO.emit(B, rig, lod)              appends the current pose to batch B as world-space triangles. lod 0 (default) is the full model, at most 6,200 triangles;
+                                        lod 1 is for beyond about 20 m, at most 2,400. A batch with too little room is filled as far as whole triangles go; nothing throws.
+                                        If SIDEARM.thirdPerson exists (gun.js) the pistol built here is left out and SIDEARM.thirdPerson(B, xf, st, lod) is called once
+                                        per figure instead: xf = 12 numbers, the 3 x 4 pistol-to-world matrix by rows (the same array every call: copy it to keep it),
+                                        pistol space being SIDEARM's (origin on the bore axis at the rear of the upper, +X right, +Y up, -Z to the muzzle, metres);
+                                        st = the state object last given to update or pose for this rig; lod as given to emit. It is called in every gun state, the
+                                        holster included (the pouch, the strap, the hands and the muzzle flash are still drawn here).
+   ASTRO.pose(rig, s, groundY)          place instantly at s in whatever state s describes (gun, gesture, look and all); no time passes.
+   ASTRO.muzzle(rig)                    -> [x, y, z, dx, dy, dz]: the muzzle and the unit direction of the barrel in the world as of the last update, in every gun state
+                                        (holstered included). Draw the tracer and the light of the shot from it.
 
-   The figure is 1.9 m to the top of the helmet. The suit is built once as rigid pieces in bone space in the prims.js vertex format;
-   update() solves 17 bone matrices and emit() only transforms the pieces by them. */
+   The suit is the Shuttle / ISS EMU: hard upper torso; the display and control module on the chest (display, row of guarded switches, pressure gauge, selector
+   dial, purge valve on its left side, labels on its top); life support pack with the secondary oxygen pack under it, antenna, access panel and warning placards;
+   helmet in its visor assembly (brow of the shell, sun visor part of the way down, a lamp pod each side, television camera on the right); neck ring and wrist
+   disconnects with lock tabs; bearings at the shoulder and upper arm; body seal closure at the waist with latches, D-rings and a tether; pleated elbows and
+   knees; lugged boots; cuff checklist on the left forearm, mirror on the right wrist; flag on the left shoulder, mission patch on the right, name tag on the
+   left breast, the agency's roundel on the right breast and on the back of the pack. Relief is baked into the tones, since the lamp lights every normal alike.
+   Crew are told apart by the stripes round both thighs and across the pack (red on the suit, dark on this film): crewIndex 0, the commander, one broad solid
+   stripe; 1 none; 2 a broken stripe; 3 two narrow stripes; 4 a diagonal barber's pole. A duplicate wears what the person it copied wears.
+
+   Textures: the suit uses TL.SUIT, DARK, METAL, WHITE, VISOR, PATCH, and TL.NASA for the roundel if prims.js defines it when the first rig is created (uv 0..1 over
+   the square, laid out like TL.PATCH; without it the mission patch stands in); each head uses only TL.FACE + crewIndex (the whole portrait, as chartex.js lays it out). The portrait
+   is laid on the front of the sculpt from where its camera stood; everything the picture cannot vouch for (the sides and back of the head, ears, neck, most hair) is
+   plain skin or hair drawn from a small clean patch of the same picture and toned to match the picture where they meet. TL.FACE_OPEN is no longer used.
+
+   The figure is about 1.9 m to the top of the helmet (1.81 to 2.0 by build). Everything is built once, on first use, as rigid pieces in bone space in the prims.js
+   vertex format (the head and jaw as two shapes that emit() blends); update() solves 19 bone matrices and emit() only transforms the pieces by them. */
 const ASTRO = (() => {
-  const PI = Math.PI, TAU = PI * 2;
+  const PI = Math.PI, TAU = PI * 2, DEG = PI / 180;
   // bones
-  const PEL = 0, TOR = 1, HEL = 2, HEAD = 3, MOUTH = 4, UAL = 5, FAL = 6, HAL = 7, UAR = 8, FAR = 9, HAR = 10, THL = 11, SHL = 12, FTL = 13, THR = 14, SHR = 15, FTR = 16, NB = 17;
-  // skeleton, metres. Character space: +X right, +Y up, +Z back (it faces -Z).
+  const PEL = 0, TOR = 1, HEL = 2, HEAD = 3, INNER = 4, UAL = 5, FAL = 6, HAL = 7, UAR = 8, FAR = 9, HAR = 10, THL = 11, SHL = 12, FTL = 13, THR = 14, SHR = 15, FTR = 16, GUN = 17, FLASH = 18, NB = 19;
+  // skeleton, metres, for a figure of scale 1. Character space: +X right, +Y up, +Z back (it faces -Z).
   const HIP_Y = 0.9, HIP_X = 0.105, THIGH = 0.42, SHIN = 0.38, LEG = THIGH + SHIN, ANKLE = 0.115, BALL = 0.215, HEEL = 0.075, WAIST = 0.11;
   const SH_X = 0.262, SH_Y = 0.40, NECK_Y = 0.52, NECK_Z = -0.005;
   const HC = [0, 0.185, -0.01], HR = 0.2;          // helmet sphere centre (from the neck pivot) and radius
   const UPPER = 0.29, FORE = 0.27;
-  const FACE_W = 0.118, FACE_H = 0.1475;             // half size of the face (4:5)
-  const MOUTH_Y = -0.375 * FACE_H, MOUTH_RX = 62.5 / 128 * FACE_W, MOUTH_RY = 80.5 / 128 * FACE_H;   // where chartex.js paints the open mouth, in face metres
+  const HEAD_AT = [0, .002, -.03], HEAD_S = 1.2;   // where the head sits in the helmet (eye line, between the ears) and how much larger than life it is drawn: the helmet is a fifth larger than a real one
 
   const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
   const lerp = (a, b, t) => a + (b - a) * t;
@@ -3017,6 +3061,7 @@ const ASTRO = (() => {
   const frac = x => x - Math.floor(x);
   const wrapPi = a => { a = (a + PI) % TAU; if (a < 0) a += TAU; return a - PI; };
   const damp = (dt, tau) => dt > 0 ? 1 - Math.exp(-dt / tau) : 0;
+  const gau = x => Math.exp(-x * x);
   const flat = () => 0;
   // 3x3 rotations stored by columns [X, Y, Z]
   const rX = a => { const c = Math.cos(a), s = Math.sin(a); return [1, 0, 0, 0, c, s, 0, -s, c]; };   // positive tips the top backward
@@ -3024,18 +3069,30 @@ const ASTRO = (() => {
   const rZ = a => { const c = Math.cos(a), s = Math.sin(a); return [c, s, 0, -s, c, 0, 0, 0, 1]; };   // positive leans to the character's left
   const mm = (a, b) => { const o = [0, 0, 0, 0, 0, 0, 0, 0, 0]; for (let c = 0; c < 3; c++) for (let r = 0; r < 3; r++) o[c * 3 + r] = a[r] * b[c * 3] + a[3 + r] * b[c * 3 + 1] + a[6 + r] * b[c * 3 + 2]; return o; };
   const mv = (m, v) => [m[0] * v[0] + m[3] * v[1] + m[6] * v[2], m[1] * v[0] + m[4] * v[1] + m[7] * v[2], m[2] * v[0] + m[5] * v[1] + m[8] * v[2]];
+  const mtv = (m, v) => [m[0] * v[0] + m[1] * v[1] + m[2] * v[2], m[3] * v[0] + m[4] * v[1] + m[5] * v[2], m[6] * v[0] + m[7] * v[1] + m[8] * v[2]];   // by the transpose
   const col = (m, c) => [m[c * 3], m[c * 3 + 1], m[c * 3 + 2]];
+  const I3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
   // frame whose Y axis is y (unit) and whose Z axis is as close as it can be to zh
   const fromYZ = (y, zh) => { let z = V3.sub(zh, V3.mul(y, V3.dot(zh, y))); const l = V3.len(z); z = l < 1e-6 ? V3.perp(y) : V3.mul(z, 1 / l); const x = V3.cross(y, z); return [x[0], x[1], x[2], y[0], y[1], y[2], z[0], z[1], z[2]]; };
   const fromXY = (xh, y) => { let z = V3.cross(xh, y); const l = V3.len(z); z = l < 1e-6 ? V3.perp(y) : V3.mul(z, 1 / l); const x = V3.cross(y, z); return [x[0], x[1], x[2], y[0], y[1], y[2], z[0], z[1], z[2]]; };
+  // the nearest rotation to a blend of two (columns re-squared: Y kept, Z and X rebuilt)
+  const mixR = (a, b, t) => { const y = V3.norm([lerp(a[3], b[3], t), lerp(a[4], b[4], t), lerp(a[5], b[5], t)]); return fromYZ(y, [lerp(a[6], b[6], t), lerp(a[7], b[7], t), lerp(a[8], b[8], t)]); };
   function rng(seed) { let a = (seed | 0) * 2654435761 + 0x9E3779B9 | 0; return () => { a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+  // repeatable lumps: value noise on a lattice, -1..1
+  const hash3 = (x, y, z) => { let h = Math.imul(x | 0, 374761393) + Math.imul(y | 0, 668265263) + Math.imul(z | 0, 2147483647) | 0; h = Math.imul(h ^ h >>> 13, 1274126177); return ((h ^ h >>> 16) >>> 0) / 2147483648 - 1; };
+  function noise3(x, y, z) { const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z), u = x - xi, v = y - yi, w = z - zi, a = u * u * (3 - 2 * u), b = v * v * (3 - 2 * v), c = w * w * (3 - 2 * w);
+    const L = (p, q, t) => p + (q - p) * t, H = (i, j, k) => hash3(xi + i, yi + j, zi + k);
+    return L(L(L(H(0, 0, 0), H(1, 0, 0), a), L(H(0, 1, 0), H(1, 1, 0), a), b), L(L(H(0, 0, 1), H(1, 0, 1), a), L(H(0, 1, 1), H(1, 1, 1), a), b), c); }
+  // smooth curve through keys [[x, v0, v1, ...], ...]: returns x -> [v0, v1, ...], held flat beyond the ends
+  function curve(K) { K = K.slice().sort((a, b) => a[0] - b[0]); const n = K.length, w = K[0].length - 1;
+    const m = K.map((k, i) => { const a = K[Math.max(i - 1, 0)], b = K[Math.min(i + 1, n - 1)], o = []; for (let c = 1; c <= w; c++) o.push((b[c] - a[c]) / (b[0] - a[0])); return o; });
+    return x => { if (x <= K[0][0]) return K[0].slice(1); if (x >= K[n - 1][0]) return K[n - 1].slice(1); let i = 0; while (x > K[i + 1][0]) i++;
+      const a = K[i], b = K[i + 1], h = b[0] - a[0], t = (x - a[0]) / h, t2 = t * t, t3 = t2 * t, h00 = 2 * t3 - 3 * t2 + 1, h10 = t3 - 2 * t2 + t, h01 = -2 * t3 + 3 * t2, h11 = t3 - t2, o = [];
+      for (let c = 1; c <= w; c++) o.push(h00 * a[c] + h10 * h * m[i][c - 1] + h01 * b[c] + h11 * h * m[i + 1][c - 1]); return o; }; }
 
-  /* ------------------------------------------------------------------ the suit, built once ------------------------------------------------------------------ */
-  let PARTS = null;
-  const K_PLAIN = 0, K_FACE = 1, K_MOUTH = 2;
+  /* ------------------------------------------------------------------ mesh kit ------------------------------------------------------------------ */
   const LU = k => (k * 16 + 9) / 256;       // v coordinate in "seam units": the suit fabric has a dark seam every 1/16 of v, integers sit between seams
   const same = (a, b) => Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]) < 1e-7;
-
   // a sheet of quads over the point grid P[j][i] with smooth normals. o: layer | layerOf(j), uv(j,i), sh(j,i), emis, closed, out(j,i), nf(j,i)
   function grid(b, P, o) {
     const J = P.length, I = P[0].length, m = I - 1, N = [];
@@ -3076,21 +3133,470 @@ const ASTRO = (() => {
     const rings = pts.map((p, k) => { const t = V3.norm(V3.sub(pts[Math.min(k + 1, n - 1)], pts[Math.max(k - 1, 0)])); X = V3.norm(V3.sub(X, V3.mul(t, V3.dot(X, t)))); const Z = V3.cross(t, X); return { c: p, rx: at(r, k), rz: at(r, k), v: k * (vstep || 0), sh: at(sh, k), X, Z }; });
     loft(b, rings, { sides, layer, u0: 0, u1: .25 }); }
   const bez = (p0, p1, p2, p3, n) => { const o = []; for (let k = 0; k <= n; k++) { const t = k / n, a = (1 - t) ** 3, bq = 3 * (1 - t) ** 2 * t, c = 3 * (1 - t) * t * t, d = t ** 3; o.push([p0[0] * a + p1[0] * bq + p2[0] * c + p3[0] * d, p0[1] * a + p1[1] * bq + p2[1] * c + p3[1] * d, p0[2] * a + p1[2] * bq + p2[2] * c + p3[2] * d]); } return o; };
-  // the round mission patch laid on a surface. f(x, y) -> point, x to the viewer's right and y up, in metres from the patch centre.
-  function patch(b, R, f, sh) { const xs = [-1, -.8, -.45, 0, .45, .8, 1], K = .5 * 126 / 128, d = 1e-3;
+  // a round emblem (the mission patch unless another layer is given) laid on a surface. f(x, y) -> point, x to the viewer's right and y up, in metres from its centre.
+  function patch(b, R, f, sh, layer) { const xs = [-1, -.8, -.45, 0, .45, .8, 1], K = .5 * 126 / 128, d = 1e-3, lay = layer === undefined ? TL.PATCH : layer;
     const pt = (x, y) => { const p = f(x, y), n = V3.norm(V3.cross(V3.sub(f(x + d, y), f(x - d, y)), V3.sub(f(x, y + d), f(x, y - d)))); return [p, .5 + x / R * K, .5 - y / R * K, n]; };
-    const put = q => b.v(q[0], q[1], q[2], TL.PATCH, q[3], sh, .03);
+    const put = q => b.v(q[0], q[1], q[2], lay, q[3], sh, .03);
     for (let i = 0; i < 6; i++) { const x0 = xs[i] * R, x1 = xs[i + 1] * R, h0 = Math.sqrt(Math.max(0, R * R - x0 * x0)), h1 = Math.sqrt(Math.max(0, R * R - x1 * x1));
       const a = pt(x0, h0), bq = pt(x1, h1), c = pt(x1, -h1), e = pt(x0, -h0);
       if (h0 > 1e-6) { put(a); put(bq); put(e); } if (h1 > 1e-6) { put(bq); put(c); put(e); } } }
   const mirror = d => { const o = d.slice(); for (let k = 0; k < o.length; k += 12) { o[k] = -o[k]; o[k + 6] = -o[k + 6]; } return o; };
+  /* hard-edged detail. The lamp lights every normal alike, so relief has to be in the tones: these bake a little light from above on each face and use one flat texel */
+  const KEYL = V3.norm([-.2, 1, -.35]), UVS = [.521484375, .521484375];
+  const flatUV = layer => layer === TL.METAL ? UVM : layer === TL.DARK ? UVD : layer === TL.SUIT ? UVS : UVW;
+  const lit = (n, sh) => sh * clamp(.8 + .3 * V3.dot(n, KEYL), .5, 1.12);
+  // a box: c centre, hx, hy, hz half-extent vectors
+  function crate(b, c, hx, hy, hz, layer, sh, em) { const uv = flatUV(layer), A = [hx, hy, hz];
+    for (let a = 0; a < 3; a++) for (const s of [-1, 1]) { const n = V3.mul(V3.norm(A[a]), s), u = A[(a + 1) % 3], w = A[(a + 2) % 3], o = V3.mad(c, A[a], s), k = lit(n, sh);
+      const p = (i, j) => [o[0] + u[0] * i + w[0] * j, o[1] + u[1] * i + w[1] * j, o[2] + u[2] * i + w[2] * j], q = [p(-1, -1), p(1, -1), p(1, 1), p(-1, 1)];
+      for (const i of [0, 1, 2, 0, 2, 3]) b.v(q[i], uv[0], uv[1], layer, n, k, em || 0); } }
+  // a flat plate of one tone through four corners (n = which way it faces, for the baked light; left out, the tone is taken as given)
+  function plate(b, p0, p1, p2, p3, layer, sh, em, n) { const uv = flatUV(layer), m = n || V3.norm(V3.cross(V3.sub(p1, p0), V3.sub(p3, p0))), k = n ? lit(n, sh) : sh;
+    for (const p of [p0, p1, p2, p0, p2, p3]) b.v(p, uv[0], uv[1], layer, m, k, em || 0); }
+  // a flat disc: c centre, X, Y unit vectors in its plane
+  function disc(b, c, X, Y, r, sides, layer, sh, em) { const uv = flatUV(layer), n = V3.cross(X, Y), P = []; for (let i = 0; i < sides; i++) { const t = (i + .5) / sides * TAU; P.push(V3.mad(V3.mad(c, X, Math.cos(t) * r), Y, Math.sin(t) * r)); }
+    for (let i = 1; i < sides - 1; i++) for (const p of [P[0], P[i], P[i + 1]]) b.v(p, uv[0], uv[1], layer, n, sh, em || 0); }
+  // a stub or a ring of one tone: rings of { c, rx, rz, sh } as loft takes them
+  const stub = (b, rings, o) => { const uv = flatUV(o.layer); for (const r of rings) r.v = uv[1]; return loft(b, rings, Object.assign({ u0: uv[0], u1: uv[0] }, o)); };
+  // the points of a superellipse section, closed (the last is the first again)
+  function sring(c, rx, rz, n, sides, a0) { const e = 2 / (n || 2), P = []; for (let i = 0; i <= sides; i++) { const t = (a0 || 0) + (i % sides) / sides * TAU, co = Math.cos(t), si = Math.sin(t); P.push([c[0] + rx * Math.sign(co) * Math.pow(Math.abs(co), e), c[1], c[2] + rz * Math.sign(si) * Math.pow(Math.abs(si), e)]); } return P; }
+  // radius of a limb profile (rows of [y, r, ...]) at height y
+  const radAt = (rows, y) => { let k = 0; while (k < rows.length - 2 && y < rows[k + 1][0]) k++; const a = rows[k], c = rows[k + 1]; return lerp(a[1], c[1], clamp((y - a[0]) / (c[0] - a[0]), 0, 1)); };
 
-  function build() {
-    if (PARTS) return;
+  /* ------------------------------------------------------------------ the five people ------------------------------------------------------------------
+     Everything in CREW was measured from that person's 48 x 60 portrait (portraits.js), nothing else.
+     Head space: origin on the eye line, midway between the ears. Metres at life size. +X the person's right, +Y up, -Z out of the face.
+     H0 is an average head; each person overrides what their picture shows to be different. */
+  const H0 = {
+    // heights of the landmarks above the eye line
+    yTop: .120, yDome: .05, yBrow: .017, yTip: -.043, yBase: -.052, yMouth: -.069, yCrease: -.087, yChin: -.104, yMent: -.119,
+    ex: .032,                                                                                                    // half the distance between the pupils
+    // cross-sections of the skull at those heights: half width, how far the front and the back are from the ear line, and how square the section is (2 = ellipse)
+    wCran: .0765, wBrow: .0715, wEye: .0700, wCheek: .0690, wNose: .0645, wMouth: .0575, wCrease: .0535, wChin: .0440, wMent: .0300,
+    fDome: .0950, fBrow: .0925, fEye: .0860, fCheek: .0885, fNose: .0920, fMouth: .0935, fCrease: .0900, fChin: .0920, fMent: .0830,
+    bDome: .1040, bBrow: .1040, bEye: .1020, bCheek: .0960, bNose: .0820, bMouth: .0600, bCrease: .0400, bChin: .0250, bMent: .0120,
+    nDome: 2.15, nBrow: 2.3, nEye: 2.4, nCheek: 2.45, nNose: 2.3, nMouth: 2.05, nCrease: 1.9, nChin: 1.75, nMent: 1.8,
+    pd: 2.25, crown: .014,                                                                                       // squareness of the dome; how far behind the ear line the crown is
+    // relief
+    brow: .0050, socket: .0105, eyeball: .0040, bridge: .0070, noseP: .0290, noseW0: .0075, noseW1: .0120, noseCurve: 1.2, ala: .0065, alaX: .0140,
+    cheek: .0040, cheekY: -.022, muzzle: .0030, lipU: .0045, lipL: .0045, lipGap: .0030, mouthW: .025, chin: .0050, chinW: .022, crease: .0030,
+    bumps: [],                                                                                                   // [|x| or x, y, sx, sy, forward, outward, 1 if x is signed]: moustache, beard, jowls
+    slit: .034,                                                                                                  // half width of the cut the mouth opens along
+    ear: { y: -.004, z: .012, h: .031, w: .017, flare: .5 }, neckW: .056, neckD: .062,
+  };
+  /* photo: how the portrait lies on the head. s pixels per metre; eye = pixel midway between the pupils; yaw, pitch, roll = the pose of the head in the picture,
+     degrees (yaw + turns the face to the person's left, roll + leans the head to the person's left); zone = [[height, degrees round to the person's right, degrees
+     round to their left], ...] from the bottom up: the part of the head the picture can be trusted on. Outside it the surface is plain skin: skin = [px, py, r, k], a
+     small clean patch of the same picture and a tone factor, or the picture mirrored across the face where the other side is inside the zone (mirror: false turns
+     that off). avoid = [x, y, r] things in front of the face. hair.at is the same kind of patch for hair, hair.zone = [degrees right, left] the picture is trusted on.
+     build: [overall scale, shoulder width, chest girth, limb girth]. */
+  const CREW = [
+    { name: 'baker',   // a full round face, a heavy dark moustache, a mop of pale curls that hides the ears and most of the forehead; looks straight at the camera
+      head: { yTip: -.037, yBase: -.045, yMouth: -.068, yCrease: -.083, yChin: -.098, yMent: -.114,
+        wCran: .080, wBrow: .0765, wEye: .0765, wCheek: .0775, wNose: .074, wMouth: .061, wCrease: .050, wChin: .039, wMent: .028, nCheek: 2.5, nNose: 2.45, nMouth: 2.3, nCrease: 2.2, nChin: 2.2,
+        cheek: .006, noseW1: .0125, bumps: [[0, -.0595, .03, .0065, .005, 0]], ear: null },
+      photo: { s: 206, eye: [23.9, 29.9], yaw: 0, pitch: 0, roll: 3.5, zone: [[-.118, 46.5, 46.5], [-.075, 56, 56], [.08, 56, 56]], skin: [33.5, 33.5, 2, .92] },
+      hair: { keys: [[-180, -.07, .03, .036, .008], [-130, -.06, .03, .038, .008], [-90, -.04, .028, .04, .008], [-70, -.01, .028, .04, .008], [-50, .03, .024, .038, .006], [-25, .07, .016, .034, .003], [0, .055, .016, .034, .004], [20, .044, .018, .034, .004],
+          [50, .03, .024, .038, .006], [70, -.01, .028, .04, .008], [90, -.04, .028, .04, .008], [130, -.06, .03, .038, .008], [180, -.07, .03, .036, .008]], top: .024, lump: .016, lumpF: 30, at: [22.5, 7.5, 4, 1], zone: [60, 60],
+        cols: [0, 7, 14, 21, 29, 37, 46, 56, 67, 79, 92, 106, 121, 138, 158, 180], rows: [0, .08, .18, .3, .43, .57, .71, .85, 1] },
+      build: [1, 1.03, 1.08, 1.06] },
+    { name: 'waldron', // a young narrow face behind big round wire spectacles, thick straight hair swept across the forehead to his left; head turned a little to his right and tipped
+      head: { yBrow: .0135, yTip: -.039, yBase: -.047, yMouth: -.063, yCrease: -.079, yChin: -.097, yMent: -.112,
+        wCran: .074, wBrow: .069, wEye: .067, wCheek: .066, wNose: .062, wMouth: .054, wCrease: .048, wChin: .037, wMent: .026, noseW1: .0105, noseP: .028, lipU: .003, lipL: .0035, mouthW: .024 },
+      photo: { s: 333, eye: [23.5, 32], yaw: -17, pitch: 0, roll: -11.5, zone: [[-.116, 38, 56], [-.07, 46.5, 67], [.08, 46.5, 67]], skin: [33.5, 40.5, 2, .9] },
+      hair: { keys: [[-180, -.07, .014, .02, .004], [-130, -.06, .014, .022, .006], [-95, -.03, .014, .022, .012], [-72, -.005, .013, .022, .012], [-50, .04, .013, .022, .026], [-27, .056, .013, .022, .038], [-6, .056, .012, .022, .024], [12, .056, .011, .022, .006], [32, .052, .011, .022, .002],
+          [52, .04, .012, .022, .006], [72, -.005, .013, .022, .012], [95, -.03, .014, .022, .012], [130, -.06, .014, .022, .006], [180, -.07, .014, .02, .004]], top: .02, strand: [.09, 9, .6], at: [24.5, 8.5, 3, 1] },
+      specs: { x: .033, y: -.004, z: -.106, r: .0245, t: .0016, wrap: .14, k: 1.3, earX: .073 },
+      build: [.97, .96, .94, .94] },
+    { name: 'algo',    // a heavy round head with no hair to speak of, small deep eyes, a short broad nose, wide jaw and jowls; tipped well over to his right
+      head: { yTip: -.036, yBase: -.045, yMouth: -.071, yCrease: -.090, yChin: -.110, yMent: -.130,
+        wCran: .081, wBrow: .078, wEye: .078, wCheek: .080, wNose: .080, wMouth: .075, wCrease: .069, wChin: .058, wMent: .042, nCheek: 2.5, nNose: 2.5, nMouth: 2.4, nCrease: 2.3, nChin: 2.3, nMent: 2.2,
+        fMent: .078, socket: .011, noseW1: .014, noseP: .025, alaX: .016, bumps: [[.05, -.088, .026, .026, .002, .006]], neckW: .066, neckD: .07 },
+      photo: { s: 180, eye: [14.5, 22.8], yaw: 0, pitch: 0, roll: -26, zone: [[-.134, 46.5, 46.5], [-.09, 56, 56], [.062, 56, 56]], skin: [22.5, 27.5, 3, .88] },
+      hair: null, build: [.955, 1.04, 1.12, 1.08] },
+    { name: 'bart',    // a lean young face with a broad grin, a high forehead under short dark hair, ears that stand out; head tipped to his right
+      head: { yTip: -.038, yBase: -.046, yMouth: -.060, yCrease: -.080, yChin: -.103, yMent: -.119,
+        wCran: .074, wBrow: .0695, wEye: .068, wCheek: .067, wNose: .062, wMouth: .055, wCrease: .044, wChin: .030, wMent: .021, nCrease: 1.8, nChin: 1.7,
+        cheek: .006, cheekY: -.03, mouthW: .029, lipU: .003, lipL: .003, ear: { flare: .8, h: .033, w: .019, y: -.006 } },
+      photo: { s: 178, eye: [24.75, 23.8], yaw: -6, pitch: 0, roll: -8.5, zone: [[-.123, 30.5, 46.5], [-.08, 38, 56], [.082, 38, 56]], skin: [28.5, 30.5, 2, .8] },
+      hair: { keys: [[-180, -.065, .004, .008, 0], [-140, -.06, .004, .008, 0], [-114, -.03, .004, .008, 0], [-99, .018, .003, .008, 0], [-86, .034, .003, .008, 0], [-70, .04, .003, .007, 0], [-50, .064, .003, .007, 0], [-28, .08, .003, .008, 0], [0, .078, .003, .008, 0], [28, .08, .003, .008, 0],
+          [50, .064, .003, .007, 0], [70, .04, .003, .007, 0], [86, .034, .003, .008, 0], [99, .018, .003, .008, 0], [114, -.03, .004, .008, 0], [140, -.06, .004, .008, 0], [180, -.065, .004, .008, 0]], at: [24.5, 6.5, 1, 1], cols: [0, 12, 26, 40, 54, 68, 80, 90, 100, 112, 128, 152, 180], top: .008, tuck: .004 },
+      build: [1.04, 1, .96, .96] },
+    { name: 'watkins', // dark skin, short dense black hair with a clean rounded hairline, strong brows, a broad nose, full lips, a trace of moustache and chin beard; turned to his right
+      head: { yTip: -.033, yBase: -.042, yMouth: -.065, yCrease: -.082, yChin: -.097, yMent: -.110,
+        wCran: .075, wBrow: .070, wEye: .068, wCheek: .067, wNose: .064, wMouth: .058, wCrease: .053, wChin: .043, wMent: .030, nChin: 2.0,
+        brow: .006, noseW1: .015, alaX: .017, ala: .0075, noseP: .025, bridge: .005, lipU: .006, lipL: .0065, mouthW: .026, muzzle: .005, bumps: [[0, -.056, .026, .004, .0015, 0], [0, -.094, .02, .014, .003, 0]] },
+      photo: { s: 225, eye: [23, 23.8], yaw: -22, pitch: 0, roll: -6.6, zone: [[-.114, 24, 56], [-.07, 30.5, 67], [.07, 30.5, 67]], skin: [22.5, 25.5, 2, .9], avoid: [[27, 44.5, 3.2], [8, 30, 7.5]] },
+      hair: { keys: [[-180, -.06, .008, .02, 0], [-140, -.055, .008, .02, 0], [-114, -.025, .007, .02, 0], [-99, .02, .006, .02, 0], [-86, .034, .006, .02, 0], [-68, .04, .006, .02, 0], [-45, .055, .007, .02, 0], [-25, .063, .007, .02, 0], [0, .060, .007, .02, 0], [25, .063, .007, .02, 0],
+          [45, .055, .007, .02, 0], [68, .04, .006, .02, 0], [86, .034, .006, .02, 0], [99, .02, .006, .02, 0], [114, -.025, .007, .02, 0], [140, -.055, .008, .02, 0], [180, -.06, .008, .02, 0]], at: [24.5, 3.5, 1, 1], cols: [0, 12, 26, 40, 54, 68, 80, 90, 100, 112, 128, 152, 180], top: .024, lump: .003, lumpF: 60, tuck: .006 },
+      build: [1.055, 1.05, 1, 1.02] },
+  ];
+
+  // each portrait boiled down to 24 x 30 blurred greys (row by row, 0..63): how bright the photograph is at any point, so plain skin and hair can be matched to it
+  const TONES = [
+    'HFEEEDEFLUamjWQPLGFEDDEEHFFFFFGLUelvxojheTMHEEEFGFFHJMVhjjtxtpq1vihUJFFEEFGKVkstvyzwwvy3wt0tdMGFDGITpxodgqqnstuuiiw1wgQIEIOdoiZPNRXZdknjWVgnwyjRGLYjbMIHJKJMTZigVPQVgwwjGNfjTHGLQRMKOTcklfUYft1wGSeZOLMSUSSTblu35zjaajx3OffSOSWYWVbjr04897ycMQjxilZQRahkigjt1367996nOPkv0kPIRmvwuux24456788zZTnz4iLFUv0vru0540y02586nSbu8qRJc21sihu42ohlv366tYas8xcTn40pYYlz3pYYp166yjjs41kct2xpdenx2whfu365ynqxr3tkxyuplnrw33xv0355wjovYxynyxqkknsx22zyy243xnqxMjxkuxsmiejrtsrw0123xssoHTndlxvqiUXkjmqu0100ttqdGJVWctysbOSaUYit11ythgnhGGJMSlvmUPRROSXm22tiSPZhHGHHKXieaYTPPYflwwlXLIJKGGIFEKQVdifYYnvnhfVLGGFCHHIFCDGLVhiaeuvbNLHEEGGDRJKFCCCFLWceoynQEDDDFHHClRIDCBBCEJTZgjVGDCCDFIEBpPCCCBCCDEJLNMHDCBCDHKEBVFBCBCCCCDEEEEDDCCCENSGBKCCBCCBBCCEDCCCBBCDJXVFB',
+    'psutsplcVROMOQQPRVUTSdiawtsmhZQNMJHHKPVWTVZehouxzvmbRKHIJHIMPTVXWUXfhls0umaPHEEGHKNSWYXVYaachhiojZQIFFGIMPTUVXYYXbddfebbaQHFGHJLOOONNQWZabcbZbZXVMIIJMORUVVTRQRUVYabbaYTMKJMPSVYZaaZXVWXWWZcddaWIIKTbcdfhfdbZXVUVXabbdfeFHOdmnnnnmlhdYUSSTUWYZafHKTjrttuuttrnjfZVTRQRUXaJLWmrtwyz0zzvnfcbZXUSTUXHKWlqtvxz121ukgimnlfcZQSGJVhlllpuy10topppqolhXKNFJRZZabkpqtvqrrlinnmjYNNFHNSXddkplmrossoorrqlaRPJHMSabZjrlouqrstvvttpeVSNNOVZZckohmvurvxwxvuriXVOOPXdelonfkwxutxwwtqmgaXQMRYhjoqnfkvzvsuuvtqlhfaQMOZkpqqlhmw0yvvz0ytnmlgNNJRfmnpompx0ytty0ztqrnkQPLLckortpmquursxzxtutqnQPMLZlqtvrkiosuvxxvuutsqRRRPUiptusonruwwxwvvvutrUUUSTdmrtroprtrppruwwvutUVTSRXhorqliknpprtxyxvuuQSSRPOXlqrljnrtvwyzxwvusHLMNMKQemqpnrstuxyyxvutpEHIJJLOZjnpprssvxyyxvuql',
+    'RNKLJFKILadOJKLMOPRSUXiqWOKLMGJJLbjSKMMMOPRSVYjsYQLMPIMPMViZNOOOPRSUXZisZSNPUQUZUVffTRQPPSVYcdktidVUZbefefghYVUTTWYbghkqurdacfijigghjlhdccbbbZdmyvfcehjkkihho01xsnhebYbkypdcfhikkkiilu16740vqkjmugZbfijkjiiijms0788763xqlZWZehjjgdehjknx6988884taUVYdggigdgijknv179-873vUTTVZdbeiihikllmpw16895vZUUTWZYbijhhkljginlou13ucUVWZaYZeghjkjgfgicYbjspiXWZceZWZfikjihhfeXQPWimnbUXcfcZacdefhhgfdVLKTjmkaQSXaYWWWWYehgfecXMKRgngZONRUTRRUXbfggeecZPLVineYQNQTSRRVYadfeeedaTRZkmZUPMOQRRSVZcfgffeaXUYimmZTMHJMMMPUZdfeddZUTTajkneaPFGJKKLOTZaZZWROSaiklocfWJEGIJKKMPRRSPMRdmnopoddULIHHJKKKKLJLQYkpnnoqpURMJJLLLNOOOTSZkstqnnopoHGFFIMQOOSXaintxwtonnnmlDEGKOQQQQSXaemstrolkijjhGIKOQSQQUUWXXZejmlibYZeeJKLKLORSUVUUTRRahfXNKLQVMOOMMKNPSUUSRNMTbXMJJKMQ',
+    'AAABBCDEEEEDDDDEEEEEEEEDBBBCCEFGGEEEEEDEEFEEEEEECCCDEGJJJHHGGHGFFFGFFFFFCCCDFHKLLMMMMMLKJIHGFFFFCCDEGILPTVXdgdYWSMJHGGGHDDDFHKRcnqu00vokeSMJHGGGDDDGKOZp057860uolcSLHHGGEEEGJPcq18-873yrlbQKIHHHEEEFIPdp068763yrjYQOMIHHEEFGHOamy5762wrlhaVdYLJIEEFGJMTcjsz0phgjldepcMJJEEFGLORVXemtomorrghoYLJJFEFGJPUchjiqpx01whgmULJJGFFHIOWksqhnnx44yjaZNKJJMHGHIMUlwphrpu01ykURQNLKWLGHHJOeqjhrutv0ymSNQOMNfTIHIJMZmjgqvsv1vjRGEEGKkdOHJJLTfmjpuuyyohVHEEEGmjXKJKPQTemt010rknbKFDEFlkfRLOMHLVht33wptuiPHEEGiiibTMFEJSalvwsu0xmVMGGOafihUHDDHSccmuvy0wnaOHLXRdmlOFDCEPdeentxxunbLJVcLZnjLFDCDKXgfkrutqkVMVmsQbjhOFEDDHQbgglpngYWeo06lrpgXJFEEGNVhiedaXeqw49_z0ueYWOJIHINWYUVahu26-__341rdYYXWYXVUXdioy6-____67731rkfistkfmw26-______78-78850z561049-________',
+    'urqqphYTLHHGGGGGFHObcRKItqpphVPLHGGGFEEEEFIRZUMLtpnmbNJHFFGHGFEDDEFHPUPNtoljZKFGHJMQQNJGFEEEGKOKsnicRJFHOWdilfWRNJGFFGMKsnicSIHPYfkprleaYTNGFFKLrojcPGJVcinrsokebXRKFFMMrnlZJFMXejoqrpmgaXUOIKTQrnlWHGQbhlpqqnkgbXURNSYSqnlYOKUempqkfgiidYVSQWcYqnlbRKPVempfZZccbbXSSXearnldSLPSWgogbbifdgbTVZeZqmlhZPOYfiqjginlkjdWXadVqlgWNLQcipumjpuvrkdXWcdSlaNEEPVafopkkuyxqibVWfgWSHCCHTZcZZbchuxtngYSUabUQJFNUWYcXVeikttojdXQPSUSkWPioaWYYaijlonjfbWPLMQNlWSbfXTTVafhgfgecaVQKJLJkedXRPRRQXeigcdcaXUPJIHGooofURRQRZhjihfbXTRMKLHElnojVPRRQRVdrtfWQOMKNQLHkmokXNScURYl44hSLIGJTVPKijmlfVdrbSYivyeOIGIRZYSLdikkgeppZRRVYWNHFIPXaYSKUgkibgmkXPKIHFFFJOUYYWPJKbidZeieSMKHEEFIMPSVURNJERbUYcgcSMMJIHKNMORTRQNJBISQXdfeWOMJJILVTSUSPRNIBENQXgfgcSMJJIKWghZQPRNN'];
+  const TONE_A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  function toneOf(ci) { const s = TONES[ci], v = new Float32Array(720); for (let i = 0; i < 720; i++) v[i] = TONE_A.indexOf(s[i]) / 63;
+    return (x, y) => { const fx = clamp(x / 2 - .5, 0, 23), fy = clamp(y / 2 - .5, 0, 29), i = Math.min(22, fx | 0), j = Math.min(28, fy | 0), a = fx - i, b = fy - j;
+      return lerp(lerp(v[j * 24 + i], v[j * 24 + i + 1], a), lerp(v[j * 24 + 24 + i], v[j * 24 + 25 + i], a), b); }; }
+
+  /* ------------------------------------------------------------------ heads ------------------------------------------------------------------ */
+  // the skin of the skull and face: (angle round from straight ahead, + toward the person's right; height above the eye line) -> point
+  function headSurface(H) {
+    const prof = curve([[H.yDome, H.wCran, H.fDome, H.bDome, H.nDome], [H.yBrow, H.wBrow, H.fBrow, H.bBrow, H.nBrow], [0, H.wEye, H.fEye, H.bEye, H.nEye], [H.cheekY, H.wCheek, H.fCheek, H.bCheek, H.nCheek],
+      [H.yBase + .004, H.wNose, H.fNose, H.bNose, H.nNose], [H.yMouth, H.wMouth, H.fMouth, H.bMouth, H.nMouth], [H.yCrease, H.wCrease, H.fCrease, H.bCrease, H.nCrease], [H.yChin, H.wChin, H.fChin, H.bChin, H.nChin], [H.yMent, H.wMent, H.fMent, H.bMent, H.nMent]]);
+    const yN = H.yBrow * .55;   // the root of the nose
+    return (th, y) => {
+      let a, f, b, n, zc = 0;
+      if (y > H.yDome) { const t = Math.min(1, (y - H.yDome) / (H.yTop - H.yDome)), D = Math.pow(Math.max(0, 1 - Math.pow(t, H.pd)), 1 / H.pd); a = H.wCran * D; f = H.fDome * D; b = H.bDome * D; n = H.nDome; zc = H.crown * t * t; }
+      else if (y < H.yMent) { const t = Math.min(1, (H.yMent - y) / .0095), D = Math.sqrt(Math.max(0, 1 - t * t)); a = H.wMent * D; f = H.fMent * D; b = H.bMent * D; n = H.nMent; }
+      else { const k = prof(y); a = k[0]; f = k[1]; b = k[2]; n = k[3]; }
+      if (a < 1e-6) return [0, y, zc];
+      const c = Math.cos(th), s = Math.sin(th), rho = Math.pow(Math.pow(Math.abs(s) / a, n) + Math.pow(Math.abs(c) / (c > 0 ? f : b), n), -1 / n);
+      let x = rho * s, z = -rho * c + zc;
+      const wF = sstep(.12, .62, c); if (wF <= 0) return [x, y, z];
+      const ax = Math.abs(x); let fw = 0, ow = 0;
+      // brow ridge
+      fw += H.brow * gau((y - H.yBrow) / .009) * (1 - .45 * gau(ax / .011)) * sstep(.062, .04, ax);
+      // eye sockets, and the eyeball in each
+      fw -= H.socket * gau((ax - H.ex * 1.02) / .0165) * gau((y + .001) / .0115); fw += H.eyeball * gau((ax - H.ex) / .0105) * gau(y / .0075);
+      // nose: from the root down the bridge to the tip, then back under it
+      { let pr, w;
+        if (y >= H.yTip) { const t = clamp((yN - y) / (yN - H.yTip), 0, 1); pr = y > yN ? H.bridge * gau((y - yN) / .012) : lerp(H.bridge, H.noseP, Math.pow(t, H.noseCurve)); w = lerp(H.noseW0, H.noseW1, t); }
+        else { pr = H.noseP * (1 - sstep(0, 1.15, (H.yTip - y) / (H.yTip - H.yBase))); w = H.noseW1; }
+        fw += pr * gau(ax / w); }
+      fw += H.ala * gau((ax - H.alaX) / .006) * gau((y - (H.yTip - .004)) / .0065);
+      // cheeks
+      ow += H.cheek * gau((ax - .047) / .022) * gau((y - H.cheekY) / .021);
+      // mouth: the mound of the teeth, the two lips and the line between them
+      fw += H.muzzle * gau(ax / .034) * gau((y - H.yMouth) / .024);
+      fw += H.lipU * gau(ax / (H.mouthW * .95)) * gau((y - (H.yMouth + .0055)) / .0048);
+      fw += H.lipL * gau(ax / (H.mouthW * .85)) * gau((y - (H.yMouth - .0065)) / .0052);
+      fw -= H.lipGap * gau(ax / (H.mouthW * 1.1)) * gau((y - H.yMouth) / .0024);
+      // chin, and the fold above it
+      fw += H.chin * gau(ax / H.chinW) * gau((y - H.yChin) / .013); fw -= H.crease * gau(ax / .022) * gau((y - H.yCrease) / .0065);
+      for (const q of H.bumps) { const g = gau(((q[6] ? x : ax) - q[0]) / q[2]) * gau((y - q[1]) / q[3]); fw += q[4] * g; ow += q[5] * g; }
+      const l = Math.hypot(x, z - zc) || 1; x += wF * ow * x / l; z += wF * (ow * (z - zc) / l - fw);
+      return [x, y, z]; };
+  }
+  // where a point of the shut face goes when the mouth is as wide as it gets. side: +1 above the line the lips meet on, -1 below it
+  function gape(H) {
+    const hy = -.012, hz = .012, A = .36, ca = Math.cos(A), sa = Math.sin(A), M = H.yMouth;
+    return (p, side) => { const ax = Math.abs(p[0]), y = p[1], front = sstep(-.015, -.06, p[2]);
+      const wy = sstep(M + .024, M - .024, y), s = sstep(H.slit, H.slit - .015, ax) * front, w = side > 0 ? wy * (1 - s) : wy + (1 - wy) * s;
+      // the jaw turns about its hinge under the ear, then comes off it and drops
+      const ry = y - hy, rz = p[2] - hz, jy = hy + ry * ca + rz * sa - .054, jz = hz - ry * sa + rz * ca - .012;
+      let x = p[0], yy = lerp(y, jy, w), z = lerp(p[2], jz, w);
+      // the upper lip is dragged up under the nose; everything round the mouth is pulled wide
+      if (side > 0) { const up = s * sstep(H.yBase + .006, M, y); yy += .010 * up; z -= .003 * up; }
+      x *= 1 + .34 * front * gau((y - M + .02 * w) / .036) * sstep(0, .02, ax);
+      return [x, yy, z]; };
+  }
+  /* An indexed mesh in two shapes (p: mouth shut, q: mouth wide open; q absent = it does not move). finish() gives it smooth normals,
+     bakes light into the shade (the game's lamp lights every normal alike, so the modelling has to be in the vertex tones) and flattens it. */
+  function Mesh() { return { V: [], T: [] }; }
+  let BARE = false;   // development only: build the heads with no tone matching, so a white texture shows the modelling alone
+  const vtx = (m, p, o) => { const v = { p, q: null, k: 1, ao: 1, uv: null }; if (o) for (const a in o) v[a] = o[a]; m.V.push(v); return m.V.length - 1; };
+  const quad = (m, a, b, c, d) => { m.T.push(a, b, c, a, c, d); };
+  const bakeL = n => clamp(.66 + .20 * n[1] + .24 * Math.max(0, -n[2]) - .05 * Math.max(0, n[2]), .4, 1.08);   // lit from in front and above, as the lamps in the helmet ring would
+  // o: proj(p) -> [u, v] for vertices with no uv of their own, layer, sh, em, flip
+  function finish(m, o) {
+    const V = m.V, T = m.T, nv = V.length, two = V.some(v => v.q), N = [], N1 = [], A = [], cnt = new Float32Array(nv), el = new Float32Array(nv), sg = o.flip ? -1 : 1;
+    for (let i = 0; i < nv; i++) { N.push([0, 0, 0]); N1.push([0, 0, 0]); A.push([0, 0, 0]); }
+    const acc = (a, n) => { a[0] += n[0]; a[1] += n[1]; a[2] += n[2]; }, Q = i => V[i].q || V[i].p;
+    let nt = 0;
+    for (let t = 0; t < T.length; t += 3) { const a = T[t], b = T[t + 1], c = T[t + 2]; if (a === b || b === c || a === c) continue; nt++;
+      const n = V3.cross(V3.sub(V[b].p, V[a].p), V3.sub(V[c].p, V[a].p)); acc(N[a], n); acc(N[b], n); acc(N[c], n);
+      if (two) { const n1 = V3.cross(V3.sub(Q(b), Q(a)), V3.sub(Q(c), Q(a))); acc(N1[a], n1); acc(N1[b], n1); acc(N1[c], n1); }
+      for (const e of [[a, b], [b, c], [c, a]]) { const i = e[0], j = e[1], l = V3.dist(V[i].p, V[j].p); acc(A[i], V[j].p); acc(A[j], V[i].p); cnt[i]++; cnt[j]++; el[i] += l; el[j] += l; } }
+    /* A mesh with o.plain = { a: [x, y, r, k] } shows the photograph only where its maker said the photograph can be trusted (vertex.in). Every other triangle is plain:
+       drawn from the little clean patch of skin or hair at pixel a (laid on at life size, mirrored back and forth every r pixels) and toned, corner by corner, to what the
+       picture has there (in), or has at the nearest trusted point (edge), fading (far, 0..1) to the plain tone k. So there are no stretched texels and no rectangle. */
+    const pl = o.plain; let tA = 1; if (pl) { tA = 0; for (let j = -2; j <= 2; j++) for (let i = -2; i <= 2; i++) tA += o.tone(pl.a[0] + i * pl.a[2] * .45, pl.a[1] + j * pl.a[2] * .45) / 25; tA = Math.max(.04, tA); }
+    const tP = tA * (pl && pl.a[3] || 1), tw = s => { const e = ((s % 4) + 4) % 4; return e < 2 ? e - 1 : 3 - e; };
+    const W = [];
+    for (let i = 0; i < nv; i++) { const v = V[i], n = V3.mul(V3.norm(N[i]), sg), n1 = two ? V3.mul(V3.norm(N1[i]), sg) : n; let hol = 1;
+      if (cnt[i] > 0 && !v.flat) { const l = el[i] / cnt[i], h = V3.dot(n, V3.sub(V3.mul(A[i], 1 / cnt[i]), v.p)); hol = clamp(1 - .0075 * h / (l * l + 1e-9), .72, 1.1); }   // hollows darker, ridges lighter
+      let uv, lay = o.layer, X = null;
+      if (v.uv) { uv = v.uv; lay = v.uv[2]; }
+      else if (pl) { const a = o.proj.at(v.p), r = pl.a[2], ok = !!v.in && !a[2], e = ok || !v.edge ? a : o.proj.at(v.edge); uv = [a[0] / 48, a[1] / 60];
+        const far = v.in ? 0 : v.far === undefined ? 1 : v.far, te = o.tone(e[0], e[1]), m = v.mir ? o.proj.at(v.mir) : null, mt = m && !m[2] ? Math.max(.03, o.tone(m[0], m[1])) : 0;
+        // a point the picture does not show, whose mirror image across the face it does, takes that: toned to the picture's own edge where the two meet, itself further round
+        X = { in: ok, tone: ok ? o.tone(a[0], a[1]) : mt ? mt * clamp(lerp(te / mt, 1, far), .5, 1.7) : lerp(te, tP, far), mt, mu: mt ? m[0] / 48 : 0, mv: mt ? m[1] / 60 : 0, u: (pl.a[0] + r * tw((a[3] - pl.a[0]) / r + 1)) / 48, v: (pl.a[1] + r * tw((a[4] - pl.a[1]) / r + 1)) / 60 }; }
+      else uv = o.proj(v.p);
+      const k = v.k * v.ao * hol, L = bakeL(n), L1 = bakeL(n1), ko = v.k * (v.aq === undefined ? v.ao : v.aq) * hol;
+      W.push([n, n1, uv[0], uv[1], lay, o.sh * k * L, o.em * k * (.55 + .45 * L), o.sh * ko * L1, o.em * ko * (.55 + .45 * L1), X]); }
+    const isIn = i => !W[i][9] || W[i][9].in, hasM = i => W[i][9] && W[i][9].mt > 0;
+    const d = new Float32Array(nt * 36), d1 = two ? new Float32Array(nt * 36) : null; let w = 0;
+    for (let t = 0; t < T.length; t += 3) { const a = T[t], b = T[t + 1], c = T[t + 2]; if (a === b || b === c || a === c) continue; const ph = !pl || (isIn(a) && isIn(b) && isIn(c)), mi = !ph && hasM(a) && hasM(b) && hasM(c);
+      for (const i of [a, b, c]) { const v = V[i], r = W[i], p = v.p, X = r[9]; let u = r[2], vv = r[3], f = 1;
+        if (X && mi) { u = X.mu; vv = X.mv; f = clamp(X.tone / X.mt, .45, 1.8); } else if (X && !ph) { u = X.u; vv = X.v; f = clamp(Math.max(X.tone, tP * (pl.floor || 0)) / tA, .25, 2.4); }
+        if (BARE) f = 1;
+        d[w] = p[0]; d[w + 1] = p[1]; d[w + 2] = p[2]; d[w + 3] = u; d[w + 4] = vv; d[w + 5] = r[4]; d[w + 6] = r[0][0]; d[w + 7] = r[0][1]; d[w + 8] = r[0][2]; d[w + 9] = r[5] * f; d[w + 10] = r[6] * f;
+        if (two) { const q = v.q || p; d1[w] = q[0]; d1[w + 1] = q[1]; d1[w + 2] = q[2]; d1[w + 3] = u; d1[w + 4] = vv; d1[w + 5] = r[4]; d1[w + 6] = r[1][0]; d1[w + 7] = r[1][1]; d1[w + 8] = r[1][2]; d1[w + 9] = r[7] * f; d1[w + 10] = r[8] * f; }
+        w += 12; } }
+    return { d, d1, n: nt * 3 };
+  }
+  // the portrait laid on the head from where its camera stood
+  function projector(F) {
+    const R = mm(rZ(F.roll * DEG), mm(rX((F.pitch || 0) * DEG), rY(F.yaw * DEG))), E = mv(R, [0, 0, -.084]), ox = F.eye[0] + F.s * E[0], oy = F.eye[1] + F.s * E[1];
+    const cR = mv(R, [0, -.02, -.01]), cx = ox - F.s * cR[0], cy = oy - F.s * cR[1], fr = F.frame || [1.2, 1.2, 46.8, 58.8];
+    // -> [x, y (pixel of the picture to show), 1 if the picture has nothing of this person there, x, y (pixel had the picture gone on for ever)]
+    const at = p => { const q = mv(R, p); let x = ox - F.s * q[0], y = oy - F.s * q[1];
+      // unfold: beyond about 55 degrees round from the camera a point keeps going outward instead of doubling back behind the outline
+      const d = V3.norm(V3.sub(q, cR)), al = Math.acos(clamp(-d[2], -1, 1)), k = lerp(1, Math.min(4, al / Math.max(.05, Math.sin(al))), sstep(.95, 1.5, al)); x = cx + (x - cx) * k; y = cy + (y - cy) * k; const ux = x, uy = y;
+      let off = 0; if (x < fr[0] || x > fr[2] || y < fr[1] || y > fr[3]) { off = 1; x = clamp(x, fr[0], fr[2]); y = clamp(y, fr[1], fr[3]); }
+      for (const a of (F.avoid || [])) { const dx = x - a[0], dy = y - a[1], l = Math.hypot(dx, dy); if (l < a[2]) { off = 1; const g = a[2] / Math.max(l, 1e-3); x = a[0] + dx * g; y = a[1] + dy * g; } }
+      return [x, y, off, ux, uy]; };
+    const f = p => { const a = at(p); return [a[0] / 48, a[1] / 60]; }; f.at = at;
+    f.raw = p => { const q = mv(R, p); return [ox - F.s * q[0], oy - F.s * q[1], q[2]]; };   // pixel and depth with nothing done to it (for the alignment tools)
+    return f;
+  }
+  /* where on the head the picture can be trusted: zone = [[height, degrees round to the person's right, degrees round to their left], ...] from the bottom up.
+     -> for (angle, height): null inside, else [angle, height of the nearest point of the zone, how far outside (0..1)] */
+  function zoneOf(Z) { const f = curve(Z), y0 = Z[0][0], y1 = Z[Z.length - 1][0];
+    return (th, y) => { const yc = clamp(y, y0, y1), k = f(yc), d = th / DEG, tc = clamp(d, -k[1] - .01, k[0] + .01); if (tc === d && yc === y) return null;
+      return [tc * DEG, yc, sstep(0, 1, Math.max(Math.abs(d - tc) / 40, Math.abs(y - yc) / .035))]; }; }
+
+  const TH0 = [0, 2.6, 5.6, 9.2, 13.4, 18.3, 24, 30.5, 38, 46.5, 56, 67, 79, 93, 109, 127, 152, 180], TH1 = [0, 8, 18, 31, 47, 67, 92, 125, 180];
+  const ringOf = T => { const o = []; for (let i = 0; i < T.length; i++) o.push(T[i] * DEG); for (let i = T.length - 2; i > 0; i--) o.push(-T[i] * DEG); return o; };   // all the way round: from straight ahead by the person's right
+  function headRows(H, lod) { const yd = t => H.yDome + (H.yTop - H.yDome) * t, M = H.yMouth;
+    const r = lod ? [H.yTop, yd(.72), yd(.36), H.yDome, H.yBrow + .004, 0, -.02, H.yTip, H.yBase, M + .006, [M, 1], [M, -1], H.yCrease, H.yChin, H.yMent, H.yMent - .0095]
+      : [H.yTop, yd(.9), yd(.74), yd(.55), yd(.34), yd(.14), H.yDome, .5 * (H.yDome + H.yBrow) + .004, H.yBrow + .009, H.yBrow, H.yBrow - .008, 0, -.009, -.019, .5 * (-.019 + H.yTip + .008), H.yTip + .008, H.yTip, H.yBase,
+        .5 * (H.yBase + M) + .002, M + .0085, M + .004, [M, 1], [M, -1], M - .005, M - .011, H.yCrease, .5 * (H.yCrease + H.yChin), H.yChin, .5 * (H.yChin + H.yMent) - .002, H.yMent, H.yMent - .007, H.yMent - .0095];
+    const o = []; let last = 1; for (const e of r) { const y = typeof e === 'number' ? e : e[0], sd = typeof e === 'number' ? (e > M ? 1 : -1) : e[1]; const yy = sd === -1 && o.length && o[o.length - 1][2] ? y : Math.min(y, last - .0015); o.push([yy, sd, typeof e !== 'number' && sd > 0]); last = yy; }
+    return o; }
+  const SKIN_SH = .60, SKIN_EM = .11;   // the face takes a little over half the light the suit does (it is behind glass) and glows faintly, so it can be read in the dark
+
+  const HEADS = [];
+  function crewHead(ci) { const C = CREW[ci]; if (!C.H) { C.H = Object.assign({}, H0, C.head); C.H.ear = Object.assign({}, H0.ear, C.head.ear || {}); C.S = headSurface(C.H); C.G = gape(C.H); C.P = projector(C.photo); C.Z = zoneOf(C.photo.zone); C.tone = toneOf(ci); } return C; }
+  function buildHead(ci, lod) {
+    const key = ci * 2 + lod; if (HEADS[key]) return HEADS[key];
+    const C = crewHead(ci), H = C.H, S = C.S, G = C.G, prj = C.P, LAY = TL.FACE + ci, parts = [], M = H.yMouth;
+    const add = (bone, f, kind) => { if (f.n) parts.push({ bone, d: f.d, d1: f.d1, n: f.n, kind, grp: 2 }); };
+    const skin = { proj: prj, layer: LAY, sh: SKIN_SH, em: SKIN_EM, tone: C.tone, plain: { a: C.photo.skin, floor: .3 } };
+    const hs = C.hair, under = hs ? hairLine(hs) : null;
+    // shadows the relief does not make by itself
+    const ao = p => { const ax = Math.abs(p[0]), y = p[1]; let a = 1; if (p[2] < -.03) {
+        a -= .14 * gau((ax - H.ex) / .017) * gau((y - .002) / .011); a -= .26 * gau(ax / .013) * gau((y - (H.yBase - .001)) / .0045); a -= .2 * gau(ax / .03) * gau((y - M) / .003); a -= .1 * gau(ax / .02) * gau((y - H.yCrease) / .006); }
+      return a * lerp(.62, 1, sstep(H.yMent - .004, H.yMent + .006, y)); };
+    /* ---- skull and face ---- */
+    const cols = ringOf(lod ? TH1 : TH0), NI = cols.length, rows = headRows(H, lod), NJ = rows.length, m = Mesh(), id = []; let jm = -1;
+    for (let j = 0; j < NJ; j++) { const y = rows[j][0], side = rows[j][1], pole = j === 0 || j === NJ - 1, row = []; if (rows[j][2]) jm = j;
+      for (let i = 0; i < NI; i++) { if (pole && i) { row.push(row[0]); continue; } const p = S(cols[i], y), a = ao(p), z = C.Z(cols[i], y); row.push(vtx(m, p, { q: G(p, side), ao: a, aq: a * lerp(1, .8, sstep(M + .02, M - .01, y) * sstep(.05, .02, Math.abs(p[0]))), in: !z, edge: z && S(z[0], z[1]), far: z ? z[2] : 0, mir: C.photo.mirror !== false && !pole && !C.Z(-cols[i], y) ? S(-cols[i], y) : null })); }
+      id.push(row); }
+    for (let j = 0; j < NJ - 1; j++) { if (j === jm) continue;
+      for (let i = 0; i < NI; i++) { const k = (i + 1) % NI; if (under && under(cols[i], rows[j][0]) && under(cols[k], rows[j][0]) && under(cols[i], rows[j + 1][0]) && under(cols[k], rows[j + 1][0])) continue; quad(m, id[j][i], id[j][k], id[j + 1][k], id[j + 1][i]); } }
+    add(HEAD, finish(m, skin), K_FACE);
+    /* ---- the inside of the mouth: a black bag hung from the lips, and the teeth ---- */
+    { const b = Mesh(), up = [], lo = []; for (let i = 0; i < NI; i++) { const p = m.V[id[jm][i]].p; if (Math.abs(p[0]) < H.slit + .004 && p[2] < -.04) { up.push(id[jm][i]); lo.push(id[jm + 1][i]); } }
+      up.sort((a, c) => m.V[a].p[0] - m.V[c].p[0]); lo.sort((a, c) => m.V[c].p[0] - m.V[a].p[0]);
+      const loop = up.concat(lo), n = loop.length, cen = f => { let c = [0, 0, 0]; for (const i of loop) c = V3.add(c, f(m.V[i])); return V3.mul(c, 1 / n); }, c0 = cen(v => v.p), c1 = cen(v => v.q);
+      const dk = { uv: [.5, .5, TL.WHITE], flat: 1 }, rg = (sc, dy, dz, k) => loop.map(i => { const v = m.V[i], f = (p, c) => [c[0] + (p[0] - c[0]) * sc, c[1] + (p[1] - c[1]) * sc + dy, p[2] + dz]; return vtx(b, f(v.p, c0), Object.assign({ q: f(v.q, c1), k }, dk)); });
+      const r0 = rg(1, 0, .0005, .1), r1 = rg(1.14, 0, .014, .03), r2 = rg(.95, -.008, .045, .012), bk = vtx(b, [c0[0], c0[1], c0[2] + .06], Object.assign({ q: [c1[0], c1[1] - .02, c1[2] + .075], k: .008 }, dk));
+      for (let i = 0; i < n; i++) { const k = (i + 1) % n; quad(b, r0[i], r0[k], r1[k], r1[i]); quad(b, r1[i], r1[k], r2[k], r2[i]); b.T.push(r2[i], r2[k], bk); }
+      if (!lod) { // teeth: a row hung behind each lip, every other one a shade darker
+        const row = (list, dir) => { for (let a = 0; a + 1 < list.length; a++) { const v0 = m.V[list[a]], v1 = m.V[list[a + 1]]; if (Math.abs(v0.p[0]) > H.slit - .006 || Math.abs(v1.p[0]) > H.slit - .006) continue;
+            const tone = { uv: [.5, .5, TL.WHITE], flat: 1, k: a % 2 ? .62 : .5 }, at = (p, h) => [p[0] * .94, p[1] + dir * (h ? .0105 : -.0015), p[2] + .0045 + (h ? .0015 : 0)], mk = (v, h) => vtx(b, at(v.p, h), Object.assign({ q: at(v.q, h) }, tone));
+            quad(b, mk(v0, 0), mk(v1, 0), mk(v1, 1), mk(v0, 1)); } };
+        row(up, -1); row(lo, 1); }
+      add(HEAD, finish(b, { proj: prj, layer: LAY, sh: SKIN_SH, em: SKIN_EM * .5 }), K_MOUTH); }
+    /* ---- neck ---- */
+    { const b = Mesh(), sides = lod ? 6 : 10, R = [[-.05, .9, .9, .012], [-.095, .98, .97, .016], [-.135, 1, 1, .018], [-.175, 1.04, 1.03, .018], [-.215, 1.1, 1.08, .016]], ids = [];
+      for (const r of R) { const row = []; for (let i = 0; i < sides; i++) { const t = i / sides * TAU; row.push(vtx(b, [Math.sin(t) * H.neckW * r[1], r[0], r[3] - Math.cos(t) * H.neckD * r[2]], { ao: lerp(.5, .82, sstep(-.1, -.2, r[0])) * (.8 + .2 * sstep(-.3, .6, -Math.cos(t))) })); } ids.push(row); }
+      for (let j = 0; j < R.length - 1; j++) for (let i = 0; i < sides; i++) { const k = (i + 1) % sides; quad(b, ids[j][i], ids[j][k], ids[j + 1][k], ids[j + 1][i]); }
+      add(HEAD, finish(b, skin), K_PLAIN); }
+    /* ---- ears ---- */
+    if (!lod && H.ear) for (const sg of [-1, 1]) { const e = H.ear, b = Mesh(), n = 8, A = S(sg * 86 * DEG, e.y), base = [A[0] - sg * .003, e.y, e.z];
+      const U = V3.norm([0, 1, .14]), Wd = V3.norm([sg * Math.sin(e.flare), 0, Math.cos(e.flare)]), Nn = V3.mul(V3.cross(U, Wd), sg), cen = V3.mad(base, Wd, e.w * .92);   // Nn faces out and forward
+      const pt = (t, r, lift) => V3.add(V3.add(cen, V3.mad(V3.mul(Wd, -Math.cos(t) * e.w * r), U, Math.sin(t) * e.h * r * (Math.sin(t) > 0 ? 1 : 1.08))), V3.mul(Nn, lift));
+      const rim = [], inn = [], bas = []; for (let i = 0; i < n; i++) { const t = i / n * TAU; rim.push(vtx(b, pt(t, 1, .003), { ao: 1 })); inn.push(vtx(b, pt(t, .56, -.0015), { ao: .62 })); const q = pt(t, .7, 0); bas.push(vtx(b, [base[0] - sg * .004, q[1], lerp(q[2], base[2] + .008, .5)], { ao: .6 })); }
+      const c = vtx(b, V3.add(V3.mad(cen, Wd, -e.w * .15), V3.mul(Nn, -.004)), { ao: .45 });
+      for (let i = 0; i < n; i++) { const k = (i + 1) % n; if (sg > 0) { quad(b, rim[i], rim[k], inn[k], inn[i]); b.T.push(inn[i], inn[k], c); quad(b, rim[k], rim[i], bas[i], bas[k]); } else { quad(b, rim[k], rim[i], inn[i], inn[k]); b.T.push(inn[k], inn[i], c); quad(b, rim[i], rim[k], bas[k], bas[i]); } }
+      add(HEAD, finish(b, skin), K_PLAIN); }
+    /* ---- hair, spectacles ---- */
+    if (hs) { const b = Mesh(); hairCap(b, C, lod); add(HEAD, finish(b, { proj: prj, layer: LAY, sh: SKIN_SH * (hs.sh || 1), em: SKIN_EM, tone: C.tone, plain: { a: hs.at } }), K_PLAIN); }
+    if (C.specs) { const b = Mesh(); spectacles(b, C, lod); add(HEAD, finish(b, { proj: prj, layer: LAY, sh: 1, em: 0 }), K_PLAIN); }
+    /* ---- the same face again, small: what is down the throat of a duplicate ---- */
+    { const b = Mesh(), T = lod ? [0, 14, 34, 58] : [0, 5.6, 13.4, 24, 38, 56], th = []; for (let i = T.length - 1; i > 0; i--) th.push(-T[i] * DEG); for (const t of T) th.push(t * DEG);
+      const ys = (lod ? [H.yBrow + .03, H.yBrow, -.02, H.yTip, M, H.yChin, H.yMent] : [H.yBrow + .034, H.yBrow + .012, H.yBrow, 0, -.012, .5 * (H.yTip - .012), H.yTip, H.yBase, M + .005, M - .004, H.yCrease, H.yChin, H.yMent]), ids = [];
+      for (const y of ys) { const row = []; for (const t of th) { const p = S(t, y); row.push(vtx(b, [p[0], p[1] - INNER_C[1], p[2] - INNER_C[2]], { ao: ao(p) * (.5 + .5 * sstep(1.05, .5, Math.abs(t))), uv: prj(p).concat(LAY) })); } ids.push(row); }
+      for (let j = 0; j < ys.length - 1; j++) for (let i = 0; i < th.length - 1; i++) quad(b, ids[j][i], ids[j][i + 1], ids[j + 1][i + 1], ids[j + 1][i]);
+      add(INNER, finish(b, { proj: prj, layer: LAY, sh: SKIN_SH * .8, em: SKIN_EM * .9 }), K_INNER); }
+    return HEADS[key] = parts;
+  }
+  const INNER_C = [0, -.04, -.085];   // the point of the face the small one is built about
+
+  /* ---- hair: a shell over the skull from the hairline up. hs.keys = [[degrees round from straight ahead (+ the person's right), height of the hairline there,
+     thickness at that edge, thickness half way up, how far the edge hangs below the hairline], ...] from -180 to 180; hs.top = thickness on the crown;
+     hs.lump, hs.lumpF = size and spacing of curls; hs.strand = [amount, count] for combed hair; hs.k = tone against the photograph's own. ---- */
+  const HAIR_C = [0, .03, .012];
+  function hairKeys(hs) { if (!hs.fn) hs.fn = curve(hs.keys); return hs.fn; }
+  function hairLine(hs) { const f = hairKeys(hs); return (th, y) => y > f(th / DEG)[0] + (hs.tuck === undefined ? .014 : hs.tuck); }
+  function hairCap(b, C, lod) {
+    const hs = C.hair, H = C.H, S = C.S, f = hairKeys(hs), cols = ringOf(lod ? [0, 25, 55, 90, 130, 180] : (hs.cols || [0, 10, 21, 33, 46, 60, 75, 91, 108, 127, 152, 180])), NI = cols.length, rows = lod ? [0, .3, .65, 1] : (hs.rows || [0, .1, .24, .42, .62, .82, 1]), ids = [], pts = [];
+    const at = (th, s) => { const k = f(th / DEG), yl = k[0], y = yl + (H.yTop - yl) * s, Bp = S(th, y), o = V3.norm(V3.sub(Bp, HAIR_C));
+      let T = lerp(lerp(k[1], k[2], sstep(0, .45, s)), hs.top, sstep(.45, 1, s)); if (hs.lump) T += hs.lump * noise3(Bp[0] * hs.lumpF + 3.7, Bp[1] * hs.lumpF + 1.3, Bp[2] * hs.lumpF + 9.1) * (.4 + .6 * sstep(0, .2, s));
+      const p = V3.mad(Bp, o, Math.max(T, .001)); p[1] -= k[3] * (1 - sstep(0, .4, s)); return p; };
+    // where the picture shows this hair: hs.zone = [degrees round to the person's right, to their left]; the rest is plain hair
+    const zn = th => { if (!hs.zone) return { far: 1 }; const d = th / DEG, c = clamp(d, -hs.zone[1] - .01, hs.zone[0] + .01); return c === d ? { in: 1 } : { far: sstep(0, 1, Math.abs(d - c) / 30), c: c * DEG }; };
+    { const row = []; for (let i = 0; i < NI; i++) { const k = f(cols[i] / DEG), z = zn(cols[i]); row.push(vtx(b, S(cols[i], k[0] + .008), { ao: .3, in: z.in, far: z.far, edge: z.c === undefined ? null : S(z.c, f(z.c / DEG)[0] + .008) })); } ids.push(row); }   // tucked in against the scalp, in the hair's own shadow
+    for (let j = 0; j < rows.length; j++) { const s = rows[j], row = [];
+      for (let i = 0; i < NI; i++) { if (s >= 1 && i) { row.push(row[0]); continue; } const p = at(cols[i], s); pts.push(p);
+        let k = hs.k || 1; if (hs.strand) k *= 1 + hs.strand[0] * Math.sin(hs.strand[1] * (cols[i] + (hs.strand[2] || 0) * s)); const z = zn(cols[i]); row.push(vtx(b, p, { ao: j ? 1 : .86, k, in: z.in, far: z.far, edge: z.c === undefined ? null : at(z.c, s) })); }
+      ids.push(row); }
+    for (let j = 0; j < ids.length - 1; j++) for (let i = 0; i < NI; i++) { const k = (i + 1) % NI; quad(b, ids[j][i], ids[j][k], ids[j + 1][k], ids[j + 1][i]); }
+    C.hairPts = pts;
+  }
+  /* ---- spectacles: round wire rims, bridge, side arms to the ears, and a glint across each lens. sp = { r, x, y, z, tilt } ---- */
+  function spectacles(b, C, lod) {
+    const sp = C.specs, n = lod ? 6 : 12, fr = k => ({ uv: [UVD[0], UVD[1], TL.DARK], k, flat: 1 }), q4 = (a, c, d, e, o) => quad(b, vtx(b, a, o), vtx(b, c, o), vtx(b, d, o), vtx(b, e, o));
+    for (const sg of [-1, 1]) { const cw = Math.cos(sp.wrap), sw = Math.sin(sp.wrap), U = [cw, 0, sg * sw], Nf = [sg * sw, 0, -cw], L = [sg * sp.x, sp.y, sp.z];   // each lens turned a little round the face
+      const pt = (a, r, back) => [L[0] + U[0] * Math.cos(a) * r - Nf[0] * back, L[1] + Math.sin(a) * r, L[2] + U[2] * Math.cos(a) * r - Nf[2] * back];
+      for (let i = 0; i < n; i++) { const a0 = i / n * TAU, a1 = (i + 1) / n * TAU, r0 = sp.r - sp.t, r1 = sp.r + sp.t;
+        q4(pt(a0, r0, 0), pt(a1, r0, 0), pt(a1, r1, 0), pt(a0, r1, 0), fr(sp.k)); if (!lod) q4(pt(a0, r1, 0), pt(a1, r1, 0), pt(a1, r1, .004), pt(a0, r1, .004), fr(sp.k * .7)); }
+      if (!lod) { const g = { uv: [UVW[0], UVW[1], TL.WHITE], k: .5, flat: 1 }, r = sp.r * .8; q4(pt(2.2, r, .0005), pt(2.45, r, .0005), pt(.95, r * .55, .0005), pt(.8, r * .7, .0005), g); }   // the glass catches a light
+      // side arm back to the ear
+      const h = pt(sg > 0 ? 0 : PI, sp.r + sp.t, 0), e = [sg * (sp.earX || .076), sp.y + .012, .012], w = [0, .0022, 0]; q4(V3.add(h, w), V3.add(e, w), V3.sub(e, w), V3.sub(h, w), fr(sp.k * .8)); }
+    const cw = Math.cos(sp.wrap), xb = sp.x - (sp.r + sp.t * .5) * cw, y0 = sp.y + sp.r * .42;
+    q4([-xb, y0 + .0022, sp.z + .003], [0, y0 + .0062, sp.z - .001], [0, y0 + .002, sp.z - .001], [-xb, y0 - .002, sp.z + .003], fr(sp.k)); q4([0, y0 + .0062, sp.z - .001], [xb, y0 + .0022, sp.z + .003], [xb, y0 - .002, sp.z + .003], [0, y0 + .002, sp.z - .001], fr(sp.k));
+  }
+
+  /* ------------------------------------------------------------------ the sidearm ------------------------------------------------------------------
+     The pistol of gun.js (a 1911-pattern service automatic: 216 mm long, 139 mm tall, 23 mm slide, grip raked 17 degrees) cut down to under two hundred
+     triangles for a figure seen from outside. Gun space is SIDEARM's: origin on the bore axis at the rear face of the slide, +X right, +Y up, -Z to the muzzle. */
+  const MUZZLE = [0, 0, -.188];
+  const UVM = [.33984375, .14453125], UVD = [.32421875, .14453125], UVW = [.14453125, .14453125];   // one flat texel of the METAL, DARK and WHITE pages
+  // how the pistol lies in the right glove: gun axes as columns in hand space, and where its origin is from the wrist (so the wrist is 22 mm right of, 62 mm below and 65 mm behind the rear of the slide)
+  const HG = [1, 0, 0, 0, 0, -1, 0, 1, 0], HGt = [1, 0, 0, 0, 0, 1, 0, -1, 0], HGP = [-.022, -.065, -.062];
+  // the left hand that supports it: its wrist in gun space and its axes there (it comes in from below and to the left)
+  const LGW = [-.058, -.092, .046], LG = fromXY([1, 0, .12], V3.norm([-.1, -.34, .93]));
+  // the pistol in its holster on the right thigh: muzzle down, butt to the rear, leaning in with the taper of the leg
+  const HOL_R = mm(rZ(-.07), mm(rX(.1), [1, 0, 0, 0, 0, -1, 0, 1, 0])), HOL_P = [.143, -.03, -.006];
+  let GUNP = [];
+  function buildGun(lod) {
+    if (GUNP[lod]) return GUNP[lod];
+    const parts = [], KEY = V3.norm([-.2, 1, .15]);
+    let out = [], L = TL.METAL, UV = UVM, SH = .4, EM = 0, CEN = [0, 0, 0];
+    const set = (layer, sh, em) => { L = layer; UV = layer === TL.METAL ? UVM : layer === TL.DARK ? UVD : UVW; SH = sh; EM = em || 0; };
+    const v = (p, n) => out.push(p[0], p[1], p[2], UV[0], UV[1], L, n[0], n[1], n[2], SH, EM, 0);
+    const T = (a, b, c) => { let n = V3.norm(V3.cross(V3.sub(b, a), V3.sub(c, a))); const m = [(a[0] + b[0] + c[0]) / 3 - CEN[0], (a[1] + b[1] + c[1]) / 3 - CEN[1], (a[2] + b[2] + c[2]) / 3 - CEN[2]]; if (V3.dot(n, m) < 0) n = V3.mul(n, -1); v(a, n); v(b, n); v(c, n); };
+    const Q = (a, b, c, d) => { T(a, b, c); T(a, c, d); };
+    // a convex outline drawn in the side view as [z, y] points, extruded from x0 to x1. skip: wall segments to leave out
+    const slab = (pts, x0, x1, skip) => { let cz = 0, cy = 0; for (const p of pts) { cz += p[0] / pts.length; cy += p[1] / pts.length; } CEN = [.5 * (x0 + x1), cy, cz]; const n = pts.length, P = (i, x) => [x, pts[i % n][1], pts[i % n][0]];
+      for (let i = 1; i < n - 1; i++) { T(P(0, x0), P(i, x0), P(i + 1, x0)); T(P(0, x1), P(i, x1), P(i + 1, x1)); }
+      for (let i = 0; i < n; i++) if (!(skip && skip.includes(i))) Q(P(i, x0), P(i + 1, x0), P(i + 1, x1), P(i, x1)); };
+    // a convex section [x, y] run from z0 to z1, with or without its ends
+    const prism = (sec, z0, z1, cap0, cap1) => { let cx = 0, cy = 0; for (const p of sec) { cx += p[0] / sec.length; cy += p[1] / sec.length; } CEN = [cx, cy, .5 * (z0 + z1)]; const n = sec.length, P = (i, z) => [sec[i % n][0], sec[i % n][1], z];
+      for (let i = 0; i < n; i++) Q(P(i, z0), P(i + 1, z0), P(i + 1, z1), P(i, z1));
+      for (let i = 1; i < n - 1; i++) { if (cap0) T(P(0, z0), P(i, z0), P(i + 1, z0)); if (cap1) T(P(0, z1), P(i, z1), P(i + 1, z1)); } };
+    // finish a piece: a little light from above baked in, since the lamp will not model it; R, t place it in its bone's space
+    const done = (R, t, s) => { const d = new Float32Array(out.length); for (let k = 0; k < out.length; k += 12) { let p = [out[k], out[k + 1], out[k + 2]], n = [out[k + 6], out[k + 7], out[k + 8]];
+        const sh = out[k + 9] * clamp(.80 + .30 * V3.dot(n, KEY), .5, 1.12); if (s) p = V3.mul(p, s); if (R) { p = V3.add(mv(R, p), t); n = mv(R, n); }
+        d[k] = p[0]; d[k + 1] = p[1]; d[k + 2] = p[2]; d[k + 3] = out[k + 3]; d[k + 4] = out[k + 4]; d[k + 5] = out[k + 5]; d[k + 6] = n[0]; d[k + 7] = n[1]; d[k + 8] = n[2]; d[k + 9] = sh; d[k + 10] = out[k + 10]; }
+      out = []; return d; };
+    const add = (bone, d, kind) => { if (d.length) parts.push({ bone, d, d1: null, n: d.length / 12, kind: kind || K_PLAIN, grp: 0 }); };
+    const fromBatch = b => { for (let k = 0; k < b.n * 12; k++) out.push(b.d[k]); };
+
+    /* ---- pistol ---- */
+    const HW = .01165;
+    if (lod) { set(TL.METAL, .42); prism([[-HW, -.02], [HW, -.02], [HW, .012], [-HW, .012]], 0, -.186, true, true);
+      set(TL.DARK, 1.5); slab([[-.05, -.02], [.012, -.02], [.041, -.123], [-.02, -.125]], -.0125, .0125, [0]); }
+    else {
+      set(TL.METAL, .42); prism([[-HW, -.011], [HW, -.011], [HW, .0065], [.0058, .0122], [-.0058, .0122], [-HW, .0065]], 0, -.186, true, true);        // slide
+      set(TL.METAL, .33); prism([[-.0098, -.0215], [.0098, -.0215], [.0098, -.0108], [-.0098, -.0108]], .004, -.15, true, true);                          // frame and dust cover
+      set(TL.METAL, .33); slab([[-.052, -.0215], [.012, -.0215], [.041, -.118], [-.02, -.123]], -.0086, .0086, [0]);                                      // grip frame
+      set(TL.DARK, 1.7); slab([[-.04, -.03], [.008, -.03], [.034, -.11], [-.014, -.114]], -.0135, .0135);                                                  // grip panels
+      set(TL.METAL, .28); slab([[-.022, -.1225], [.042, -.1175], [.042, -.1225], [-.022, -.1275]], -.009, .009);                                           // magazine floor plate
+      { const g = [[-.052, -.0215], [-.058, -.046], [-.081, -.05], [-.095, -.038], [-.098, -.0215]], th = .0034; set(TL.METAL, .3);                        // trigger guard
+        for (let i = 0; i < 4; i++) { const a = g[i], c = g[i + 1], dz = c[0] - a[0], dy = c[1] - a[1], l = Math.hypot(dz, dy), nz = -dy / l * th, ny = dz / l * th; slab([[a[0], a[1]], [c[0], c[1]], [c[0] + nz, c[1] + ny], [a[0] + nz, a[1] + ny]], -.0062, .0062); } }
+      set(TL.METAL, .5); slab([[-.066, -.0215], [-.061, -.0215], [-.064, -.04], [-.068, -.039]], -.003, .003, [0]);                                        // trigger
+      set(TL.METAL, .3); slab([[.001, .001], [.012, .012], [.016, .0085], [.006, -.006]], -.0042, .0042);                                                  // hammer, cocked
+      set(TL.METAL, .33); slab([[.004, -.0215], [.004, -.009], [.027, -.011], [.029, -.016]], -.0078, .0078, [0]);                                         // grip safety tang
+      set(TL.DARK, 1.2); slab([[-.006, .0118], [-.019, .0118], [-.019, .0162], [-.006, .0162]], -.0072, .0072, [0]);                                       // rear sight
+      slab([[-.174, .0118], [-.183, .0118], [-.1815, .0156], [-.1755, .0156]], -.0019, .0019, [0]);                                                        // front sight
+      { const hex = r => { const o = []; for (let i = 0; i < 6; i++) o.push([Math.cos(i * PI / 3) * r, Math.sin(i * PI / 3) * r]); return o; };            // barrel, bushing, bore
+        set(TL.METAL, .8); prism(hex(.0057), -.186, -.188, false, true); set(TL.DARK, .4); CEN = [0, 0, 0]; const h = hex(.0036); for (let i = 1; i < 5; i++) T([h[0][0], h[0][1], -.1883], [h[i][0], h[i][1], -.1883], [h[i + 1][0], h[i + 1][1], -.1883]); }
+      set(TL.DARK, .5); CEN = [0, 0, -.077]; Q([HW + .0002, .001, -.062], [HW + .0002, .001, -.093], [HW + .0002, .0065, -.093], [HW + .0002, .0065, -.062]); Q([HW + .0001, .0066, -.062], [HW + .0001, .0066, -.093], [.0059, .0123, -.093], [.0059, .0123, -.062]);   // ejection port
+    }
+    add(GUN, done(), K_PISTOL);
+
+    /* ---- muzzle flash: unit size at the muzzle, scaled by the shot. A hard ball and straight spikes, the way a flash looks with no air to bloom in ---- */
+    { set(TL.WHITE, 0, 3.2); CEN = [0, 0, 1];
+      const sp = (ang, len, w) => { const c = Math.cos(ang), s = Math.sin(ang), r = [c, s, 0], u = [-s, c, 0]; const a = [0, 0, 0], tip = V3.mul(r, len), m1 = V3.add(V3.mul(r, len * .22), V3.mul(u, w)), m2 = V3.add(V3.mul(r, len * .22), V3.mul(u, -w)), f = [r[0] * len * .22, r[1] * len * .22, -w * 1.6];
+        T(a, m1, tip); T(a, tip, m2); T(a, f, tip); };
+      for (let i = 0; i < (lod ? 4 : 6); i++) sp(i / (lod ? 4 : 6) * TAU + .3, i % 2 ? .1 : .16, .012);
+      const R = .034, o8 = [[R, 0, 0], [0, R, 0], [-R, 0, 0], [0, -R, 0]], F = [0, 0, -.2], Bk = [0, 0, R * .6]; for (let i = 0; i < 4; i++) { T(o8[i], o8[(i + 1) % 4], F); T(o8[i], o8[(i + 1) % 4], Bk); }
+      add(FLASH, done(), K_FLASH); }
+
+    /* ---- the gloves that hold it: modelled round the pistol in gun space, then carried into each hand's space ---- */
+    { const b = makeBatch(1200), W = TL.WHITE, gX = { X: [1, 0, 0], Z: [0, 1, 0] };
+      // right: the palm lies along the right panel, the back of the hand faces right, the wrist is behind and below
+      loft(b, [{ c: [.022, -.062, .068], rx: .034, rz: .05, sh: .56 }, { c: [.026, -.064, .034], rx: .026, rz: .05, sh: .58 }, { c: [.029, -.068, -.004], rx: .017, rz: .05, sh: .56 }, { c: [.028, -.07, -.036], rx: .015, rz: .046, sh: .5 }], { sides: lod ? 4 : 6, n: 2.6, layer: W, X: gX.X, Z: gX.Z, cap1: true, a0: lod ? PI / 4 : PI / 6 });
+      if (!lod) { // three fingers together round the front strap, the trigger finger laid along the frame, the thumb forward on the left
+        loft(b, [{ c: [.027, -.074, -.036], rx: .012, rz: .036, sh: .5 }, { c: [.015, -.076, -.058], rx: .012, rz: .035, sh: .46, X: V3.norm([.7, 0, -.7]) }, { c: [-.004, -.077, -.063], rx: .012, rz: .034, sh: .42, X: [0, 0, -1] }, { c: [-.02, -.077, -.05], rx: .011, rz: .033, sh: .38, X: V3.norm([-.8, 0, -.6]) }, { c: [-.024, -.076, -.03], rx: .009, rz: .031, sh: .34, X: [-1, 0, 0] }],
+          { sides: 6, n: 2.6, layer: W, X: gX.X, Z: gX.Z, cap1: true });
+        tube(b, [[.028, -.034, -.03], [.02, -.027, -.062], [.014, -.025, -.084], [.013, -.025, -.09]], [.0125, .0115, .01, 0], 4, W, [.5, .46, .4, .36]);
+        tube(b, [[.014, -.03, .03], [-.008, -.022, .014], [-.017, -.02, -.02], [-.017, -.02, -.027]], [.015, .014, .012, 0], 4, W, [.5, .46, .4, .36]); }
+      { const d = take12(b); for (let k = 0; k < d.length; k += 12) { const p = V3.add(HGP, mv(HG, [d[k], d[k + 1], d[k + 2]])), n = mv(HG, [d[k + 6], d[k + 7], d[k + 8]]); d[k] = p[0]; d[k + 1] = p[1]; d[k + 2] = p[2]; d[k + 6] = n[0]; d[k + 7] = n[1]; d[k + 8] = n[2]; }
+        // the cuff, so the fist joins the forearm
+        const c = makeBatch(200); loft(c, [ring(0, .012, 0, .056, .056, .5, .56), ring(0, -.03, 0, .047, .052, .5, .56)], { sides: lod ? 4 : 6, n: 2.4, layer: W, a0: PI / 6 });
+        const all = new Float32Array(d.length + c.n * 12); all.set(d); all.set(c.d.subarray(0, c.n * 12), d.length); add(HAR, all, K_GRIPR); }
+      // left: wrapped over the right hand's fingers from the other side
+      b.reset();
+      loft(b, [{ c: [-.058, -.092, .05], rx: .032, rz: .048, sh: .56 }, { c: [-.05, -.084, .02], rx: .024, rz: .05, sh: .58 }, { c: [-.046, -.078, -.014], rx: .017, rz: .05, sh: .56 }, { c: [-.044, -.076, -.044], rx: .015, rz: .046, sh: .5 }], { sides: lod ? 4 : 6, n: 2.6, layer: W, X: gX.X, Z: gX.Z, cap1: true, a0: lod ? PI / 4 : PI / 6 });
+      if (!lod) {
+        loft(b, [{ c: [-.043, -.08, -.046], rx: .012, rz: .04, sh: .5 }, { c: [-.03, -.08, -.072], rx: .012, rz: .039, sh: .46, X: V3.norm([-.7, 0, -.7]) }, { c: [-.006, -.08, -.082], rx: .012, rz: .038, sh: .42, X: [0, 0, -1] }, { c: [.018, -.08, -.074], rx: .011, rz: .036, sh: .4, X: V3.norm([.7, 0, -.7]) }, { c: [.034, -.079, -.054], rx: .009, rz: .034, sh: .36, X: [1, 0, 0] }],
+          { sides: 6, n: 2.6, layer: W, X: gX.X, Z: gX.Z, cap1: true });
+        tube(b, [[-.04, -.04, .012], [-.03, -.028, -.02], [-.024, -.024, -.056], [-.024, -.024, -.062]], [.015, .014, .012, 0], 4, W, [.5, .46, .4, .36]); }
+      { const d = take12(b), Lt = [LG[0], LG[3], LG[6], LG[1], LG[4], LG[7], LG[2], LG[5], LG[8]]; for (let k = 0; k < d.length; k += 12) { const p = mv(Lt, V3.sub([d[k], d[k + 1], d[k + 2]], LGW)), n = mv(Lt, [d[k + 6], d[k + 7], d[k + 8]]); d[k] = p[0]; d[k + 1] = p[1]; d[k + 2] = p[2]; d[k + 6] = n[0]; d[k + 7] = n[1]; d[k + 8] = n[2]; }
+        const c = makeBatch(200); loft(c, [ring(0, .012, 0, .056, .056, .5, .56), ring(0, -.03, 0, .047, .052, .5, .56)], { sides: lod ? 4 : 6, n: 2.4, layer: W, a0: PI / 6 });
+        const all = new Float32Array(d.length + c.n * 12); all.set(d); all.set(c.d.subarray(0, c.n * 12), d.length); add(HAL, all, K_GRIPL); } }
+
+    /* ---- holster on the right thigh: backing plate, two leg straps, a strap up to the hip, the pouch, and the retention strap over the hammer ---- */
+    { const b = makeBatch(600), D = TL.DARK, thR = y => lerp(.118, .098, clamp((-.04 - y) / .26, 0, 1));
+      if (!lod) for (const y of [-.1, -.215]) { const r = thR(y) + .004; loft(b, [ring(0, y + .015, 0, r, r * 1.06, .5, 1.5), ring(0, y - .015, 0, r - .002, (r - .002) * 1.06, .5, 1.3)], { sides: 8, layer: D }); }
+      b.box([thR(-.13) + .001, -.13, -.004], [.006, 0, 0], [-.008, .115, 0], [0, 0, .05], D, 1.25, 0);
+      if (!lod) b.quad([.119, -.02, -.02], [.119, -.02, .012], [.094, .075, .012], [.094, .075, -.02], D, 1.5, 0, [0, 0, .1, .1]);
+      fromBatch(b); add(THR, done());
+      // pouch (gun space): open at the top, dark inside
+      set(D, 1.45); const sec = [[-.0165, -.027], [.0165, -.027], [.0165, .0165], [-.0165, .0165]]; prism(sec, -.034, -.196, false, true);
+      if (!lod) { set(D, .35); CEN = [0, 0, 1]; Q([-.016, -.026, -.06], [.016, -.026, -.06], [.016, .016, -.06], [-.016, .016, -.06]); set(TL.METAL, 1); CEN = [0, 0, -.06]; Q([.0168, -.004, -.05], [.0168, .004, -.05], [.0168, .004, -.058], [.0168, -.004, -.058]); }
+      add(THR, done(HOL_R, HOL_P));
+      if (!lod) { const band = (pts, w) => { for (let i = 0; i + 1 < pts.length; i++) { const a = pts[i], c = pts[i + 1]; Q([a[0], a[1] - w, a[2]], [a[0], a[1] + w, a[2]], [c[0], c[1] + w, c[2]], [c[0], c[1] - w, c[2]]); } };
+        set(D, 1.7); CEN = [0, 0, -.05]; band([[.0172, .003, -.05], [.0172, .003, .012], [.011, .003, .0205], [-.011, .003, .0205], [-.0172, .003, .012], [-.0172, .003, -.05]], .0075); add(THR, done(HOL_R, HOL_P), K_STRAP0);
+        set(D, 1.7); CEN = [0, 0, -.2]; band([[.0172, .003, -.05], [.028, .003, -.016], [.04, .003, -.002]], .0075); band([[-.0172, .003, -.05], [-.0185, .003, -.005]], .0075); add(THR, done(HOL_R, HOL_P), K_STRAP1); } }
+    return GUNP[lod] = parts;
+  }
+  const take12 = b => b.d.slice(0, b.n * 12);
+
+  /* ------------------------------------------------------------------ the suit, built once for each level of detail ------------------------------------------------------------------ */
+  const K_PLAIN = 0, K_FACE = 1, K_MOUTH = 2, K_INNER = 3, K_HANDR = 4, K_GRIPR = 5, K_HANDL = 6, K_GRIPL = 7, K_STRAP0 = 8, K_STRAP1 = 9, K_FLASH = 10, K_PISTOL = 11;
+  /* The suit is the Shuttle and ISS EMU as far as a few thousand triangles go: hard upper torso with the display and control module on the chest, the life support
+     pack with the secondary oxygen pack under it, the visor assembly with its sun visor part of the way down, lamps and a camera on the helmet, bearings at the
+     shoulder, upper arm, wrist and waist, pleated joints at the elbow and knee, lugged boots. The profiles are out here because the crew markings need them too. */
+  const TR = [[-.045, .196, .16, 0], [.02, .204, .166, 0], [.09, .218, .172, -.004], [.22, .242, .19, -.01], [.35, .25, .186, -.006], [.445, .215, .162, 0], [.5, .135, .128, NECK_Z]], TN = 2.7;   // torso: y, rx, rz, z centre
+  const torsoAt = y => { let k = 0; while (k < TR.length - 2 && y > TR[k + 1][0]) k++; const a = TR[k], c = TR[k + 1], t = clamp((y - a[0]) / (c[0] - a[0]), 0, 1); return [lerp(a[1], c[1], t), lerp(a[2], c[2], t), lerp(a[3], c[3], t)]; };
+  const chestZ = (x, y) => { const r = torsoAt(y), q = Math.min(1, Math.abs(x / r[0])); return r[2] - r[1] * Math.pow(1 - Math.pow(q, TN), 1 / TN); };
+  // limbs: rows of [y, radius, seam units, shade] down from the joint. At full detail the elbow and knee are pleated: ridges in the light, the folds between them dark
+  const P_UA = lod => [[.1, 0, 0, .9], [.072, .068, .4, .95], [.012, .1, 1.1, 1], [-.075, .094, 2.1, .96], [-.108, .1, 2.4, .6], [-.138, .1, 2.8, .6]].concat(lod ? [[-.255, .075, 5.4, .8]] : [[-.168, .089, 3.3, .5], [-.198, .097, 3.9, 1], [-.228, .08, 4.5, .48], [-.258, .085, 5.1, .92]], [[-.31, .058, 7, .42]]);
+  const P_FA = lod => [[.05, 0, 0, .4], [.022, .066, 1.4, .5]].concat(lod ? [[-.04, .077, 3.4, .84]] : [[-.01, .08, 2.2, 1], [-.04, .069, 2.9, .48], [-.07, .078, 3.5, .95], [-.1, .069, 4, .58]], [[-.13, .07, 4.4, .95], [-.215, .06, 5.3, .92], [-.235, .067, 5.5, .6], [-.262, .067, 5.8, .6]]);
+  const P_TH = lod => [[.085, 0, 0, .7], [.05, .088, .5, .8], [-.04, .118, 1.4, .92], [-.17, .11, 2.6, .96], [-.3, .098, 3.8, .9]].concat(lod ? [[-.385, .09, 5.6, .66]] : [[-.322, .092, 4.3, .5], [-.347, .102, 4.8, 1], [-.372, .088, 5.3, .48], [-.397, .096, 5.8, .9]], [[-.44, .064, 7, .4]]);
+  const P_SN = lod => [[.058, 0, 0, .4], [.03, .074, 1.2, .5]].concat(lod ? [[-.03, .097, 3, .8], [-.1, .091, 4, .84]] : [[0, .098, 2, .95], [-.028, .087, 2.6, .5], [-.056, .099, 3.2, .92], [-.084, .088, 3.7, .55], [-.11, .091, 4.1, .84]], [[-.2, .084, 5, .74], [-.295, .09, 5.9, .64], [-.365, .078, 6.6, .5]]);
+  const TH_KZ = 1.06;
+  const SUIT = [];
+  function buildSuit(lod) {
+    if (SUIT[lod]) return SUIT[lod];
     const nb = () => makeBatch(4200), take = b => b.d.slice(0, b.n * 12);
     const S = TL.SUIT, W = TL.WHITE, M = TL.METAL, D = TL.DARK;
-    PARTS = []; const add = (bone, d, kind) => { if (d.length) PARTS.push({ bone, d, n: d.length / 12, kind: kind || K_PLAIN }); };
+    const NASA_L = TL.NASA !== undefined ? TL.NASA : TL.PATCH;         // the agency's roundel where the game has a page for it; the mission patch stands in where it has not
+    const parts = [], add = (bone, d, kind, grp) => { if (d.length) parts.push({ bone, d, d1: null, n: d.length / 12, kind: kind || K_PLAIN, grp: grp || 0 }); };
     const inner = (k) => t => 1 - k * Math.max(0, -Math.cos(t));      // darken the side of a right-hand limb that faces the body
+    const LS = lod ? 6 : 8;                                           // sides of a limb
 
     /* ---- helmet: origin at the neck ring centre ---- */
     { const b = nb();
@@ -3098,138 +3604,204 @@ const ASTRO = (() => {
       const hp = (al, rho, r) => V3.mad(HC, dir(al, rho), r);
       // the visor opening: wide, a little taller below the eye line than above
       const rho0 = al => { const c = Math.abs(Math.cos(al)), s = Math.sin(al), bb = s > 0 ? 0.80 : 0.92; return Math.pow(Math.pow(c / 1.13, 3.2) + Math.pow(Math.abs(s) / bb, 3.2), -1 / 3.2); };
-      const SEG = 20, AL = i => (i % SEG) / SEG * TAU;
+      const SEG = lod ? 14 : 20, AL = i => (i % SEG) / SEG * TAU;
       // shell
-      { const P = [], T = [0, .12, .4, .72, 1]; for (const t of T) { const row = []; for (let i = 0; i <= SEG; i++) { const al = AL(i), r0 = rho0(al) + .055; row.push(hp(al, r0 + (PI - r0) * t, HR)); } P.push(row); }
+      { const P = [], T = lod ? [0, .2, .6, 1] : [0, .12, .4, .72, 1]; for (const t of T) { const row = []; for (let i = 0; i <= SEG; i++) { const al = AL(i), r0 = rho0(al) + .055; row.push(hp(al, r0 + (PI - r0) * t, HR)); } P.push(row); }
         grid(b, P, { closed: true, layer: W, nf: (j, i) => V3.norm(V3.sub(P[j][i], HC)), sh: (j, i) => .82 + .1 * (P[j][i][1] - HC[1]) / HR }); }
-      // raised rim around the opening, then the dark well behind it
-      { const A = [], Bq = [], C = [], E = []; for (let i = 0; i <= SEG; i++) { const al = AL(i), r0 = rho0(al); A.push(hp(al, r0 + .055, HR + .001)); Bq.push(hp(al, r0 + .005, HR + .017)); C.push(hp(al, r0 - .05, HR - .012));
-          E.push([HC[0] + Math.cos(al) * .168, HC[1] + Math.sin(al) * .160 - .005, HC[2] + .04]); }
+      // raised rim around the opening, then the dark lining all the way round behind the head
+      { const A = [], Bq = [], C = []; for (let i = 0; i <= SEG; i++) { const al = AL(i), r0 = rho0(al); A.push(hp(al, r0 + .055, HR + .001)); Bq.push(hp(al, r0 + .005, HR + .017)); C.push(hp(al, r0 - .05, HR - .012)); }
         grid(b, [A, Bq, C], { closed: true, layer: W, sh: j => j === 2 ? .16 : j ? .5 : .44, out: (j, i) => V3.sub([A, Bq, C][j][i], HC) });
-        const F = [HC[0], HC[1], HC[2] + .055], vv = (p, sh) => b.v(p, .5 - (p[0] - HC[0]) / .42, .5 - (p[1] - HC[1]) / .42, TL.VISOR, V3.norm(V3.sub(HC, p)), sh, 0);
-        for (let i = 0; i < SEG; i += 2) { vv(C[i], 1); vv(C[i + 1], 1); vv(E[i], .8); vv(C[i + 1], 1); vv(C[i + 2], 1); vv(E[i + 2], .8); vv(C[i + 1], 1); vv(E[i + 2], .8); vv(E[i], .8); vv(E[i], .8); vv(E[i + 2], .8); vv(F, .8); } }
-      // a streak of reflection on the glass, upper left as you face it
-      { const P = [[], []]; for (let k = 0; k <= 6; k++) { const al = .5 + k * .13, r0 = rho0(al), wd = .004 + .02 * Math.sin(PI * k / 6); P[0].push(hp(al, r0 - .1 - wd, HR - .008)); P[1].push(hp(al, r0 - .1 + wd, HR - .008)); }
+        const P = [C], T = lod ? [.45, 1] : [.3, .64, 1]; for (const t of T) { const row = []; for (let i = 0; i <= SEG; i++) { const al = AL(i), r0 = rho0(al) - .05; row.push(hp(al, r0 + (PI - r0) * t, HR - .012)); } P.push(row); }
+        grid(b, P, { closed: true, layer: TL.VISOR, nf: (j, i) => V3.norm(V3.sub(HC, P[j][i])), sh: j => j ? .8 : 1, uv: (j, i) => [.5 - (P[j][i][0] - HC[0]) / .42, .5 - (P[j][i][1] - HC[1]) / .42] }); }
+      // a streak of reflection on the glass, at the left as you face it
+      if (!lod) { const P = [[], []]; for (let k = 0; k <= 6; k++) { const al = -.34 + k * .12, r0 = rho0(al), wd = .004 + .02 * Math.sin(PI * k / 6); P[0].push(hp(al, r0 - .1 - wd, HR - .008)); P[1].push(hp(al, r0 - .1 + wd, HR - .008)); }
         grid(b, P, { layer: W, sh: () => .2, nf: (j, i) => V3.norm(V3.sub(P[j][i], HC)) }); }
-      // collar that sits down into the neck ring
-      loft(b, [ring(0, -.03, NECK_Z + .005, .128, .128, .5, .6), ring(0, .075, -.008, .15, .15, .5, .78)], { sides: 10, layer: W });
+      // collar that sits down into the neck ring, and the dark neck dam inside it
+      loft(b, [ring(0, -.03, NECK_Z + .005, .128, .128, .5, .6), ring(0, .058, -.008, .143, .143, .5, .78)], { sides: lod ? 8 : 10, layer: W });
+      loft(b, [ring(0, .0, HEAD_AT[2] + .014, .088, .09, .5, .5), ring(0, .028, HEAD_AT[2] + .016, .074, .078, .5, .9)], { sides: lod ? 6 : 10, layer: D, cap1: false });
       // visor pivots and the lamp pods above them
       for (const sg of [-1, 1]) {
-        loft(b, [{ c: [sg * (HR - .03), HC[1] - .005, HC[2] + .02], rx: .05, sh: .52 }, { c: [sg * (HR + .02), HC[1] - .005, HC[2] + .02], rx: .044, sh: .6 }], { sides: 8, layer: W, X: [0, 1, 0], Z: [0, 0, 1], cap1: true, capSh: .62 });
-        const c = [sg * (HR - .012), HC[1] + .098, HC[2] - .075];
-        b.box(c, [.03, 0, 0], [0, .026, .006], [0, -.008, .044], W, .5, 0);
-        b.quad([c[0] - .022, c[1] + .012, c[2] - .0445], [c[0] + .022, c[1] + .012, c[2] - .0445], [c[0] + .022, c[1] - .03, c[2] - .0445 + .008], [c[0] - .022, c[1] - .03, c[2] - .0445 + .008], D, 1.2, 0, [0, 0, .2, .2]);
+        loft(b, [{ c: [sg * (HR - .004), HC[1] - .005, HC[2] + .02], rx: .05, sh: .52 }, { c: [sg * (HR + .02), HC[1] - .005, HC[2] + .02], rx: .044, sh: .6 }], { sides: lod ? 6 : 8, layer: W, X: [0, 1, 0], Z: [0, 0, 1], cap1: true, capSh: .62 });
+        const c = [sg * (HR - .012), HC[1] + .098, HC[2] - .075], hx = [.03, 0, 0], hy = [0, .026, .006], hz = [0, -.008, .044], n = V3.norm(V3.mul(hz, -1));
+        b.box(c, hx, hy, hz, W, .5, 0);
+        const face = (k, kx, ky, l, sh) => { const f = V3.mad(V3.sub(c, hz), n, k), q = (i, j) => [f[0] + hx[0] * kx * i, f[1] + hy[1] * ky * j, f[2] + hy[2] * ky * j]; plate(b, q(-1, 1), q(1, 1), q(1, -1), q(-1, -1), l, sh, 0); };
+        face(.0012, .8, .76, D, 1.2); if (!lod) face(.0022, .5, .46, W, 1.05);   // the dark reflector and the lens in it
       }
-      add(HEL, take(b)); }
+      // the gold sun visor of the visor assembly, part of the way down: it comes out from under the shell and ends in a bright edge across the brow
+      { const n = lod ? 5 : 10, yv = .114, Rv = HR + .016, P = [[], [], []]; for (let i = 0; i <= n; i++) { const al = (22 + 136 * i / n) * DEG, r0 = rho0(al) - .004, lo = y => Math.min(r0, Math.asin(Math.min(1, y / (Rv * Math.sin(al))))); P[0].push(hp(al, r0, Rv)); P[1].push(hp(al, lo(yv + .006), Rv)); P[2].push(hp(al, lo(yv), Rv + .001)); }
+        grid(b, lod ? [P[0], P[2]] : P, { layer: M, sh: j => lod ? (j ? .95 : .3) : [.26, .6, 1.7][j], nf: (j, i) => V3.norm(V3.sub((lod ? [P[0], P[2]] : P)[j][i], HC)), uv: () => UVM }); }
+      if (!lod) {
+        // the shell of the visor assembly: a brow that stands out over the opening, and its lower edge round the back of the helmet
+        { const n = 8, P = [[], [], [], []]; for (let i = 0; i <= n; i++) { const al = (14 + 152 * i / n) * DEG, r0 = rho0(al), e = Math.sqrt(Math.sin(PI * i / n)); P[0].push(hp(al, r0 + .1, HR + .002)); P[1].push(hp(al, r0 + .04, HR + .008 + .014 * e)); P[2].push(hp(al, r0 + .006, HR + .012 + .01 * e)); P[3].push(hp(al, r0 - .02, HR + .002)); }
+          grid(b, P, { layer: W, sh: j => [.8, .98, .9, .2][j], out: (j, i) => V3.sub(P[j][i], HC), uv: () => UVW }); }
+        { const n = 8, P = [[], []]; for (let i = 0; i <= n; i++) { const f = (112 + 136 * i / n) * DEG, at = (y, R) => { const q = Math.sqrt(R * R - y * y); return [HC[0] + Math.sin(f) * q, HC[1] + y, HC[2] - Math.cos(f) * q]; }; P[0].push(at(-.05, HR + .009)); P[1].push(at(-.066, HR + .001)); }
+          grid(b, P, { layer: W, sh: j => j ? .26 : .95, out: (j, i) => V3.sub(P[j][i], HC), uv: () => UVW }); } }
+      // the television camera on the right of the shell
+      { const ax = V3.norm([0, -.12, -1]), up = V3.norm([0, 1, -.12]), c = [.095, HC[1] + .186, HC[2] - .03]; crate(b, c, [.023, 0, 0], V3.mul(up, .018), V3.mul(ax, .04), M, .55);
+        if (!lod) { const f = V3.mad(c, ax, .0412); disc(b, f, [1, 0, 0], up, .013, 6, D, .5); plate(b, V3.add(f, [-.007, .007, -.001]), V3.add(f, [-.002, .007, -.001]), V3.add(f, [-.002, .003, -.001]), V3.add(f, [-.007, .003, -.001]), W, .9, 0); } }
+      add(HEL, take(b), K_PLAIN, 1); }
 
-    /* ---- the face behind the glass: origin at the middle of the head ---- */
-    const FACE_SH = .55;   // the face takes about half the light the suit does (it is behind glass), so a flashlight at arm's length does not bleach it; its emissive .12 keeps it readable in the dark
-    const faceZ = (a, c) => -(.076 + .05 * Math.sqrt(Math.max(0, 1 - .85 * (a * a + c * c))));
-    { const b = nb(), P = [], RR = [0, .56, 1], SG = 12;
-      for (const r of RR) { const row = []; for (let i = 0; i <= SG; i++) { const t = (i % SG) / SG * TAU, a = r * Math.cos(t), c = r * Math.sin(t); row.push([a * FACE_W, c * FACE_H, faceZ(a, c)]); } P.push(row); }
-      grid(b, P, { closed: true, layer: TL.FACE, emis: .12, uv: (j, i) => [.5 - P[j][i][0] / FACE_W / 2, .5 - P[j][i][1] / FACE_H / 2], sh: j => j === 2 ? FACE_SH * .8 : FACE_SH, out: (j, i) => [P[j][i][0] * .4, P[j][i][1] * .4, -1] });
-      add(HEAD, take(b), K_FACE);
-      // the cap around it, so the head has sides
-      const h = nb(), Q = [P[2], P[2].map(p => [p[0] * 1.03, p[1] * 1.02, -.005])];
-      grid(h, Q, { closed: true, layer: W, sh: j => j ? .14 : .26, out: (j, i) => [Q[j][i][0], Q[j][i][1], 0] });
-      add(HEAD, take(h)); }
-    /* ---- the mouth that opens over it: origin at the mouth, a disc that update() scales up ---- */
-    { const b = nb(), SG = 14, n = [0, 0, -1];
-      for (let i = 0; i < SG; i++) { const t0 = i / SG * TAU, t1 = (i + 1) / SG * TAU; const p = t => [Math.cos(t) * MOUTH_RX, Math.sin(t) * MOUTH_RY, .004], uv = t => [.5 - Math.cos(t) * 62.5 / 256, .6875 - Math.sin(t) * 80.5 / 256];
-        b.v([0, 0, 0], .5, .6875, TL.FACE_OPEN, n, FACE_SH, .12); b.v(p(t0), uv(t0)[0], uv(t0)[1], TL.FACE_OPEN, n, FACE_SH, .12); b.v(p(t1), uv(t1)[0], uv(t1)[1], TL.FACE_OPEN, n, FACE_SH, .12); }
-      add(MOUTH, take(b), K_MOUTH); }
-
-    /* ---- torso: origin at the waist. Hard upper torso, neck ring, chest box, hoses, life support pack, chest patch ---- */
-    const TR = [[-.045, .196, .16, 0], [.02, .204, .166, 0], [.09, .218, .172, -.004], [.22, .242, .19, -.01], [.35, .25, .186, -.006], [.445, .215, .162, 0], [.5, .135, .128, NECK_Z]], TN = 2.7;   // y, rx, rz, z centre
-    const torsoAt = y => { let k = 0; while (k < TR.length - 2 && y > TR[k + 1][0]) k++; const a = TR[k], c = TR[k + 1], t = clamp((y - a[0]) / (c[0] - a[0]), 0, 1); return [lerp(a[1], c[1], t), lerp(a[2], c[2], t), lerp(a[3], c[3], t)]; };
-    const chestZ = (x, y) => { const r = torsoAt(y), q = Math.min(1, Math.abs(x / r[0])); return r[2] - r[1] * Math.pow(1 - Math.pow(q, TN), 1 / TN); };
-    { const b = nb();
+    /* ---- torso: origin at the waist. Hard upper torso, neck ring, body seal closure, the display and control module on the chest, the life support pack ---- */
+    { const b = nb(), TS = lod ? 10 : 12;
       // the lowest band is the metal waist closure
-      loft(b, TR.map((r, k) => ({ c: [0, r[0], r[3]], rx: r[1], rz: r[2], v: k < 2 ? .06 + k * .05 : LU((k - 1) * .9), sh: [.6, .6, .86, 1, 1, .95, .8][k] })), { sides: 12, n: TN, layer: S, layerOf: j => j ? S : M, u0: 0, u1: 1.1, a0: PI / 12,
+      loft(b, TR.map((r, k) => ({ c: [0, r[0], r[3]], rx: r[1], rz: r[2], v: k < 2 ? .06 + k * .05 : LU((k - 1) * .9), sh: [.6, .6, .86, 1, 1, .95, .8][k] })), { sides: TS, n: TN, layer: S, layerOf: j => j ? S : M, u0: 0, u1: 1.1, a0: PI / TS,
         shf: (t, j) => j > 1 && j < 5 ? 1 - .34 * sstep(.75, 1, Math.abs(Math.cos(t))) : 1 });
-      loft(b, [ring(0, .486, NECK_Z, .162, .162, .30, .56), ring(0, .532, NECK_Z, .162, .162, .36, .74), ring(0, .546, NECK_Z, .138, .138, .37, .5)], { sides: 12, layer: M, u0: 0, u1: 1.5 });
-      // chest control box
+      loft(b, [ring(0, .486, NECK_Z, .162, .162, .30, .56), ring(0, .532, NECK_Z, .162, .162, .36, .74), ring(0, .546, NECK_Z, .138, .138, .37, .5)], { sides: TS, layer: M, u0: 0, u1: 1.5 });
+      if (!lod) {
+        for (const a of [-.75, .75, PI]) { const d = [Math.sin(a), 0, -Math.cos(a)]; crate(b, [d[0] * .167, .511, NECK_Z + d[2] * .167], [-d[2] * .022, 0, d[0] * .022], [0, .015, 0], V3.mul(d, .007), M, 1.1); }   // lock tabs on the neck ring
+        // the body seal closure stands proud of the waist band, with a latch at each side of the front
+        stub(b, [{ c: [0, -.017, 0], rx: .211, rz: .173, sh: .45 }, { c: [0, -.003, 0], rx: .216, rz: .178, sh: .8 }, { c: [0, .012, 0], rx: .211, rz: .173, sh: 1.1 }], { sides: TS, n: TN, layer: M, a0: PI / TS });
+        for (const sg of [-1, 1]) crate(b, [sg * .198, -.002, -.088], [.014, 0, sg * .008], [0, .022, 0], [-sg * .006, 0, .011], M, 1.2);
+        // D-rings on the waist, and the coiled tether and its hook on the left one
+        for (const sg of [-1, 1]) { const x = sg * .105, z = -.178, q = (x0, y0, x1, y1) => plate(b, [x + x0, y0, z], [x + x1, y0, z], [x + x1, y1, z], [x + x0, y1, z], M, 1.25);
+          q(-.02, -.012, -.014, -.064); q(.014, -.012, .02, -.064); q(-.02, -.058, .02, -.064); }
+        crate(b, [-.105, -.05, -.188], [.017, 0, 0], [0, .017, 0], [0, 0, .009], D, 1.7); plate(b, [-.111, -.067, -.189], [-.099, -.067, -.189], [-.097, -.118, -.189], [-.107, -.118, -.189], M, .95);
+      }
+      // the display and control module
       const cz = -.25, fz = cz - .062;
       loft(b, [ring(0, .19, cz + .075, .15, .1, LU(0), .62), ring(0, .19, fz + .012, .15, .1, LU(0), .9), ring(0, .19, fz, .138, .088, LU(0), .84)], { sides: 8, n: 7, layer: S, X: [1, 0, 0], Z: [0, 1, 0], u0: .1, u1: .4, a0: PI / 8, cap1: true, capSh: 1 });
       b.quad([.118, .262, fz - .002], [.012, .262, fz - .002], [.012, .2, fz - .002], [.118, .2, fz - .002], D, 1.1, 0, [0, 0, .4, .25]);                         // display window
-      loft(b, [{ c: [-.068, .178, fz], rx: .036, sh: .36 }, { c: [-.068, .178, fz - .028], rx: .032, sh: .5 }], { sides: 8, layer: W, X: [1, 0, 0], Z: [0, 1, 0], cap1: true, capSh: 1.1 });   // selector dial
-      b.quad([-.074, .206, fz - .0285], [-.062, .206, fz - .0285], [-.062, .15, fz - .0285], [-.074, .15, fz - .0285], D, 1.2, 0, [0, 0, .1, .1]);
-      for (const x of [.03, .065, .1]) b.seg([x, .162, fz], [x, .15, fz - .026], .008, .006, 3, W, .3, 0, false);                                         // toggles
+      stub(b, [{ c: [-.088, .15, fz], rx: .03, sh: .36 }, { c: [-.088, .15, fz - .026], rx: .027, sh: .5 }], { sides: lod ? 6 : 8, layer: W, X: [1, 0, 0], Z: [0, 1, 0], cap1: true, capSh: 2.2 });   // selector dial
       b.box([0, .292, cz - .01], [.1, 0, 0], [0, .008, 0], [0, 0, .03], W, .34, 0);                                                                         // top plate
-      // hoses, from the box round the waist to the pack, and the comms lead up to the neck ring
-      for (const sg of [-1, 1]) { b.seg([sg * .14, .14, cz + .004], [sg * .17, .124, cz], .027, .025, 6, M, .62, 0, false);
-        tube(b, bez([sg * .165, .127, cz], [sg * .245, .05, -.265], [sg * .255, -.03, .08], [sg * .215, .05, .19], 6), .021, 4, D, 1.25, .09); }
-      tube(b, bez([.06, .292, cz + .005], [.03, .37, cz - .045], [.17, .4, -.235], [.118, .5, -.092], 4), .012, 4, D, 1.25, .09);
-      // life support pack
+      if (!lod) { plate(b, [.108, .246, fz - .003], [.04, .246, fz - .003], [.04, .236, fz - .003], [.108, .236, fz - .003], W, .5, .1);                    // the line of figures on the display
+        plate(b, [-.093, .176, fz - .0265], [-.083, .176, fz - .0265], [-.083, .128, fz - .0265], [-.093, .128, fz - .0265], D, 1.2, 0);                    // pointer of the dial
+        // suit pressure gauge: dark bezel, white face, needle
+        stub(b, [{ c: [-.088, .236, fz], rx: .031, sh: 1.3 }, { c: [-.088, .236, fz - .012], rx: .031, sh: 2.2 }], { sides: 8, layer: D, X: [1, 0, 0], Z: [0, 1, 0] });
+        disc(b, [-.088, .236, fz - .0105], [1, 0, 0], [0, 1, 0], .026, 8, W, .95); { const z = fz - .0112, uv = UVD; for (const p of [[-.091, .234, z], [-.085, .232, z], [-.072, .252, z]]) b.v(p, uv[0], uv[1], D, [0, 0, -1], 1, 0); }
+        // the row of switches in its dark recess, with the guards between them
+        plate(b, [.122, .18, fz - .001], [.008, .18, fz - .001], [.008, .134, fz - .001], [.122, .134, fz - .001], D, 1, 0);
+        for (const x of [.03, .065, .1]) b.seg([x, .162, fz], [x, .148, fz - .028], .008, .006, 3, W, .9, 0, false);
+        for (const x of [.0125, .0475, .0825, .1175]) plate(b, [x, .177, fz], [x, .177, fz - .02], [x, .137, fz - .02], [x, .137, fz], M, 1.15, 0);
+        // purge valve on the left side of the module, and the labels the wearer reads on its top
+        stub(b, [{ c: [-.146, .2, -.262], rx: .019, sh: 1.9 }, { c: [-.186, .2, -.266], rx: .019, sh: 2.6 }], { sides: 6, layer: D, X: [0, 1, 0], Z: [0, 0, 1], cap1: true, capSh: 1.1 });
+        crate(b, [-.192, .2, -.266], [.004, 0, 0], [0, .027, 0], [0, 0, .006], W, .95);
+        for (const x of [-.066, -.022, .022, .066]) plate(b, [x - .015, .3006, cz - .03], [x + .015, .3006, cz - .03], [x + .015, .3006, cz - .014], [x - .015, .3006, cz - .014], W, .95, 0); }
+      // life support pack; the secondary oxygen pack hangs under it
       const pk = (y0, y1, rx, rz, z, sh, low) => loft(b, [ring(0, y0, z, rx, rz, LU(0), sh * .8), ring(0, y1 - .03, z, rx, rz, LU((y1 - y0) * 9), sh), ring(0, y1, z, rx * .9, rz * .86, LU((y1 - y0) * 9 + .3), sh * .95)], { sides: 8, n: 7, layer: S, u0: 0, u1: 1.4, a0: PI / 8, cap0: low, cap1: true, capSh: .9 });
-      pk(-.06, .61, .255, .1, .262, .92, true); pk(.615, .79, .2, .078, .276, .86, false);
-      for (const y of [.1, .47]) loft(b, [ring(0, y - .02, .262, .259, .104, .5, 1), ring(0, y + .02, .262, .259, .104, .5, 1)], { sides: 8, n: 7, layer: D, a0: PI / 8, shf: () => 1.5 });   // straps
-      b.box([0, .3, .365], [.15, 0, 0], [0, .12, 0], [0, 0, .008], M, .7, 0);                                                                              // back panel
+      if (lod) { pk(-.06, .61, .255, .1, .262, .92, true); stub(b, [{ c: [0, .068, .262], rx: .259, rz: .104, sh: 1.5 }, { c: [0, .1, .262], rx: .259, rz: .104, sh: 1.5 }], { sides: 8, n: 7, layer: D, a0: PI / 8 }); }
+      else { pk(.098, .61, .255, .1, .262, .92, true); pk(-.075, .08, .24, .094, .262, .8, true); stub(b, [{ c: [0, .06, .262], rx: .222, rz: .084, sh: .9 }, { c: [0, .104, .262], rx: .222, rz: .084, sh: .9 }], { sides: 8, n: 7, layer: D, a0: PI / 8 }); }
+      pk(.615, .79, .2, .078, .276, .86, false);
+      b.box([0, .24, .362], [.13, 0, 0], [0, .075, 0], [0, 0, .006], M, .7, 0);                                                                             // access panel
       b.seg([.17, .78, .29], [.175, 1.06, .3], .007, .004, 3, D, 2.2, 0, false);                                                                           // antenna
       loft(b, [{ c: [-.25, .2, .262], rx: .034, sh: .5 }, { c: [-.29, .2, .262], rx: .03, sh: .62 }], { sides: 6, layer: W, X: [0, 1, 0], Z: [0, 0, 1], cap1: true, capSh: .7 });   // side valve
-      // harness straps from the pack over the shoulders to the chest box
-      const topY = (x, z) => { let lo = .445, hi = .5; for (let k = 0; k < 14; k++) { const y = .5 * (lo + hi), r = torsoAt(y); if (Math.pow(Math.abs(x) / r[0], TN) + Math.pow(Math.abs(z - r[2]) / r[1], TN) < 1) lo = y; else hi = y; } return lo; };
-      for (const sg of [-1, 1]) { const X = .18, path = [[.143, .287, -.22], [.166, .335, chestZ(.166, .335) - .008], [X, .405, chestZ(X, .405) - .008], [X, topY(X, -.085) + .008, -.085], [X, topY(X, 0) + .008, 0], [X, topY(X, .085) + .008, .085], [X, .42, .17]];
-        grid(b, path.map(q => [[sg * (q[0] - .014), q[1], q[2]], [sg * (q[0] + .014), q[1], q[2]]]), { layer: D, sh: () => 1.1, uv: (j, i) => [i * .1, j * .1] }); }
-      // mission patch, left breast
-      patch(b, .056, (x, y) => { const X = -.098 - x, Y = .392 + y; return [X, Y, chestZ(X, Y) - .006]; }, 1);
+      if (!lod) for (const sg of [-1, 1]) { const x = sg * .142, z = .3615, q = (x0, y0, x1, y1, l, sh) => plate(b, [x + x0, y0, z + (l === D ? 0 : .0008)], [x + x1, y0, z + (l === D ? 0 : .0008)], [x + x1, y1, z + (l === D ? 0 : .0008)], [x + x0, y1, z + (l === D ? 0 : .0008)], l, sh, 0);   // warning placards
+        q(-.042, .59, .042, .535, D, 1.3); q(-.034, .58, .034, .57, W, .9); q(-.034, .561, .012, .553, W, .9); }
+      // the roundel on the back cover of the pack and on the right breast
+      patch(b, .08, (x, y) => [x, .47 + y, .3628], 1, NASA_L);
+      patch(b, .05, (x, y) => { const X = .098 - x, Y = .392 + y; return [X, Y, chestZ(X, Y) - .006]; }, 1, NASA_L);
       add(TOR, take(b)); }
 
     /* ---- pelvis: origin midway between the hip joints ---- */
     { const b = nb();
-      loft(b, [ring(0, -.13, .005, .09, .09, LU(0), .5), ring(0, -.06, .005, .19, .155, LU(.8), .74), ring(0, .03, 0, .204, .165, LU(1.7), .92), ring(0, .1, 0, .19, .153, LU(2.4), .9)], { sides: 10, n: 2.5, layer: S, u0: 0, u1: 1, cap0: true });
+      loft(b, [ring(0, -.13, .005, .09, .09, LU(0), .5), ring(0, -.06, .005, .19, .155, LU(.8), .74), ring(0, .03, 0, .204, .165, LU(1.7), .92), ring(0, .1, 0, .19, .153, LU(2.4), .9)], { sides: lod ? 8 : 10, n: 2.5, layer: S, u0: 0, u1: 1, cap0: true });
       add(PEL, take(b)); }
 
     /* ---- arms: built for the right side, mirrored for the left. Origins at shoulder, elbow, wrist; the limb runs down -Y ---- */
-    { const ua = nb(), UA = [[.1, 0, 0, .9], [.072, .068, .4, .95], [.012, .1, 1.1, 1], [-.075, .094, 2.1, .96], [-.108, .1, 2.4, .6], [-.138, .1, 2.8, .6], [-.255, .075, 5.4, .8], [-.31, .058, 7, .42]];
-      limb(ua, UA, { sides: 8, layer: S, layerOf: j => j === 4 ? M : S, u0: 0, u1: .5, shf: inner(.36) });
-      const uaRad = y => { let k = 0; while (k < UA.length - 2 && y < UA[k + 1][0]) k++; const a = UA[k], c = UA[k + 1]; return lerp(a[1], c[1], clamp((y - a[0]) / (c[0] - a[0]), 0, 1)); };
+    { const ua = nb(), UA = P_UA(lod), FA = P_FA(lod), fm = lod ? 5 : 8, shf = inner(.3);
+      limb(ua, UA, { sides: LS, layer: S, layerOf: j => j === 4 ? M : S, u0: 0, u1: .5, shf: inner(.36) });
+      if (!lod) { stub(ua, [{ c: [0, .06, 0], rx: .084, sh: 1.1 }, { c: [0, .03, 0], rx: .099, sh: .5 }], { sides: LS, layer: M, shf });      // scye bearing at the shoulder
+        stub(ua, [{ c: [0, -.105, 0], rx: .107, sh: 1.1 }, { c: [0, -.141, 0], rx: .107, sh: .48 }], { sides: LS, layer: M, shf }); }           // upper arm bearing
       const fa = nb();
-      limb(fa, [[.05, 0, 0, .4], [.022, .066, 1.4, .5], [-.04, .077, 3.4, .84], [-.13, .07, 4.4, .95], [-.215, .06, 5.3, .92], [-.235, .067, 5.5, .6], [-.262, .067, 5.8, .6]], { sides: 8, layer: S, layerOf: j => j === 5 ? M : S, u0: 0, u1: .45, shf: inner(.3) });
+      limb(fa, FA, { sides: LS, layer: S, layerOf: j => j === fm ? M : S, u0: 0, u1: .45, shf });
+      if (!lod) { stub(fa, [{ c: [0, -.229, 0], rx: .075, sh: 1.1 }, { c: [0, -.264, 0], rx: .075, sh: .48 }], { sides: LS, layer: M, shf });   // wrist disconnect and its lock tab
+        crate(fa, [.079, -.246, 0], [.005, 0, 0], [0, .013, 0], [0, 0, .016], M, 1.3); }
       // glove: palm faces -X on the right hand, thumb forward
       const ha = nb();
       loft(ha, [ring(0, .012, 0, .056, .056, .5, .56), ring(0, -.032, 0, .046, .05, .5, .56), ring(-.004, -.066, 0, .028, .053, .5, .5), ring(-.006, -.106, .002, .023, .05, .5, .46)], { sides: 6, n: 2.4, layer: W, cap1: true, a0: PI / 6 });
-      for (let k = 0; k < 4; k++) { const z = -.036 + k * .0245, c1 = .3 + k * .05, c2 = c1 + .5, l1 = .043 - Math.abs(k - 1.3) * .004, l2 = .033;
-        const a = [-.006, -.1, z], m = [a[0] - Math.sin(c1) * l1, a[1] - Math.cos(c1) * l1, z], t = [m[0] - Math.sin(c2) * l2, m[1] - Math.cos(c2) * l2, z], e = [t[0] - Math.sin(c2) * .008, t[1] - Math.cos(c2) * .008, z];
-        tube(ha, [a, m, t, e], [.0135, .013, .0115, 0], 4, W, [.46, .4, .3, .26]); }
-      { const a = [-.012, -.045, -.046], m = [-.03, -.078, -.074], t = [-.044, -.106, -.078], e = [-.047, -.114, -.078]; tube(ha, [a, m, t, e], [.017, .015, .012, 0], 4, W, [.46, .4, .3, .26]); }
+      if (lod) { loft(ha, [ring(-.006, -.104, -.002, .021, .05, .5, .44), ring(-.026, -.142, -.002, .019, .047, .5, .36), ring(-.05, -.166, -.002, .014, .04, .5, .28)], { sides: 4, n: 2.4, layer: W, cap1: true, a0: PI / 4 });   // far off the fingers are one mitt
+        tube(ha, [[-.012, -.045, -.046], [-.03, -.078, -.074], [-.047, -.114, -.078]], [.017, .015, 0], 3, W, [.46, .4, .26]); }
+      else { for (let k = 0; k < 4; k++) { const z = -.036 + k * .0245, c1 = .3 + k * .05, c2 = c1 + .5, l1 = .043 - Math.abs(k - 1.3) * .004, l2 = .033;
+          const a = [-.006, -.1, z], m = [a[0] - Math.sin(c1) * l1, a[1] - Math.cos(c1) * l1, z], t = [m[0] - Math.sin(c2) * l2, m[1] - Math.cos(c2) * l2, z], e = [t[0] - Math.sin(c2) * .008, t[1] - Math.cos(c2) * .008, z];
+          tube(ha, [a, m, t, e], [.0135, .013, .0115, 0], 4, W, [.46, .4, .3, .26]); }
+        { const a = [-.012, -.045, -.046], m = [-.03, -.078, -.074], t = [-.044, -.106, -.078], e = [-.047, -.114, -.078]; tube(ha, [a, m, t, e], [.017, .015, .012, 0], 4, W, [.46, .4, .3, .26]); } }
       const uaR = take(ua), faR = take(fa), haR = take(ha);
-      add(UAR, uaR); add(FAR, faR); add(HAR, haR); add(FAL, mirror(faR)); add(HAL, mirror(haR));
-      // left upper arm carries the mission patch on the shoulder; left forearm carries the cuff checklist
-      const ul = nb(); patch(ul, .056, (x, y) => { const t = x / .1, Y = -.04 + y, rr = uaRad(Y) + .006; return [-rr * Math.cos(t), Y, rr * Math.sin(t)]; }, 1);
-      add(UAL, mirror(uaR)); add(UAL, take(ul));
-      const fl = nb(); fl.box([-.07, -.14, -.012], [.012, 0, 0], [0, .045, 0], [0, 0, .034], W, .7, 0); fl.quad([-.0825, -.1, -.04], [-.0825, -.1, .016], [-.0825, -.18, .016], [-.0825, -.18, -.04], D, 1.3, 0, [0, 0, .3, .4]);
+      add(UAR, uaR); add(FAR, faR); add(HAR, haR, K_HANDR); add(UAL, mirror(uaR)); add(FAL, mirror(faR)); add(HAL, mirror(haR), K_HANDL);
+      // right shoulder: the mission patch. Right forearm: the wrist mirror
+      const ur = nb(); patch(ur, .05, (x, y) => { const Y = -.036 + y, rr = radAt(UA, Y) + .006, t = x / .1; return [rr * Math.cos(t), Y, -rr * Math.sin(t)]; }, 1); add(UAR, take(ur));
+      if (!lod) { const fr = nb(); crate(fr, [.0665, -.172, 0], [.004, 0, 0], [0, .029, 0], [0, 0, .025], D, 1.7); plate(fr, [.0708, -.147, -.021], [.0708, -.147, .021], [.0708, -.197, .021], [.0708, -.197, -.021], W, 1.25, 0); add(FAR, take(fr)); }
+      // left shoulder: the flag, its canton to the front (stripes and canton are relief in two tones; there is no page for it)
+      { const ul = nb(), w = .078, h = .048, Y0 = -.036, at = (u, v, lift) => { const Y = Y0 + h * (.5 - v), rr = radAt(UA, Y) + lift, t = (u - .5) * w / .1; return [-rr * Math.cos(t), Y, rr * Math.sin(t)]; };
+        const cols = lod ? [0, 1] : [0, .4, .7, 1], q = (u0, u1, v0, v1, lift, l, sh) => { const a = at(u0, v0, lift), c = at(u1, v0, lift), d = at(u1, v1, lift), e = at(u0, v1, lift), n = V3.norm([a[0] + d[0], 0, a[2] + d[2]]); plate(ul, a, c, d, e, l, sh, 0, n); };
+        for (let i = 0; i + 1 < cols.length; i++) q(cols[i], cols[i + 1], 0, 1, .005, W, .95);
+        if (lod) { q(.4, 1, 0, .14, .0062, D, 2.5); q(0, 1, .57, .71, .0062, D, 2.5); q(0, 1, .86, 1, .0062, D, 2.5); }
+        else for (const k of [0, 2, 4, 6]) for (let i = k < 4 ? 1 : 0; i + 1 < cols.length; i++) q(cols[i], cols[i + 1], k / 7, (k + 1) / 7, .0062, D, 2.5);
+        q(0, .4, 0, 4 / 7, .0066, D, 1.25);
+        add(UAL, take(ul)); }
+      // left forearm: the cuff checklist, bound along its top edge
+      const fl = nb(); crate(fl, [-.07, -.14, -.012], [.012, 0, 0], [0, .045, 0], [0, 0, .034], W, .85);
+      if (!lod) { const ln = (y0, y1, z0, z1, sh) => plate(fl, [-.0826, y0, z0], [-.0826, y0, z1], [-.0826, y1, z1], [-.0826, y1, z0], D, sh, 0); ln(-.096, -.106, -.045, .021, 1.2); ln(-.12, -.125, -.04, .012, 2); ln(-.134, -.139, -.04, .002, 2); ln(-.148, -.153, -.04, .014, 2); ln(-.162, -.167, -.04, -.008, 2); }
       add(FAL, take(fl)); }
 
     /* ---- legs: right side, mirrored. Origins at hip, knee, ankle. Regolith has greyed them from the knee down ---- */
     { const th = nb();
-      limb(th, [[.085, 0, 0, .7], [.05, .088, .5, .8], [-.04, .118, 1.4, .92], [-.17, .11, 2.6, .96], [-.3, .098, 3.8, .9], [-.385, .09, 5.6, .66], [-.44, .064, 7, .4]], { sides: 8, layer: S, u0: 0, u1: .55, kz: 1.06, shf: inner(.38) });
+      limb(th, P_TH(lod), { sides: LS, layer: S, u0: 0, u1: .55, kz: TH_KZ, shf: inner(.38) });
       const sn = nb();
-      limb(sn, [[.058, 0, 0, .4], [.03, .074, 1.2, .5], [-.03, .097, 3, .8], [-.1, .091, 4, .84], [-.2, .084, 5, .74], [-.295, .09, 5.9, .64], [-.365, .078, 6.6, .5]], { sides: 8, layer: S, u0: 0, u1: .5, shf: inner(.3) });
+      limb(sn, P_SN(lod), { sides: LS, layer: S, u0: 0, u1: .5, shf: inner(.3) });
       // boot: origin at the ankle, toe toward -Z, sole bottom at -ANKLE
       const ft = nb(), YZ = { X: [1, 0, 0], Z: [0, 1, 0] };
       loft(ft, [{ c: [0, -.058, .112], rx: 0, v: LU(0), sh: .44 }, { c: [0, -.042, .082], rx: .058, rz: .056, v: LU(.3), sh: .52 }, { c: [0, -.02, .012], rx: .072, rz: .082, v: LU(1), sh: .62 }, { c: [0, -.04, -.1], rx: .077, rz: .058, v: LU(2), sh: .6 }, { c: [0, -.054, -.2], rx: .07, rz: .042, v: LU(3), sh: .52 }, { c: [0, -.066, -.252], rx: 0, v: LU(3.4), sh: .42 }],
-        { sides: 8, n: 2.5, layer: S, u0: 0, u1: .5, X: YZ.X, Z: YZ.Z });
-      loft(ft, [ring(0, -ANKLE, -.068, .084, .194, .5, 1.3), ring(0, -ANKLE + .034, -.068, .086, .196, .5, 1.8)], { sides: 10, n: 3.2, layer: D, cap0: true });
-      loft(ft, [ring(0, .03, .012, .094, .094, LU(0), .5), ring(0, .07, .008, .097, .097, LU(.4), .62)], { sides: 8, layer: S, u0: 0, u1: .5 });   // boot top cuff
+        { sides: LS, n: 2.5, layer: S, u0: 0, u1: .5, X: YZ.X, Z: YZ.Z });
+      loft(ft, [ring(0, -ANKLE, -.068, .084, .194, .5, 1.3), ring(0, -ANKLE + .034, -.068, .086, .196, .5, 1.8)], { sides: lod ? 8 : 10, n: 3.2, layer: D, cap0: true });
+      loft(ft, [ring(0, .03, .012, .094, .094, LU(0), .5), ring(0, .07, .008, .097, .097, LU(.4), .62)], { sides: LS, layer: S, u0: 0, u1: .5 });   // boot top cuff
       loft(ft, [{ c: [0, -.033, -.045], rx: .08, rz: .072 }, { c: [0, -.04, -.085], rx: .081, rz: .064 }], { sides: 4, n: 2.5, layer: D, X: YZ.X, Z: YZ.Z, a0: -.25, a1: PI + .25, shf: () => 1.7 });   // instep strap
+      // lugs: bars across the sole, and their ends showing as teeth along its edge
+      if (!lod) for (let k = 0; k < 5; k++) { const z = -.225 + k * .078, hw = .084 * Math.pow(1 - Math.pow(Math.abs(z + .068) / .194, 3.2), 1 / 3.2), y = -ANKLE, x = hw + .0035;
+        plate(ft, [-hw, y - .0005, z - .016], [hw, y - .0005, z - .016], [hw, y - .0005, z + .016], [-hw, y - .0005, z + .016], M, .8, 0);
+        for (const sg of [-1, 1]) plate(ft, [sg * x, y, z - .014], [sg * x, y, z + .014], [sg * x, y + .022, z + .014], [sg * x, y + .022, z - .014], M, .72, 0); }
       const thR = take(th), snR = take(sn), ftR = take(ft);
       add(THR, thR); add(SHR, snR); add(FTR, ftR); add(THL, mirror(thR)); add(SHL, mirror(snR)); add(FTL, mirror(ftR));
-      const pk = nb(); pk.box([-.122, -.2, .0], [.022, 0, 0], [0, .075, 0], [0, 0, .058], S, .8, 0);   // thigh pocket
+      const pk = nb(); pk.box([-.122, -.17, .0], [.022, 0, 0], [0, .068, 0], [0, 0, .058], S, .8, 0);   // thigh pocket and the edge of its flap
+      if (!lod) plate(pk, [-.1445, -.128, -.058], [-.1445, -.128, .058], [-.1445, -.135, .058], [-.1445, -.135, -.058], D, 1.5, 0);
       add(THL, take(pk)); }
+    if (typeof buildGun === 'function') for (const P of buildGun(lod)) parts.push(P);
+    return SUIT[lod] = parts;
+  }
+
+  /* ---- what tells one of the crew from another across the ice: the stripes round the thighs and the pack, as on the real suits, and the name on the chest.
+     crew 0 (the commander) wears one broad solid stripe, 1 none, 2 a broken stripe, 3 two narrow ones, 4 a diagonal barber's pole. Red on the suit, so dark on this film. ---- */
+  const MARKS = [[], []];
+  function buildMarks(crew, lod) {
+    if (MARKS[lod][crew]) return MARKS[lod][crew];
+    const parts = [], take = b => b.d.slice(0, b.n * 12), add = (bone, d) => { if (d.length) parts.push({ bone, d, d1: null, n: d.length / 12, kind: K_PLAIN, grp: 0 }); };
+    const D = TL.DARK, W = TL.WHITE, RED = 2.05, LS = lod ? 6 : 8, mode = crew;
+    // a stripe between heights y0 and y1 of a section. ringAt(y) -> { pts, c }: the points round it and its centre
+    const stripe = (b, ringAt, y0, y1) => { if (mode === 1) return;
+      for (const sp of mode === 3 ? [[y0, lerp(y0, y1, .32)], [lerp(y0, y1, .68), y1]] : [[y0, y1]]) { const A = ringAt(sp[0]), Bq = ringAt(sp[1]), n = A.pts.length - 1;
+        for (let i = 0; i < n; i++) { if (mode === 2 && (i & 1)) continue;
+          const q = mode === 4 ? [[A, i], [A, i + .5], [Bq, i + 1], [Bq, i + .5]] : [[A, i], [A, i + 1], [Bq, i + 1], [Bq, i]];
+          for (const k of [0, 1, 2, 0, 2, 3]) { const R = q[k][0], u = q[k][1], i0 = Math.floor(u), f = u - i0, p = f ? V3.lerp(R.pts[i0], R.pts[i0 + 1], f) : R.pts[i0]; b.v(p, UVD[0], UVD[1], D, V3.norm(V3.sub(p, R.c)), RED, 0); } } } };
+    // thighs, above the knee
+    { const b = makeBatch(200), TH = P_TH(lod); stripe(b, y => { const r = radAt(TH, y) + .004, pts = []; for (let i = 0; i <= LS; i++) { const t = (i % LS) / LS * TAU; pts.push([r * Math.cos(t), y, r * TH_KZ * Math.sin(t)]); } return { pts, c: [0, y, 0] }; }, -.26, -.306);
+      const d = take(b); add(THR, d); add(THL, mirror(d)); }
+    // the pack: across the top of it and across the oxygen pack below, round the back and both sides
+    { const b = makeBatch(400), box = (rx, rz, zc) => y => { const a = .76, e = .978, nS = lod ? 1 : 2, nB = lod ? 2 : 4, pts = [], run = (x0, z0, x1, z1, n) => { for (let i = 0; i < n; i++) pts.push([lerp(x0, x1, i / n), y, zc + lerp(z0, z1, i / n)]); };
+        run(e * rx, -a * rz, e * rx, a * rz, nS); run(e * rx, a * rz, a * rx, e * rz, 1); run(a * rx, e * rz, -a * rx, e * rz, nB); run(-a * rx, e * rz, -e * rx, a * rz, 1); run(-e * rx, a * rz, -e * rx, -a * rz, nS); pts.push([-e * rx, y, zc - a * rz]); return { pts, c: [0, y, zc] }; };
+      stripe(b, box(.204, .082, .276), .737, .687); if (lod) stripe(b, box(.259, .104, .262), .03, -.02); else stripe(b, box(.244, .098, .262), .03, -.02);
+      // the name tag on the left breast: a white strip with a dark edge, and a mark for each letter of the name
+      const X0 = -.1, Y0 = .396, w = .088, h = .03, at = (x, y, lift) => { const X = X0 - x, Y = Y0 + y; return [X, Y, chestZ(X, Y) - lift]; }, q = (x0, x1, y0, y1, lift, l, sh) => plate(b, at(x0, y1, lift), at(x1, y1, lift), at(x1, y0, lift), at(x0, y0, lift), l, sh, 0);
+      if (!lod) for (let i = 0; i < 2; i++) q((i - 1) * (w / 2 + .004), i * (w / 2 + .004), -h / 2 - .004, h / 2 + .004, .0045, D, 1.4);
+      for (let i = 0; i < 2; i++) q((i - 1) * w / 2, i * w / 2, -h / 2, h / 2, .0055, W, 1);
+      if (!lod) { const nm = CREW[crew].name, n = nm.length, cell = (w - .012) / n; for (let k = 0; k < n; k++) { const x = -w / 2 + .006 + cell * k, c = nm.charCodeAt(k), wd = cell * (.5 + .08 * (c % 5)), ht = .008 + .0014 * (c % 3); q(x, x + wd, -ht / 2, ht / 2, .0062, D, 1.5); } }
+      add(TOR, take(b)); }
+    return MARKS[lod][crew] = parts;
   }
 
   /* ------------------------------------------------------------------ rig ------------------------------------------------------------------ */
   function mkFoot() { return { a0: 0, x: 0, y: 0, z: 0, yaw: 0, sp: 0, sw: false, u0: 0, w: 0, fx: 0, fy: 0, fz: 0, fyaw: 0, fsp: 0, tx: 0, ty: 0, tz: 0, tyaw: 0, tsp: 0, cx: 0, cy: 0, cz: 0, cyaw: 0, csp: 0, pitch: 0, q: 0 }; }
+  const AT_REST = k => k === K_PLAIN || k === K_FACE || k === K_HANDR || k === K_HANDL || k === K_STRAP0 || k === K_PISTOL;
+  const partsOf = (crew, lod) => buildSuit(lod).concat(buildMarks(crew, lod), buildHead(crew, lod));
   function create(crewIndex, seed) {
-    build();
+    const crew = ((crewIndex | 0) % 5 + 5) % 5, bd = CREW[crew].build;
     const r = rng((seed | 0) * 31 + 7), rig = {
-      crew: ((crewIndex | 0) % 5 + 5) % 5, seed: seed | 0, M: new Float32Array(NB * 12), N: new Float32Array(NB * 9), tris: 0,
+      crew, seed: seed | 0, M: new Float32Array(NB * 12), N: new Float32Array(NB * 9), tris: 0, parts: [partsOf(crew, 0), null],
+      sc: bd[0], kS: bd[1], kG: bd[2], kL: bd[3],
       x: 0, z: 0, hd: 0, ready: false, dup: false, hop: 0, fw: 1, sd: 0, t: r() * 40, v: 0, ga: 0, gait: false, still: 0, phase: 0, mvx: 0, mvz: -1, py: 0,
-      feet: [mkFoot(), mkFoot()], down: 0, open: 0, mouth: 0, faceLayer: TL.FACE, hd0: 0, om: 0, headOff: 0, hy: 0, snap: true,
+      feet: [mkFoot(), mkFoot()], down: 0, open: 0, jaw: 0, innerOn: false, hd0: 0, om: 0, headOff: 0, hy: 0, snap: true,
       side: r() < .5 ? -1 : 1, tilt: .2 + r() * .1, p1: r() * TAU, p2: r() * TAU, p3: r() * TAU, toe: (r() - .5) * .1,
-      rnd: rng((seed | 0) * 977 + 13), twT: 1.5 + r() * 4, twL: 0, twK: 0, twS: 1 };
-    for (const P of PARTS) rig.tris += P.n / 3;
+      rnd: rng((seed | 0) * 977 + 13), twT: 1.5 + r() * 4, twL: 0, twK: 0, twS: 1,
+      gd: 0, gaim: 0, aimY: 0, aimP: 0, fire: 0, kick: 0, shot: false, flashA: r() * TAU, gripR: false, gripL: false, holst: true, muz: [0, 0, 0, 0, 0, -1], st: null, xf: new Float32Array(12), hide: 0, clay: false, calm: false,
+      gs: new Float32Array(8), gArm: 1, ptY: 0, fear: 0, hurt: 0, lkT: 0, lkH: 0, lkE: 0, lkP: 0, glT: 2 + r() * 3, glL: 0, glS: 1, acc: 0, trn: 0, stl: 0, two: 0 };
+    for (const P of rig.parts[0]) if (AT_REST(P.kind)) rig.tris += P.n / 3;
     place(rig, 0, 0, 0, flat); solve(rig, flat, 0);
     return rig;
   }
@@ -3239,19 +3811,44 @@ const ASTRO = (() => {
   function place(rig, x, z, hd, g) {
     rig.x = x; rig.z = z; rig.hd = hd; rig.ready = true; rig.hd0 = hd; rig.om = 0; rig.headOff = 0; rig.snap = true; rig.mvx = Math.sin(hd); rig.mvz = -Math.cos(hd); rig.fw = 1; rig.sd = 0; rig.still = 0;
     const rx = Math.cos(hd), rz = Math.sin(hd);
-    for (let i = 0; i < 2; i++) { const f = rig.feet[i], sg = i ? 1 : -1; f.x = x + rx * sg * WIDTH; f.z = z + rz * sg * WIDTH; f.y = g(f.x, f.z); f.yaw = hd + sg * (.1 + rig.toe * sg); f.sp = slopeAt(g, f.x, f.z, f.yaw); f.sw = false; f.w = 0; f.pitch = 0; f.q = .5;
+    for (let i = 0; i < 2; i++) { const f = rig.feet[i], sg = i ? 1 : -1; f.x = x + rx * sg * WIDTH * rig.sc; f.z = z + rz * sg * WIDTH * rig.sc; f.y = g(f.x, f.z); f.yaw = hd + sg * (.1 + rig.toe * sg); f.sp = slopeAt(g, f.x, f.z, f.yaw); f.sw = false; f.w = 0; f.pitch = 0; f.q = .5;
       f.cx = f.x; f.cy = f.y; f.cz = f.z; f.cyaw = f.yaw; f.csp = f.sp; }
     rig.py = .5 * (rig.feet[0].y + rig.feet[1].y);
   }
   function pose(rig, s, groundY) {
-    const g = groundY || flat; rig.dup = !!s.dup; place(rig, +s.x || 0, +s.z || 0, +s.heading || 0, g);
+    const g = groundY || flat; rig.dup = !!s.dup; rig.st = s; place(rig, +s.x || 0, +s.z || 0, +s.heading || 0, g);
     rig.v = 0; rig.ga = 0; rig.gait = false; rig.phase = 0; rig.hop = 0; rig.down = s.stun > 0 ? 1 : 0; rig.open = clamp(+s.open || 0, 0, 1); rig.twL = 0;
+    { const gw = gunWanted(s); rig.gd = gw > 0 ? 1 : 0; rig.gaim = gw > 1 ? 1 : 0; const a = aimOf(s, rig.hd); rig.aimY = gw > 1 ? a[0] : 0; rig.aimP = gw > 1 ? a[1] : 0; rig.fire = gw > 0 ? clamp(+s.fire || 0, 0, 1) : 0; rig.kick = rig.fire; }
+    manner(rig, s, rig.hd, 0, true);
     solve(rig, g, 0);
   }
 
+    // what the state asks of the pistol: 0 holstered, 1 low ready, 2 aiming. On hands and knees it stays where it is safe
+  const gunWanted = s => s.stun > 0 ? 0 : clamp(Math.round(+s.gun || 0), 0, 2);
+  const AIM_MAX = 1.75;
+  const aimOf = (s, hd) => [clamp(wrapPi((Number.isFinite(+s.aim) ? +s.aim : hd) - hd), -AIM_MAX, AIM_MAX), clamp(+s.aimPitch || 0, -.9, .9)];
+  /* Body language. s.gest: 'wave' | 'beckon' | 'point' (toward world yaw s.pointYaw) | 'halt' | 'down' (sat slumped against something) | 'kneel' (on one knee, working at
+     something about 0.9 m up) | 'check' (reads the panel on the left wrist) | null. s.lookYaw (world), s.lookPitch: where to look; the head leads, the helmet follows, the
+     shoulders come a part of the way. s.fear, s.hurt 0..1. Everything is eased in and out here, so the caller only sets and clears. */
+  const GEST = { wave: 1, beckon: 2, point: 3, halt: 4, down: 5, kneel: 6, check: 7 };
+  function manner(rig, s, hd, dt, snap) {
+    const gk = s.stun > 0 || rig.dup ? 0 : GEST[s.gest] | 0, gs = rig.gs, ea = (tau) => snap ? 1 : damp(dt, tau), fin = Number.isFinite;
+    const ptY = wrapPi((fin(+s.pointYaw) ? +s.pointYaw : hd) - hd), was = gs[1] + gs[2] + gs[3] + gs[4] + gs[7];
+    if (was < .04 || snap) rig.gArm = gk === 7 || rig.gd > .05 || (gk === 3 && ptY < -.35) ? 0 : 1;   // the right arm, unless it has the pistol, or the wrist panel or the thing pointed at is on the left
+    let arms = 0; for (let i = 1; i < 8; i++) { const T = i === 5 || i === 6 ? .5 : .42; gs[i] = snap ? (i === gk ? 1 : 0) : clamp(gs[i] + (i === gk ? dt : -dt) / T, 0, 1); if (i < 5 || i === 7) arms += gs[i]; }
+    if (gk === 3) rig.ptY += (clamp(ptY, -2.2, 2.2) - rig.ptY) * ea(.14);
+    rig.fear += (clamp(+s.fear || 0, 0, 1) - rig.fear) * ea(.35); rig.hurt += (clamp(+s.hurt || 0, 0, 1) - rig.hurt) * ea(.4);
+    rig.two += ((rig.fear > .4 ? 1 : 0) - rig.two) * ea(.18);   // the pistol at low ready: in one hand by the leg, or in both when frightened
+    // glances over the shoulder when frightened: sooner and more often the more frightened
+    if (dt > 0) { if (rig.glL > 0) rig.glL -= dt; else if ((rig.glT -= dt * (.15 + rig.fear)) <= 0) { const r = rig.rnd; rig.glT = 1.1 + r() * 1.6; rig.glL = .55 + r() * .5; rig.glS = r() < .5 ? -1 : 1; } }
+    let rel = fin(+s.lookYaw) ? clamp(wrapPi(+s.lookYaw - hd), -1.9, 1.9) : 0; const pit = clamp(+s.lookPitch || 0, -.7, .7);
+    if (rig.glL > 0 && rig.fear > .15 && !rig.dup) rel = clamp(rel + rig.glS * (1.1 + .6 * rig.fear), -1.9, 1.9);
+    // shoulders slowest and least, helmet next, the head inside quickest: each takes what the ones before it have left
+    const qk = 1 + .8 * rig.fear; rig.lkT += (clamp(rel * .36, -.5, .5) - rig.lkT) * ea(.34 / qk); rig.lkH += (clamp(rel - rig.lkT, -.62, .62) - rig.lkH) * ea(.15 / qk); rig.lkE += (clamp(rel - rig.lkT - rig.lkH, -.55, .55) - rig.lkE) * ea(.07 / qk); rig.lkP += (pit - rig.lkP) * ea(.12);
+  }
   const GP = { width: .125, fwd: 1, fw: 1, L: 1, d: .6, S: .4, lf: .5, lope: 0, lift: .06, pOff: .3, pHeel: .1, bobW: 0, bobL: 0, lat: 0, yaw: 0, roll: 0, hip: HIP_Y };
   // fw: how much of the travel is forward (1) or backward (-1); sd: how much is sideways (0..1)
-  function gaitParams(v, dup, fw, sd) {
+  function gaitParams(v, dup, fw, sd, sc, fear, hurt) {
     const o = GP;
     if (dup) { // an earthbound three-steps-a-second cadence on locked knees and flat feet: it does not move like something that weighs an eighth of what it should
       const f = Math.min(3.3, 1.6 + .55 * v); o.L = Math.max(.45, 2 * v / f); o.S = Math.min(.52, .32 + .22 * v); o.d = clamp(o.S / o.L, .12, .58); o.S = o.d * o.L;
@@ -3263,9 +3860,11 @@ const ASTRO = (() => {
       const tf = v > .1 ? Math.max(0, .5 - o.d) * o.L / v : 0;      // time in the air per step; the hop it allows under Callisto gravity, drawn a little large
       o.bobW = .016 * (1 - o.lope); o.bobL = -Math.min(.1, .016 + 1.235 * tf * tf / 16 * 2.6) * o.lope; o.lat = lerp(.03, .012, o.lope); o.yaw = lerp(.1, .16, o.lope); o.roll = .035; o.hip = HIP_Y - lerp(.022, .045, o.lope);
     }
+    if (!dup && (fear > 0 || hurt > 0)) { const q = (1 - .27 * fear) * (1 - .16 * hurt); o.L *= q; o.S *= q; o.lift *= 1 - .25 * fear - .3 * hurt; o.bobL *= 1 - .3 * fear - .3 * hurt; o.hip -= .018 * fear; }   // frightened or hurt: shorter, quicker, lower
     // backing up and side-stepping: shorter, quicker, flatter steps, and a wider stance so side-steps do not cross
     const fwd = Math.max(0, fw), k = (1 - .3 * Math.max(0, -fw)) * lerp(1, Math.min(1, .34 / o.S), sd * sd);
     o.L *= k; o.S *= k; o.pOff *= fwd; o.pHeel *= fwd; o.lift *= .55 + .45 * fwd; o.bobL *= .4 + .6 * fwd; o.width = lerp(lerp(WIDTH, .085, o.lope * fwd), .19, sd * sd); o.fwd = fwd; o.fw = fw;
+    if (sc !== 1) { o.L *= sc; o.S *= sc; o.lift *= sc; o.bobW *= sc; o.bobL *= sc; o.lat *= sc; o.width *= sc; o.hip *= sc; }   // a taller figure takes longer steps
     return o;
   }
   const EA = .28, ease = w => w < EA ? w * w / (2 * EA * (1 - EA)) : w > 1 - EA ? 1 - (1 - w) * (1 - w) / (2 * EA * (1 - EA)) : (w - EA / 2) / (1 - EA);   // quick pick-up, steady carry, quick set-down
@@ -3274,22 +3873,36 @@ const ASTRO = (() => {
 
   function update(rig, s, dt, groundY) {
     if (!(dt > 0)) dt = 0; else if (dt > .1) dt = .1;
+    rig.st = s;
     const g = groundY || flat, hd = +s.heading || 0, sx = +s.x || 0, sz = +s.z || 0, dup = !!s.dup;
     let dx = sx - rig.x, dz = sz - rig.z, dist = Math.hypot(dx, dz);
     if (!rig.ready || dist > .5 + 9 * dt) { place(rig, sx, sz, hd, g); dist = 0; }
     rig.dup = dup; rig.x = sx; rig.z = sz; rig.hd = hd; rig.t += dt;
     rig.open = clamp(+s.open || 0, 0, 1);
     const stunned = s.stun > 0;
+    // the pistol: out of the holster in about a third of a second, up to the aim in a quarter; down and away the same
+    { const gw = gunWanted(s), a = aimOf(s, hd);
+      if (dt > 0) { if (gw > 0) rig.gd = Math.min(1, rig.gd + dt / .32); else if (rig.gaim < .3) rig.gd = Math.max(0, rig.gd - dt / (stunned ? .16 : .32));
+        rig.gaim = clamp(rig.gaim + (gw > 1 && rig.gd > .75 ? dt : -dt) / .24, 0, 1);
+        if (gw > 1) { const kd = rig.gaim > 0 ? damp(dt, .07) : 1; rig.aimY += (a[0] - rig.aimY) * kd; rig.aimP += (a[1] - rig.aimP) * kd; } else if (rig.gaim <= 0) { rig.aimY = 0; rig.aimP = 0; }
+        const f = rig.gd >= 1 ? clamp(+s.fire || 0, 0, 1) : 0; if (f > .02 && !rig.shot) rig.flashA += 2.399963; rig.shot = f > .02;   // every shot's flash is turned differently
+        rig.fire = f; rig.kick = Math.max(f, rig.kick - dt / .1); } }
     rig.down = clamp(rig.down + (stunned ? dt / .5 : -dt / 1.25), 0, 1);
+    if (dt > 0) manner(rig, s, hd, dt, false);
+    const v0 = rig.v;
     // how fast it means to go, and which way it is actually going
     let vT = s.active && !stunned ? clamp(+s.speed || 0, 0, 7) : 0;
     if (dt > 0) { const ve = dist / dt; if (ve > vT + .4) vT = Math.min(ve, 7); rig.still = dist < 1e-5 ? rig.still + dt : 0; if (rig.still > .25) vT = 0; rig.v += (vT - rig.v) * damp(dt, .15); }
     if (dist > 1e-5) { const k = Math.max(damp(dt, .07), .25); let mx = lerp(rig.mvx, dx / dist, k), mz = lerp(rig.mvz, dz / dist, k); const l = Math.hypot(mx, mz); if (l > 1e-4) { rig.mvx = mx / l; rig.mvz = mz / l; } else { rig.mvx = dx / dist; rig.mvz = dz / dist; } }
     { const fx = Math.sin(hd), fz = -Math.cos(hd), kd = damp(dt, .12); rig.fw += (rig.mvx * fx + rig.mvz * fz - rig.fw) * kd; rig.sd += (Math.abs(rig.mvx * -fz + rig.mvz * fx) - rig.sd) * kd; }
-    const v = rig.v, gp = gaitParams(v, dup, rig.fw, rig.sd), fL = rig.feet[0], fR = rig.feet[1];
+    const v = rig.v, gp = gaitParams(v, dup, rig.fw, rig.sd, rig.sc, rig.fear, rig.hurt), fL = rig.feet[0], fR = rig.feet[1];
+    // what the body has to lean against: the change of speed and the rate of turn, both from one update to the next
+    if (dt > 0) { rig.acc += (clamp((v - v0) / dt, -6, 6) - rig.acc) * damp(dt, .22); rig.trn += (clamp(wrapPi(hd - rig.hd0) / dt, -4, 4) - rig.trn) * damp(dt, .25); }
     const gait = rig.gait ? v > .08 : v > .15;
     if (gait && !rig.gait) { // set off with whichever foot is further back
       const pl = (fL.x - sx) * rig.mvx + (fL.z - sz) * rig.mvz, pr = (fR.x - sx) * rig.mvx + (fR.z - sz) * rig.mvz; rig.phase = frac(gp.d + (pl <= pr ? 0 : .5) + 1e-3); }
+    if (!gait && rig.gait && !dup) rig.stl = 1;   // it has just stopped: the weight comes forward over the feet and settles back
+    if (rig.stl > 0) rig.stl = Math.max(0, rig.stl - dt / 1.1);
     rig.gait = gait;
     if (gait) rig.phase = frac(rig.phase + dist / gp.L);
     rig.ga += ((gait ? 1 : 0) - rig.ga) * damp(dt, .16);
@@ -3304,7 +3917,7 @@ const ASTRO = (() => {
     for (let i = 0; i < 2; i++) { const f = rig.feet[i], o = rig.feet[1 - i], sg = i ? 1 : -1, toe = .1 + rig.toe * sg + (dup ? (sg * rig.side > 0 ? -.3 : .16) : 0);
       let pT = 0;
       if (gait && !kneel) {
-        let ph = frac(rig.phase + i * .5); if (dup) ph = frac(ph + .03 * rig.side * Math.sin(TAU * rig.phase));
+        let ph = frac(rig.phase + i * .5); if (dup) ph = frac(ph + .03 * rig.side * Math.sin(TAU * rig.phase)); else if (rig.hurt > .01) ph = frac(ph + .055 * rig.hurt * Math.sin(TAU * (rig.phase - .08)));   // a limp: off the bad (left) leg as soon as may be
         const d = gp.d, want = ph >= d;
         if (!f.sw && want && ph < .96) startSwing(f, (ph - d) / (1 - d), (f.x - sx) * rig.mvx + (f.z - sz) * rig.mvz);
         if (f.sw) { const u = want ? (ph - d) / (1 - d) : 1; f.w = Math.max(f.w, clamp((u - f.u0) / (1 - f.u0), 0, 1));
@@ -3313,7 +3926,7 @@ const ASTRO = (() => {
           pT = lerp(gp.pOff, -gp.pHeel, sstep(.1, .85, f.w));
         } else { f.q = ph / d; pT = f.q < .16 ? -gp.pHeel * (1 - f.q / .16) : f.q > .55 ? gp.pOff * Math.pow((f.q - .55) / .45, 1.6) : 0; }
       } else {
-        const st = rig.side * sg * .012, hx = sx + rx * sg * WIDTH + fxh * st, hz = sz + rz * sg * WIDTH + fzh * st, hyaw = hd + sg * toe;
+        const st = rig.side * sg * .012, hx = sx + rx * sg * WIDTH * rig.sc + fxh * st, hz = sz + rz * sg * WIDTH * rig.sc + fzh * st, hyaw = hd + sg * toe;
         if (f.sw) { f.w = Math.min(1, f.w + dt / (dup ? .42 : .3)); f.tx = hx; f.tz = hz; f.tyaw = hyaw; pT = .12 * Math.sin(PI * f.w); }
         else { const e = Math.hypot(f.x - hx, f.z - hz); if (kneel ? e > .3 : (!o.sw && (e > .11 || Math.abs(wrapPi(f.yaw - hyaw)) > .5))) { startSwing(f, 0); f.tx = hx; f.tz = hz; f.tyaw = hyaw; if (kneel) f.w = 1; } }
       }
@@ -3335,19 +3948,22 @@ const ASTRO = (() => {
   const setBone = (rig, i, R, T, sx, sy, sz) => { const M = rig.M, N = rig.N, o = i * 12, p = i * 9; sx = sx || 1; sy = sy || 1; sz = sz || 1;
     M[o] = R[0] * sx; M[o + 1] = R[1] * sx; M[o + 2] = R[2] * sx; M[o + 3] = R[3] * sy; M[o + 4] = R[4] * sy; M[o + 5] = R[5] * sy; M[o + 6] = R[6] * sz; M[o + 7] = R[7] * sz; M[o + 8] = R[8] * sz; M[o + 9] = T[0]; M[o + 10] = T[1]; M[o + 11] = T[2];
     for (let k = 0; k < 9; k++) N[p + k] = R[k]; };
+  const boneAt = (rig, i, v) => { const M = rig.M, o = i * 12; return [M[o] * v[0] + M[o + 3] * v[1] + M[o + 6] * v[2] + M[o + 9], M[o + 1] * v[0] + M[o + 4] * v[1] + M[o + 7] * v[2] + M[o + 10], M[o + 2] * v[0] + M[o + 5] * v[1] + M[o + 8] * v[2] + M[o + 11]]; };
   // ankle position and boot orientation for a foot's current placement
-  function footFrame(f, extraPitch) {
+  function footFrame(rig, f, extraPitch) {
+    const sc = rig.sc, BL = BALL * sc, HL = HEEL * sc, AK = ANKLE * sc;
     const p = f.pitch + extraPitch, R = mm(rY(-f.cyaw), rX(f.csp - p)), fx = Math.sin(f.cyaw), fz = -Math.cos(f.cyaw), ts = Math.tan(f.csp);
-    const piv = p >= 0 ? [f.cx + fx * BALL, f.cy + ts * BALL, f.cz + fz * BALL] : [f.cx - fx * HEEL, f.cy - ts * HEEL, f.cz - fz * HEEL];
-    return { R, A: V3.add(piv, mv(R, p >= 0 ? [0, ANKLE, BALL] : [0, ANKLE, -HEEL])) };
+    const piv = p >= 0 ? [f.cx + fx * BL, f.cy + ts * BL, f.cz + fz * BL] : [f.cx - fx * HL, f.cy - ts * HL, f.cz - fz * HL];
+    return { R, A: V3.add(piv, mv(R, p >= 0 ? [0, AK, BL] : [0, AK, -HL])) };
   }
 
   // everything from the state to the bone matrices
   function solve(rig, g, dt) {
-    const dup = rig.dup, t = rig.t, hd = rig.hd, v = rig.v, gp = gaitParams(v, dup, rig.fw, rig.sd), ga = rig.ga, fL = rig.feet[0], fR = rig.feet[1];
+    const sc = rig.sc, kL = rig.kL, dup = rig.dup, t = rig.t, hd = rig.hd, v = rig.v, gp = gaitParams(v, dup, rig.fw, rig.sd, sc, rig.fear, rig.hurt), ga = rig.ga, fL = rig.feet[0], fR = rig.feet[1];
     const k = sstep(0, 1, rig.down), o1 = sstep(0, .5, rig.open), o2 = sstep(.5, 1, rig.open), live = dup ? 0 : 1;
     const H = rY(-hd), Rv = col(H, 0), Bv = col(H, 2), Fv = [-Bv[0], 0, -Bv[2]];
     const tw = dup && rig.twL > 0 ? rig.twS : 0, twK = rig.twK;
+    const gdr = rig.gd * (1 - k), aim = sstep(0, 1, rig.gaim) * (1 - k), aTor = clamp(rig.aimY * .55, -.8, .8) * aim;   // how much of the aim the shoulders take
     // ---- pelvis
     const th = TAU * (rig.phase - gp.d * gp.lf), c1 = Math.cos(th), s1 = Math.sin(th);
     let bob = ga * (gp.bobW * Math.cos(2 * th) - gp.bobL * (1.6 - 2 * Math.abs(c1 * c1 * c1)));   // walking vaults over the planted leg; the lope dips a little in contact and floats well above it
@@ -3356,22 +3972,40 @@ const ASTRO = (() => {
     let px = 0, pz = 0;   // pelvis offset in body space (right, back)
     if (dup) { // stands like a plank, swaying from the ankles
       const a = (.011 * Math.sin(t * .83 + rig.p1) + .006 * Math.sin(t * .31 + rig.p2)) * (1 - .6 * ga), b = (.009 * Math.sin(t * .67 + rig.p2) + .005 * Math.sin(t * .23 + rig.p3)) * (1 - .6 * ga);
-      lat += a * HIP_Y; rollP -= a; rollT -= a + .03 * rig.side; pz -= b * HIP_Y; pitchP += b; leanT += b;
+      lat += a * HIP_Y * sc; rollP -= a; rollT -= a + .03 * rig.side; pz -= b * HIP_Y * sc; pitchP += b; leanT += b;
     } else { // breathes, shifts its weight
       const br = Math.sin(t * 1.5 + rig.p1); lat += .012 * Math.sin(t * .37 + rig.p2) * (1 - ga); leanT += .008 * br; bob += .003 * br * (1 - ga); rollT += .012 * Math.sin(t * .37 + rig.p2) * (1 - ga); }
-    leanT += .2 * o2 + .06 * o1;
+    leanT += .2 * o2 + .06 * o1 + .05 * aim;
+    // ---- manner: what the body does besides getting from one place to another
+    const fear = rig.fear, hurt = rig.hurt, gs = rig.gs, wSit = sstep(0, 1, gs[5]) * (1 - k), wKn = sstep(0, 1, gs[6]) * (1 - k), low = Math.max(wSit, wKn), qS = low > 0 ? wSit / (wSit + wKn) : 0;
+    if (!dup) {
+      yawT += .035 * Math.sin(t * .19 + rig.p3) * (1 - ga);                                                                              // standing: the shoulders drift about
+      leanT += clamp(rig.acc * .045, -.11, .15) + .13 * fear; rollT -= clamp(rig.trn * (.05 + .035 * v), -.15, .15); yawP -= clamp(rig.trn * .05, -.12, .12);   // into the acceleration and into the turn; hunched when afraid
+      if (rig.stl > 0) { const e = 1 - rig.stl, a = rig.stl * rig.stl; leanT += .1 * Math.sin(e * 5.2) * a; bob -= .035 * sc * Math.sin(e * PI) * a; lat += rig.side * .02 * sc * Math.sin(e * PI) * a; }   // the stop: forward over the feet, down, and back
+      bob -= .022 * sc * fear;
+      if (hurt > 0) { const on = Math.max(0, c1); rollT += hurt * (.1 * on * ga + .03); bob -= hurt * sc * .035 * on * ga; lat += hurt * sc * .02 * (1 - ga); leanT += .06 * hurt; }                 // down onto the bad leg, and off it quickly
+      yawT -= rig.lkT + clamp(rig.ptY * .3, -.45, .45) * sstep(0, 1, gs[3]); yawP -= .25 * rig.lkT;
+    }
+    yawT *= 1 - .6 * gdr; yawT -= aTor; yawP -= .18 * aTor;
     pz += .05 * Math.sin(leanT);
     if (tw && twK === 2) { rollT += .13 * tw; yawT += .1 * tw; }
     // kneeling target: knees on the ground ahead of the feet, hips low between them
     const mx = .5 * (fL.cx + fR.cx), mz = .5 * (fL.cz + fR.cz);
     let P = [rig.x + Rv[0] * (lat + px) + Bv[0] * pz, rig.py + gp.hip + bob, rig.z + Rv[2] * (lat + px) + Bv[2] * pz];
-    if (k > 0) { const kf = sstep(0, .7, rig.down); const K = [mx + Fv[0] * .285, .5 * (fL.cy + fR.cy) + .39, mz + Fv[2] * .285];
+    if (k > 0) { const kf = sstep(0, .7, rig.down); const K = [mx + Fv[0] * .285 * sc, .5 * (fL.cy + fR.cy) + .39 * sc, mz + Fv[2] * .285 * sc];
       P = [lerp(P[0], K[0], kf), lerp(P[1], K[1], k), lerp(P[2], K[2], kf)]; pitchP = lerp(pitchP, .3, k); leanT = lerp(leanT, .95 + (dup ? .1 : 0), k); rollT = lerp(rollT, .09 * rig.side, k); yawT *= 1 - k; rollP *= 1 - k; yawP *= 1 - k; }
+    // sat on the ground with the back against something, or down on the right knee
+    if (low > 0) { const gy = g(rig.x, rig.z), b = (1 - qS) * .03 * sc, br = Math.sin(t * 1.1 + rig.p1);
+      P = V3.lerp(P, [rig.x - Fv[0] * b, gy + lerp(.5, .15, qS) * sc, rig.z - Fv[2] * b], low); pitchP = lerp(pitchP, lerp(.08, -.42, qS), low); leanT = lerp(leanT, lerp(.2, -.3 + .02 * br, qS), low);
+      rollT = lerp(rollT, .07 * rig.side * qS, low); yawT = lerp(yawT, -rig.lkT * .5, low * .7); rollP *= 1 - low; yawP *= 1 - low; }
     const pelR = mm(H, mm(rY(yawP), mm(rZ(rollP), rX(-pitchP))));
     // ---- legs. The hips come down as far as the planted feet need, never the feet up
-    const ff = [footFrame(fL, 1.25 * k), footFrame(fR, 1.25 * k)], hipL = mv(pelR, [-HIP_X, 0, 0]), hipR = mv(pelR, [HIP_X, 0, 0]), hips = [hipL, hipR];
-    { let top = 1e9; const rr = LEG * .992; for (let i = 0; i < 2; i++) { const f = rig.feet[i], A = ff[i].A;
-        if (f.sw) { const ld = rig.gait ? gp.S * gp.lf : 0, room = Math.sqrt(Math.max(.04, rr * rr - ld * ld - .01)); top = Math.min(top, f.ty + ANKLE + room + .6 * (1 - sstep(.8, 1, f.w))); }
+    const ff = [footFrame(rig, fL, 1.25 * k), footFrame(rig, fR, 1.25 * k)], hipL = mv(pelR, [-HIP_X * sc, 0, 0]), hipR = mv(pelR, [HIP_X * sc, 0, 0]), hips = [hipL, hipR], Lt = THIGH * sc, Ls = SHIN * sc;
+    if (low > 0) for (let i = 0; i < 2; i++) { const sg = i ? 1 : -1;   // sat: the left leg out straight with the toe up, the right knee drawn up. On one knee: right knee and toe on the ground, left foot flat in front
+      const f = lerp(i ? -.37 : .33, i ? .5 : .73, qS) * sc, sd = lerp(i ? .12 : -.15, i ? .17 : -.15, qS) * sc, ax = rig.x + Fv[0] * f + Rv[0] * sd, az = rig.z + Fv[2] * f + Rv[2] * sd;
+      const Rt = mm(rY(-(hd + sg * .2 * qS)), rX(lerp(i ? -1.25 : 0, i ? 0 : 1.1, qS))); ff[i] = { R: mixR(ff[i].R, Rt, low), A: V3.lerp(ff[i].A, [ax, g(ax, az) + lerp(i ? .085 : ANKLE, i ? ANKLE : .1, qS) * sc, az], low) }; }
+    { let top = 1e9; const rr = LEG * sc * .992; for (let i = 0; i < 2; i++) { const f = rig.feet[i], A = ff[i].A;
+        if (f.sw) { const ld = rig.gait ? gp.S * gp.lf : 0, room = Math.sqrt(Math.max(.04, rr * rr - ld * ld - .01)); top = Math.min(top, f.ty + ANKLE * sc + room + .6 * (1 - sstep(.8, 1, f.w))); }
         else { const hx = P[0] + hips[i][0] - A[0], hz = P[2] + hips[i][2] - A[2]; top = Math.min(top, A[1] + Math.sqrt(Math.max(.04, rr * rr - hx * hx - hz * hz)) - hips[i][1]); } }
       if (P[1] > top) P[1] = top;
       if (rig.snap || P[1] < rig.hy) rig.hy = P[1]; else rig.hy += (P[1] - rig.hy) * damp(dt, .06);   // down at once when a planted leg needs it, eased back up
@@ -3379,66 +4013,124 @@ const ASTRO = (() => {
     const legs = [];
     for (let pass = 0; pass < 2; pass++) { let lift = 0; legs.length = 0;
       for (let i = 0; i < 2; i++) { const sg = i ? 1 : -1, f = rig.feet[i], A = ff[i].A, hip = V3.add(P, hips[i]);
-        const pole = V3.norm([Fv[0] + Math.sin(f.cyaw) + Rv[0] * sg * .22, .1 - .5 * k, Fv[2] - Math.cos(f.cyaw) + Rv[2] * sg * .22]);
-        const kn = ik2(hip, A, THIGH, SHIN, pole); legs.push([hip, kn, A]);
-        if (k > 0) lift = Math.max(lift, g(kn[0], kn[2]) + .088 - kn[1]); }
+        let pole = V3.norm([Fv[0] + Math.sin(f.cyaw) + Rv[0] * sg * .22, .1 - .5 * k, Fv[2] - Math.cos(f.cyaw) + Rv[2] * sg * .22]);
+        if (low > 0) pole = V3.norm(V3.lerp(pole, qS > .5 ? [Fv[0] * .2, 1, Fv[2] * .2] : i ? [Fv[0] * .7, -.7, Fv[2] * .7] : [Fv[0], .5, Fv[2]], low));
+        const kn = ik2(hip, A, Lt, Ls, pole); legs.push([hip, kn, A]);
+        if (k > 0) lift = Math.max(lift, g(kn[0], kn[2]) + .088 * sc * kL - kn[1]); }
       if (!(k > 0 && lift > 1e-4 && pass === 0)) break; P[1] += lift; }
-    for (let i = 0; i < 2; i++) { const [hip, kn, A] = legs[i], sg = i ? 1 : -1, yT = V3.norm(V3.sub(hip, kn)), sd = V3.norm(V3.sub(A, kn)), an = V3.mad(kn, sd, SHIN);
-      const back = V3.add(V3.mul(col(pelR, 2), .12), V3.sub(sd, V3.mul(yT, V3.dot(sd, yT)))), Rt = fromYZ(yT, back), Rs = fromXY(col(Rt, 0), V3.mul(sd, -1));
-      setBone(rig, i ? THR : THL, Rt, hip); setBone(rig, i ? SHR : SHL, Rs, kn); setBone(rig, i ? FTR : FTL, ff[i].R, an); }
-    setBone(rig, PEL, pelR, P);
+    let thR = null;
+    for (let i = 0; i < 2; i++) { const [hip, kn, A] = legs[i], yT = V3.norm(V3.sub(hip, kn)), sd = V3.norm(V3.sub(A, kn)), an = V3.mad(kn, sd, Ls);
+      const back = V3.add(V3.mul(col(pelR, 2), .12), V3.sub(sd, V3.mul(yT, V3.dot(sd, yT)))), Rt = fromYZ(yT, back), Rs = fromXY(col(Rt, 0), V3.mul(sd, -1)); if (i) thR = Rt;
+      setBone(rig, i ? THR : THL, Rt, hip, sc * kL, sc, sc * kL); setBone(rig, i ? SHR : SHL, Rs, kn, sc * kL, sc, sc * kL); setBone(rig, i ? FTR : FTL, ff[i].R, an, sc * (.5 + .5 * kL), sc, sc); }
+    { const kp = sc * (.4 + .6 * rig.kG); setBone(rig, PEL, pelR, P, kp, sc, kp); }
     // ---- torso
-    const torR = mm(H, mm(rY(yawT), mm(rZ(rollT), rX(-leanT)))), Tp = V3.add(P, mv(pelR, [0, WAIST, 0]));
-    setBone(rig, TOR, torR, Tp);
-    // ---- arms
-    const armS = dup ? 1.1 : 1, Lu = UPPER * armS, Lf = FORE * armS, swA = ga * (dup ? 0 : lerp(.36, .6, gp.lope)) * (.35 + .65 * gp.fwd), tback = col(torR, 2);
+    const torR = mm(H, mm(rY(yawT), mm(rZ(rollT), rX(-leanT)))), Tp = V3.add(P, mv(pelR, [0, WAIST * sc, 0]));
+    setBone(rig, TOR, torR, Tp, sc * rig.kS, sc, sc * rig.kG);
+    // ---- arms: first as they hang, swing or crawl ...
+    const armS = dup ? 1.1 : 1, Lu = UPPER * armS * sc, Lf = FORE * armS * sc, swA = ga * (dup ? 0 : lerp(.36, .6, gp.lope)) * (.35 + .65 * gp.fwd), tback = col(torR, 2), hS = [sc, sc * (dup ? 1.16 : 1), sc];
+    const arm = (Sh, Wt, pole, xref, xw) => { const El = ik2(Sh, Wt, Lu, Lf, pole), fdw = V3.norm(V3.sub(Wt, El)), Wr = V3.mad(El, fdw, Lf), yU = V3.norm(V3.sub(Sh, El));
+      const zh = V3.add(V3.mul(tback, .08), V3.mul(V3.sub(fdw, V3.mul(yU, V3.dot(fdw, yU))), -1)), Ru = fromYZ(yU, zh); return { Sh, El, Wr, Ru, Rf: fromXY(xref ? (xw === undefined ? xref : V3.lerp(col(Ru, 0), xref, xw)) : col(Ru, 0), V3.mul(fdw, -1)) }; };
+    const A = [null, null], Rh = [null, null], pole0 = [null, null];
     for (let i = 0; i < 2; i++) { const sg = i ? 1 : -1;
       let a = dup ? -.03 - .05 * ga * Math.min(v, 4) * .25 : -.02 + sg * swA * Math.cos(th + .3) + .06 * gp.lope * ga, b = dup ? .075 : .24 + .05 * gp.lope * ga, e = dup ? .07 : .4 + ga * (.1 + .3 * gp.lope) + sg * swA * .55 * Math.cos(th + .3), bi = dup ? .02 : .2;
-      if (!dup) { const br = Math.sin(t * 1.5 + rig.p1); b += .012 * br; e += .03 * Math.sin(t * .29 + rig.p3 + i * 2) * (1 - ga); }
+      if (!dup) { const br = Math.sin(t * 1.5 + rig.p1); b += .012 * br - .09 * fear; e += .03 * Math.sin(t * .29 + rig.p3 + i * 2) * (1 - ga) + .55 * fear; a += .12 * fear; }
       if (tw && twK === 1 && sg === tw) { e += 1.0; a += .35; b += .2; }
       if (tw && twK === 3) { b += .12; }
       const ud = [sg * Math.sin(b) * Math.cos(a), -Math.cos(b) * Math.cos(a), -Math.sin(a)], fd = [sg * Math.sin(b - bi) * Math.cos(a + e), -Math.cos(b - bi) * Math.cos(a + e), -Math.sin(a + e)];
-      const Sh = V3.add(Tp, mv(torR, [sg * SH_X, SH_Y + (tw && twK === 3 ? .02 : 0), 0])), E0 = V3.add(Sh, V3.mul(mv(torR, ud), Lu));
+      const Sh = V3.add(Tp, mv(torR, [sg * SH_X * sc * rig.kS, (SH_Y + (tw && twK === 3 ? .02 : 0) + live * .005 * Math.sin(t * 1.5 + rig.p1)) * sc, 0])), E0 = V3.add(Sh, V3.mul(mv(torR, ud), Lu));
       let Wt = V3.add(E0, V3.mul(mv(torR, fd), Lf)), pole = V3.sub(E0, Sh);
-      if (k > 0) { const hx = mx + Fv[0] * .78 + Rv[0] * sg * .27, hz = mz + Fv[2] * .78 + Rv[2] * sg * .27, G = [hx, g(hx, hz) + .09, hz]; Wt = V3.lerp(Wt, G, k); pole = V3.lerp(pole, V3.add(V3.mul(Bv, .25), V3.add(V3.mul(Rv, sg * .16), [0, .1, 0])), k); }
-      const El = ik2(Sh, Wt, Lu, Lf, pole), fdw = V3.norm(V3.sub(Wt, El)), Wr = V3.mad(El, fdw, Lf), yU = V3.norm(V3.sub(Sh, El));
-      const zh = V3.add(V3.mul(tback, .08), V3.mul(V3.sub(fdw, V3.mul(yU, V3.dot(fdw, yU))), -1)), Ru = fromYZ(yU, zh), Rf = fromXY(col(Ru, 0), V3.mul(fdw, -1));
-      const Rh = mm(Rf, mm(rX(dup ? .04 : .16 + .9 * k), rY(sg * (dup ? -.1 : .15))));
-      setBone(rig, i ? UAR : UAL, Ru, Sh, 1, armS, 1); setBone(rig, i ? FAR : FAL, Rf, El, 1, armS, 1); setBone(rig, i ? HAR : HAL, Rh, Wr, 1, dup ? 1.16 : 1, 1); }
+      if (k > 0) { const hx = mx + (Fv[0] * .78 + Rv[0] * sg * .27) * sc, hz = mz + (Fv[2] * .78 + Rv[2] * sg * .27) * sc, G = [hx, g(hx, hz) + .09 * sc, hz]; Wt = V3.lerp(Wt, G, k); pole = V3.lerp(pole, V3.add(V3.mul(Bv, .25), V3.add(V3.mul(Rv, sg * .16), [0, .1, 0])), k); }
+      A[i] = arm(Sh, Wt, pole); pole0[i] = pole; Rh[i] = mm(A[i].Rf, mm(rX(dup ? .04 : .16 + .9 * k), rY(sg * (dup ? -.1 : .15)))); }
+    // ---- ... then as they are asked to speak: sat or kneeling, a hand to the hurt side, and the gestures (with the left arm when the right has the pistol)
+    let leftBusy = 0;
+    if (!dup && k < 1) { const T3 = v => V3.add(Tp, mv(torR, [v[0] * sc, v[1] * sc, v[2] * sc])), D3 = v => mv(torR, v);
+      const put = (i, w, Wt, pole, xr) => { w *= 1 - k; if (w <= 0) return; const q = A[i]; A[i] = arm(q.Sh, V3.lerp(q.Wr, Wt, w), V3.lerp(pole0[i], pole, w), xr, w); Rh[i] = mixR(Rh[i], mm(A[i].Rf, rX(.1)), w); pole0[i] = V3.lerp(pole0[i], pole, w); };
+      if (wSit > 0) { put(1, wSit * (1 - gdr), T3([.07, .17, -.31]), D3([1, -.6, 0]), D3([0, 0, -1])); put(0, wSit, [P[0] - (Rv[0] * .37 - Fv[0] * .1) * sc, g(P[0], P[2]) + .07 * sc, P[2] - (Rv[2] * .37 - Fv[2] * .1) * sc], D3([-1, 0, .6])); }
+      if (wKn > 0) for (let i = 0; i < 2; i++) { const sg = i ? 1 : -1; if (i && gdr > 0) continue; put(i, wKn, T3([sg * .13 + .03 * Math.sin(t * 2.3 + rig.p1 + i * 2.1), .31 + .025 * Math.sin(t * 1.9 + rig.p2 + i), -.45]), D3([sg * .7, -1, .2])); }
+      if (hurt > 0) put(0, sstep(0, 1, hurt) * (1 - low), T3([-.19, .1 + .006 * Math.sin(t * 1.5 + rig.p1), -.22]), D3([-1, -.3, .5]), D3([.6, 0, .8]));
+      const wA = gs[1] + gs[2] + gs[3] + gs[4] + gs[7];
+      if (wA > 0) { const i = rig.gArm, sg = i ? 1 : -1, sx = sg * SH_X * rig.kS; let W = [0, 0, 0], Pl = [0, 0, 0], X = [0, 0, 0]; const acc = (w, a, p, x) => { W = V3.mad(W, a, w); Pl = V3.mad(Pl, p, w); X = V3.mad(X, x, w); };
+        if (gs[1] > 0) { const a = .55 + .42 * Math.sin(t * 2.5 + rig.p1); acc(gs[1], [sx + sg * Math.sin(a) * .53, SH_Y + Math.cos(a) * .53, -.12], [sg, -.2, .5], [0, 0, sg]); }                    // the whole arm, overhead, slowly, side to side
+        if (gs[2] > 0) { const u = .5 - .5 * Math.cos(t * 4.2 + rig.p1), e = u * u * (3 - 2 * u); acc(gs[2], [sx + sg * lerp(.14, -.1, e), lerp(.26, .44, e), lerp(-.46, -.2, e)], [sg * .6, -1, .2], [0, -sg, 0]); }   // reach out, palm up, and draw it in
+        if (gs[3] > 0) { const yw = hd + rig.ptY, d = mtv(torR, [Math.sin(yw), .05, -Math.cos(yw)]); acc(gs[3], [sx + d[0] * .545, SH_Y + d[1] * .545, d[2] * .545], [0, -1, .2], [0, sg, 0]); }           // straight out at it, and held
+        if (gs[4] > 0) acc(gs[4], [sx + sg * .05, SH_Y + .03, -.44], [sg * .3, -1, .1], [0, 0, sg]);                                                                                                   // the flat of the hand, out in front
+        if (gs[7] > 0) acc(gs[7], [sg * .03, .35 + .004 * Math.sin(t * 1.5), -.37], [sg, -.35, 0], [0, sg, .3 * sg]);                                                                                // forearm across the chest, panel up
+        const iw = 1 / wA, w = sstep(0, 1, Math.min(1, wA)); put(i, w, T3(V3.mul(W, iw)), D3(V3.mul(Pl, iw)), D3(V3.norm(X)));
+        if (gs[4] > 0) Rh[i] = mixR(Rh[i], fromXY(D3([0, 0, sg]), D3(V3.norm([0, -.94, .34]))), sstep(0, 1, gs[4]) * (1 - k));   // fingers up, palm to whoever is to stop
+        if (!i) leftBusy = w; }
+      leftBusy = Math.max(leftBusy, wSit, wKn); }
+    // ---- ... then with the pistol. It is in the holster on the right thigh until the hand has it
+    let gunR = mm(thR, HOL_R), gunP = boneAt(rig, THR, HOL_P); rig.holst = true; rig.gripR = rig.gripL = false;
+    if (gdr > 0) { const UG = .42, kz = Math.max(1, rig.kG), hgp = [HGP[0] * hS[0], HGP[1] * hS[1], HGP[2] * hS[2]], tdn = V3.mul(col(torR, 1), -1), trt = col(torR, 0);
+      // where it is wanted: at low ready in front of the chest pack with the muzzle down, or up on the line of the aim
+      const two = sstep(0, 1, rig.two), rdR = mixR(mm(torR, rX(-1.2)), mm(torR, rX(-.7)), two), rdP = V3.add(Tp, mv(torR, V3.lerp([(SH_X * rig.kS + .05) * sc, (SH_Y - .5) * sc, -.13 * sc], [.03 * sc, .16 * sc, -.47 * sc * kz], two)));   // by the leg in one hand, or in front in two
+      const aR = mm(rY(-(hd + rig.aimY)), rX(rig.aimP)), off = Math.min(1, Math.abs(rig.aimY - aTor) / .9), piv = V3.add(Tp, mv(torR, [0, (SH_Y + .21) * sc, -.03 * sc]));   // up to the line of the eye
+      const aP = V3.add(piv, mv(aR, [.025 * sc, 0, -(.42 - .1 * off) * sc]));
+      let wR = aim > 0 ? mixR(rdR, aR, aim) : rdR, wP = V3.lerp(rdP, aP, aim);
+      if (rig.kick > 0) { wR = mm(wR, rX(.17 * rig.kick)); wP = V3.add(wP, mv(wR, [0, .004 * rig.kick, .024 * rig.kick])); }   // the hands are driven back and the muzzle climbs
+      // the right hand: down to the butt, then away with it
+      const hold = (R, Pg) => { const r = mm(R, HGt); return [r, V3.sub(Pg, mv(r, hgp))]; }, hH = hold(gunR, gunP), hW = hold(wR, wP);
+      let tR, tW; if (gdr < UG) { const r = sstep(0, UG, gdr); tR = mixR(Rh[1], hH[0], r); tW = V3.lerp(A[1].Wr, hH[1], r); }
+      else { const c = sstep(UG, 1, gdr); tR = mixR(hH[0], hW[0], c); tW = V3.add(V3.lerp(hH[1], hW[1], c), V3.mul(Rv, .05 * sc * Math.sin(PI * c))); }
+      const gpole = sg => V3.add(V3.mul(tdn, .8), V3.add(V3.mul(trt, sg * .5), V3.mul(tback, .2))), wgt = sstep(0, UG, gdr);
+      A[1] = arm(A[1].Sh, tW, V3.lerp(pole0[1], gpole(1), wgt), V3.lerp(col(A[1].Ru, 0), col(tR, 0), wgt)); Rh[1] = tR;
+      if (gdr >= UG) { rig.holst = false; rig.gripR = true; gunR = mm(tR, HG); gunP = V3.add(A[1].Wr, mv(tR, hgp)); }
+      // the left hand comes across to it once it is clear of the holster
+      const l = sstep(.5, 1, gdr) * Math.max(aim, two) * (1 - leftBusy); if (l > 0) { const sR = mm(gunR, LG), sW = V3.add(gunP, mv(gunR, [LGW[0] * sc, LGW[1] * sc, LGW[2] * sc])), lR = mixR(Rh[0], sR, l);
+        A[0] = arm(A[0].Sh, V3.lerp(A[0].Wr, sW, l), V3.lerp(pole0[0], gpole(-1), l), V3.lerp(col(A[0].Ru, 0), col(lR, 0), l)); Rh[0] = lR; rig.gripL = l > .55; } }
+    for (let i = 0; i < 2; i++) { const q = A[i]; setBone(rig, i ? UAR : UAL, q.Ru, q.Sh, sc * kL, armS * sc, sc * kL); setBone(rig, i ? FAR : FAL, q.Rf, q.El, sc * kL, armS * sc, sc * kL); setBone(rig, i ? HAR : HAL, Rh[i], q.Wr, hS[0], hS[1], hS[2]); }
+    setBone(rig, GUN, gunR, gunP);
+    { const m = V3.add(gunP, mv(gunR, MUZZLE)), f = Math.max(rig.fire, 1e-3); rig.muz[0] = m[0]; rig.muz[1] = m[1]; rig.muz[2] = m[2]; rig.muz[3] = -gunR[6]; rig.muz[4] = -gunR[7]; rig.muz[5] = -gunR[8]; setBone(rig, FLASH, mm(gunR, rZ(rig.flashA)), m, f, f, f * (.6 + .4 * f)); }
     // ---- helmet. A living crew member's helmet is bolted to the torso; a duplicate's is not
-    let yawH = 0, tiltH = 0, pitchH = -.2 * o2 - .04 * o1;
-    if (dup) { yawH = -rig.headOff * (1 - k) + .07 * rig.side; tiltH = rig.side * (rig.tilt + .05 * Math.sin(t * .13 + rig.p3)) * (1 - .5 * o2); pitchH += .22 * k - .03;
+    let yawH = -rig.lkH * (1 - k), tiltH = 0, pitchH = -.2 * o2 - .04 * o1 - .35 * rig.lkP * (1 - k) + .07 * fear + wSit * (.26 + .03 * Math.sin(t * .4 + rig.p2));
+    if (dup) { yawH += -rig.headOff * (1 - k) + .07 * rig.side - clamp(rig.aimY - aTor, -.5, .5) * .6 * aim; tiltH = rig.side * (rig.tilt + .05 * Math.sin(t * .13 + rig.p3)) * (1 - .5 * o2) * (1 - .6 * aim); pitchH += .22 * k - .03;
       if (tw && twK === 0) { tiltH = -tiltH * 1.2; yawH += .3 * tw; } if (tw && twK === 3) pitchH -= .3; }
-    const helR = mm(torR, mm(rY(yawH), mm(rZ(tiltH), rX(-pitchH)))), Hp = V3.add(Tp, mv(torR, [0, NECK_Y, NECK_Z]));
-    setBone(rig, HEL, helR, Hp);
-    // ---- the face inside it
+    const helR = mm(torR, mm(rY(yawH), mm(rZ(tiltH), rX(-pitchH)))), Hp = V3.add(Tp, mv(torR, [0, NECK_Y * sc, NECK_Z * sc]));
+    setBone(rig, HEL, helR, Hp, sc, sc, sc);
+    // ---- the head inside it: it looks about, and looks where the pistol points
     let hy = 0, ht = 0, hpch = 0;
-    if (dup) { ht = rig.side * .07; hpch = .2 * k; } else { hy = (.22 * Math.sin(t * .23 + rig.p2) * Math.sin(t * .071 + rig.p3) + yawP * .5) * (1 - k); hpch = .03 * Math.sin(t * .19 + rig.p1) + .35 * k; }
-    const fs = 1 + .08 * o2, jaw = 1 + .1 * o2, hdR = mm(helR, mm(rY(hy), mm(rZ(ht), rX(-hpch))));   // as it gapes the face swells about the mouth and rises to fill the glass
-    const hdP = V3.add(Hp, V3.add(mv(helR, [HC[0], HC[1] - .002 + .03 * o2, HC[2] - .016 * o2]), mv(hdR, [0, MOUTH_Y * (1 - fs * jaw), 0])));
-    setBone(rig, HEAD, hdR, hdP, fs, fs * jaw, fs);
-    rig.mouth = o1; rig.faceLayer = (rig.open >= .5 ? TL.FACE_OPEN : TL.FACE) + rig.crew;
-    const ms = Math.max(o1, 1e-3), mz0 = -(.076 + .05 * Math.sqrt(1 - .85 * (MOUTH_Y / FACE_H) ** 2)) - .008;
-    setBone(rig, MOUTH, hdR, V3.add(hdP, mv(hdR, [0, MOUTH_Y * fs * jaw, mz0 * fs])), fs * ms, fs * jaw * ms, fs * ms * ms);
+    if (dup) { ht = rig.side * .07; hpch = .2 * k; } else { hy = ((rig.calm ? 0 : .22) * Math.sin(t * .23 + rig.p2) * Math.sin(t * .071 + rig.p3) * (1 - aim) * (1 - .5 * gdr) + yawP * .5) * (1 - k) - clamp(rig.aimY - aTor, -.6, .6) * .8 * aim; hpch = .03 * Math.sin(t * .19 + rig.p1) + .35 * k - .25 * rig.aimP * aim - .5 * rig.lkP * (1 - k) + .28 * sstep(0, 1, gs[7]) + .22 * wKn + .12 * wSit;
+      hy += (-rig.lkE - clamp(rig.trn * .16, -.3, .3) * (1 - aim) + .2 * sstep(0, 1, gs[7])) * (1 - k); tiltH += .1 * rig.side * wSit; }   // it looks where it is told, into the turn, at the wrist, at the work
+    // as the mouth gapes the head tips back, comes up and forward to the glass and swells a little
+    const jaw = .55 * o1 + .45 * o2, fs = HEAD_S, hs = sc * fs, hdR = mm(helR, mm(rY(hy), mm(rZ(ht), rX(-hpch + .15 * o2 + .05 * o1))));
+    const hdP = V3.add(Hp, mv(helR, [(HC[0] + HEAD_AT[0]) * sc, (HC[1] + HEAD_AT[1] - .011 * o2 + .004 * o1) * sc, (HC[2] + HEAD_AT[2] - .014 * o2) * sc]));
+    setBone(rig, HEAD, hdR, hdP, hs, hs, hs); rig.jaw = jaw;
+    { const C = CREW[rig.crew].H, si = .46 * sstep(.3, .85, rig.open), on = si > .02; rig.innerOn = on;   // the one it copied, small, far back in the throat, coming forward
+      const ip = V3.add(hdP, mv(hdR, [0, (C.yMouth - .046 * jaw) * hs, (-.05 - .022 * o2) * hs])); setBone(rig, INNER, mm(hdR, rX(-.12)), ip, Math.max(si, 1e-3) * hs, Math.max(si, 1e-3) * hs, Math.max(si, 1e-3) * hs); }
   }
 
-  function emit(B, rig) {
-    const M = rig.M, N = rig.N, D = B.d, fast = D instanceof Float32Array && typeof B.max === 'number';
-    for (let p = 0; p < PARTS.length; p++) { const P = PARTS[p], kind = P.kind; if (kind === K_MOUTH && rig.mouth < .004) continue;
-      const s = P.d, b = P.bone * 12, q = P.bone * 9, lay = kind === K_FACE ? rig.faceLayer : kind === K_MOUTH ? TL.FACE_OPEN + rig.crew : -1;
+  function emit(B, rig, lod) {
+    lod = lod ? 1 : 0; const parts = rig.parts[lod] || (rig.parts[lod] = partsOf(rig.crew, lod));
+    const M = rig.M, N = rig.N, D = B.d, fast = D instanceof Float32Array && typeof B.max === 'number', jw = rig.jaw, hide = rig.hide | 0;
+    // the game's own pistol, where it has one to give (gun.js: SIDEARM.thirdPerson), in place of the one built here
+    let ext = false; try { ext = typeof SIDEARM !== 'undefined' && !!SIDEARM && typeof SIDEARM.thirdPerson === 'function'; } catch (e) { }   // (a const that is declared further down the page is not there yet)
+    for (let p = 0; p < parts.length; p++) { const P = parts[p], kind = P.kind;
+      if (kind > K_FACE && (kind === K_MOUTH ? jw < .004 : kind === K_INNER ? !rig.innerOn : kind === K_HANDR ? rig.gripR : kind === K_GRIPR ? !rig.gripR : kind === K_HANDL ? rig.gripL : kind === K_GRIPL ? !rig.gripL : kind === K_STRAP0 ? !rig.holst : kind === K_STRAP1 ? rig.holst : kind === K_PISTOL ? ext : !(rig.fire > .02) || rig.holst)) continue;
+      if (hide && (hide >> P.grp & 1)) continue;
+      const s = P.d, s1 = P.d1 && jw > 0 ? P.d1 : null, b = P.bone * 12, q = P.bone * 9, lay = rig.clay && P.grp === 2 ? TL.WHITE : -1;
       const a0 = M[b], a1 = M[b + 1], a2 = M[b + 2], b0 = M[b + 3], b1 = M[b + 4], b2 = M[b + 5], c0 = M[b + 6], c1 = M[b + 7], c2 = M[b + 8], t0 = M[b + 9], t1 = M[b + 10], t2 = M[b + 11];
       const d0 = N[q], d1 = N[q + 1], d2 = N[q + 2], e0 = N[q + 3], e1 = N[q + 4], e2 = N[q + 5], f0 = N[q + 6], f1 = N[q + 7], f2 = N[q + 8];
       let n = P.n;
       if (fast) { if (B.n + n > B.max) n = Math.max(0, Math.floor((B.max - B.n) / 3) * 3); let o = B.n * 12;
-        for (let k = 0, e = n * 12; k < e; k += 12, o += 12) { const x = s[k], y = s[k + 1], z = s[k + 2], nx = s[k + 6], ny = s[k + 7], nz = s[k + 8];
+        if (s1) for (let k = 0, e = n * 12; k < e; k += 12, o += 12) { const x = s[k] + (s1[k] - s[k]) * jw, y = s[k + 1] + (s1[k + 1] - s[k + 1]) * jw, z = s[k + 2] + (s1[k + 2] - s[k + 2]) * jw, nx = s[k + 6] + (s1[k + 6] - s[k + 6]) * jw, ny = s[k + 7] + (s1[k + 7] - s[k + 7]) * jw, nz = s[k + 8] + (s1[k + 8] - s[k + 8]) * jw;
+          D[o] = a0 * x + b0 * y + c0 * z + t0; D[o + 1] = a1 * x + b1 * y + c1 * z + t1; D[o + 2] = a2 * x + b2 * y + c2 * z + t2; D[o + 3] = s[k + 3]; D[o + 4] = s[k + 4]; D[o + 5] = lay < 0 ? s[k + 5] : lay;
+          D[o + 6] = d0 * nx + e0 * ny + f0 * nz; D[o + 7] = d1 * nx + e1 * ny + f1 * nz; D[o + 8] = d2 * nx + e2 * ny + f2 * nz; D[o + 9] = s[k + 9] + (s1[k + 9] - s[k + 9]) * jw; D[o + 10] = s[k + 10] + (s1[k + 10] - s[k + 10]) * jw; D[o + 11] = 0; }
+        else for (let k = 0, e = n * 12; k < e; k += 12, o += 12) { const x = s[k], y = s[k + 1], z = s[k + 2], nx = s[k + 6], ny = s[k + 7], nz = s[k + 8];
           D[o] = a0 * x + b0 * y + c0 * z + t0; D[o + 1] = a1 * x + b1 * y + c1 * z + t1; D[o + 2] = a2 * x + b2 * y + c2 * z + t2; D[o + 3] = s[k + 3]; D[o + 4] = s[k + 4]; D[o + 5] = lay < 0 ? s[k + 5] : lay;
           D[o + 6] = d0 * nx + e0 * ny + f0 * nz; D[o + 7] = d1 * nx + e1 * ny + f1 * nz; D[o + 8] = d2 * nx + e2 * ny + f2 * nz; D[o + 9] = s[k + 9]; D[o + 10] = s[k + 10]; D[o + 11] = 0; }
         B.n += n; }
-      else for (let k = 0, e = n * 12; k < e; k += 12) { const x = s[k], y = s[k + 1], z = s[k + 2], nx = s[k + 6], ny = s[k + 7], nz = s[k + 8];
-        B.v([a0 * x + b0 * y + c0 * z + t0, a1 * x + b1 * y + c1 * z + t1, a2 * x + b2 * y + c2 * z + t2], s[k + 3], s[k + 4], lay < 0 ? s[k + 5] : lay, [d0 * nx + e0 * ny + f0 * nz, d1 * nx + e1 * ny + f1 * nz, d2 * nx + e2 * ny + f2 * nz], s[k + 9], s[k + 10]); }
+      else for (let k = 0, e = n * 12; k < e; k += 12) { const w = s1 ? jw : 0, m = i => s1 ? s[k + i] + (s1[k + i] - s[k + i]) * w : s[k + i], x = m(0), y = m(1), z = m(2), nx = m(6), ny = m(7), nz = m(8);
+        B.v([a0 * x + b0 * y + c0 * z + t0, a1 * x + b1 * y + c1 * z + t1, a2 * x + b2 * y + c2 * z + t2], s[k + 3], s[k + 4], lay < 0 ? s[k + 5] : lay, [d0 * nx + e0 * ny + f0 * nz, d1 * nx + e1 * ny + f1 * nz, d2 * nx + e2 * ny + f2 * nz], m(9), m(10)); }
     }
+    // xf: pistol space to the world, 3 x 4 by rows. Pistol space is SIDEARM's: origin on the bore axis at the rear of the upper, +X right, +Y up, -Z to the muzzle, metres.
+    // It is handed the state object the last update was given, and the level of detail after it. Whatever it leaves in the batch is kept to whole triangles.
+    if (ext) { const b = GUN * 12, xf = rig.xf, n0 = B.n; xf[0] = M[b]; xf[1] = M[b + 3]; xf[2] = M[b + 6]; xf[3] = M[b + 9]; xf[4] = M[b + 1]; xf[5] = M[b + 4]; xf[6] = M[b + 7]; xf[7] = M[b + 10]; xf[8] = M[b + 2]; xf[9] = M[b + 5]; xf[10] = M[b + 8]; xf[11] = M[b + 11];
+      SIDEARM.thirdPerson(B, xf, rig.st, lod); if (B.n > n0 && (B.n - n0) % 3) B.n -= (B.n - n0) % 3; }
   }
-  return { create, update, emit, pose };
+  // where the muzzle is and which way the barrel points, in the world, as of the last update: [x, y, z, dx, dy, dz] (a caller that only wants the position reads the first three)
+  const muzzle = rig => [rig.muz[0], rig.muz[1], rig.muz[2], rig.muz[3], rig.muz[4], rig.muz[5]];
+  // dev: for the alignment and screenshot tools in dev/ only; the game has no use for it
+  return { create, update, emit, pose, muzzle, GESTURES: true, dev: { CREW, crewHead, buildHead, buildSuit, H0, bare(v) { BARE = !!v; HEADS.length = 0; } } };
 })();
 
 
@@ -8862,7 +9554,9 @@ async function toggleMic(onFail) {
    synthesiser above stands in, so nothing is ever silent for want of a download. */
 const SND = {
   base: 'audio/', buf: {}, started: false, want: {},
-  files: ['land', 'eagle', 'prob', 'lift', 'tli', 'eerie', 'biz'],
+  files: ['land', 'lift', 'tli', 'eerie', 'biz', 'sw',
+    'fx_thud', 'fx_shot_1', 'fx_shot_2', 'fx_shot_3', 'fx_boom', 'fx_click', 'fx_switch_1', 'fx_switch_2', 'fx_beep', 'fx_beacon', 'fx_buzz', 'fx_problem', 'fx_alarm', 'fx_rumble', 'fx_hatch', 'fx_locker_1', 'fx_locker_2', 'fx_rung',
+    'fx_door_1', 'fx_door_2', 'fx_hiss', 'fx_puff', 'fx_ignite', 'fx_hydraulic', 'fx_cheer', 'fx_siren', 'bed_breath', 'bed_heavy', 'bed_jup', 'bed_life', 'bed_mains', 'bed_street', 'bed_crowd', 'bed_march'],
   load() { if (this.started) return; this.started = true; for (const k of this.files) fetch(this.base + k + '.mp3').then(r => { if (!r.ok) throw 0; return r.arrayBuffer(); }).then(a => AU.ctx.decodeAudioData(a)).then(b => { this.buf[k] = b; this.ready(k); }).catch(() => { }); },
   // play(key, t0, t1, opts): a cut. t1 null = to the end. opts: gain, rate, dest, loop, fade (in), out (fade out), pan, at (start delay)
   play(k, t0, t1, o) { o = o || {}; const b = this.buf[k]; if (!b || !AU.ctx) return null; const C = AU.ctx, s = C.createBufferSource(), g = C.createGain(), t = C.currentTime + (o.at || 0);
@@ -8877,7 +9571,12 @@ const NASA = SND;
 /* CUT: every effect is a named cut (or a few, picked at random) out of one of the recordings: [file, from, to, gain].
    fx(name, opts) plays one and returns its handle, or null if that file has not loaded, and then the synthesiser
    below it in each wrapper stands in. Times are seconds into the file as shipped in audio/. */
-const CUT = {/*CUTS*/};
+const CUT = {
+  thud: ['fx_thud', 0, null, .9], shot: [['fx_shot_1', 0, null, 1], ['fx_shot_2', 0, null, 1], ['fx_shot_3', 0, null, 1]], boom: ['fx_boom', 0, null, .9], click: ['fx_click', 0, null, .6],
+  switch: [['fx_switch_1', 0, null, .6], ['fx_switch_2', 0, null, .6]], beep: ['fx_beep', 0, null, .35], go: ['fx_beep', 0, null, .45], buzz: ['fx_buzz', 0, null, .4], problem: ['fx_problem', 0, null, .35], rumble: ['fx_rumble', 0, null, .9],
+  hatch: ['fx_hatch', 0, null, .85], locker: [['fx_locker_1', 0, null, .75], ['fx_locker_2', 0, null, .75]], door: [['fx_door_1', 0, null, .8], ['fx_door_2', 0, null, .8]], rung: ['fx_rung', 0, null, .6], hiss: ['fx_hiss', 0, null, .6],
+  alarm: ['fx_alarm', 0, null, .3], ignite: ['fx_ignite', 0, null, 1], hydraulic: ['fx_hydraulic', 0, null, .8], puff: ['fx_puff', 0, null, .45], beacon: ['fx_beacon', 0, null, .3], cheer: ['fx_cheer', 0, null, .8], siren: ['fx_siren', 0, null, .6],
+  breath: ['bed_breath', 0, null, .5], heavy: ['bed_heavy', 0, null, .55], jup: ['bed_jup', 0, null, .22], life: ['bed_life', 0, null, .3], mains: ['bed_mains', 0, null, .22], street: ['bed_street', 0, null, .7], crowd: ['bed_crowd', 0, null, .7], march: ['bed_march', 0, null, .7] };
 function fx(name, o) { if (!AU.ctx) return null; let c = CUT[name]; if (!c) return null; if (Array.isArray(c[0])) c = c[(Math.random() * c.length) | 0];
   o = o || {}; return SND.play(c[0], c[1], c[2], Object.assign({}, o, { gain: (c[3] === undefined ? .7 : c[3]) * (o.gain === undefined ? 1 : o.gain) })); }
 const panTo = (pan, dest) => { const pn = AU.ctx.createStereoPanner(); pn.pan.value = pan || 0; pn.connect(dest); return pn; };
@@ -9792,7 +10491,7 @@ function crewTracer(f, b, hit) { const sc = 1.45, y0 = groundY(f.x, f.z) + 1.42 
   (S.tracers || (S.tracers = [])).push({ a, b: e, t0: S.t, who: f }); }
 function emitTracers(B, cam, dt) { const T = S.tracers; if (!T) return; const ce = cam.e;
   for (let i = T.length - 1; i >= 0; i--) { const q = T[i]; q.t = S.t - q.t0; if (q.t > .13 || q.t < 0) { T.splice(i, 1); continue; }
-    let a = q.a; if (q.who && q.who.rig && ASTRO.muzzle) { const m = ASTRO.muzzle(q.who.rig); if (m && m.p) a = m.p; }
+    let a = q.a; if (q.who && q.who.rig && ASTRO.muzzle) { const m = ASTRO.muzzle(q.who.rig); if (m && m.length >= 3) a = [m[0], m[1], m[2]]; }
     const b = q.b, k = 1 - q.t / .13, dir = V3.sub(b, a), L = V3.len(dir) || 1, u = V3.mul(dir, 1 / L), h0 = Math.min(L, q.t * 900), t0 = Math.max(0, h0 - 26 - L * .2);   // a streak that runs out along the line and fades behind itself
     const p0 = V3.add(a, V3.mul(u, t0)), p1 = V3.add(a, V3.mul(u, Math.max(h0, Math.min(L, 6)))), toC = V3.sub(ce, V3.mul(V3.add(p0, p1), .5)); let sd = V3.cross(u, toC); const sl = V3.len(sd) || 1, dm = V3.len(toC), w = Math.max(.012, dm * .0016); sd = V3.mul(sd, w / sl);
     const em = 3.2 * k, th = .15 + .5 * (1 - k); gasV(B, V3.sub(p0, sd), em * .2, .75); gasV(B, V3.add(p0, sd), em * .2, .75); gasV(B, V3.add(p1, sd), em, th); gasV(B, V3.sub(p0, sd), em * .2, .75); gasV(B, V3.add(p1, sd), em, th); gasV(B, V3.sub(p1, sd), em, th); } }
@@ -10236,7 +10935,7 @@ function emitCineExt(B, cam, c, dt) {
     POD.exterior(B, START.x, gy + hh, START.z, Math.PI / 2, hh > 0 ? (x, z) => groundY(x, z) + hh : groundY, st); }
   if (c.td) gasGround(B, START.x, START.z, .8 * Math.exp(-tau * .45), c.t, tau);
   if (tau > 2.6 && tau < 4.4) { const k = (tau - 2.6) / 1.8, o = podPt(0, 1.75, 1.8); gasJet(B, cam, o, [1, .15, 0], 1.2 + 3.5 * k, .35, 1.6 + 1.2 * k, .5 * (1 - k), .35 + .6 * k); }   // the cabin's air goes out with the hatch
-  const fg = c.fig; if (fg && !c.figHide) { if (!c.rig) c.rig = ASTRO.create(CREW.indexOf(S.crew), 900); ASTRO.update(c.rig, { x: fg.x, z: fg.z, heading: fg.heading, speed: fg.speed, scale: 1.45, stun: 0, alert: 0, active: true, open: 0, dup: false, gun: false }, dt, (x, z) => groundY(x, z) + fg.cy); ASTRO.emit(B, c.rig); } }
+  const fg = c.fig; if (fg && !c.figHide) { if (!c.rig) c.rig = ASTRO.create(CREW.indexOf(S.crew), 900); ASTRO.update(c.rig, { x: fg.x, z: fg.z, heading: fg.heading, speed: fg.speed, scale: 1.45, stun: 0, alert: 0, active: true, open: 0, dup: false, gun: 0 }, dt, (x, z) => groundY(x, z) + fg.cy); ASTRO.emit(B, c.rig); } }
 function startCine() {
   const shots = W.sentinels.map(s => { let best = null, bd = 1e9; for (const p of PATHS[0].pts) { const d = Math.hypot(p[0] - s.x, p[1] - s.z); if (d < bd) { bd = d; best = p; } } return { s, cam: best, d: bd }; }).filter(o => o.d > 25 && o.d < 90).sort((a, b) => b.d - a.d).slice(0, 3);
   S.cine = { t: 0, fails: 0, q: QTES.map(q => Object.assign({ done: 0, held: 0 }, q, q.hold ? (S.rng() < .5 ? { key: 'KeyD', label: 'HOLD D' } : {}) : {})), li: 0, shots, phase: 'card1', pt: 0, shotN: -1, skip: 0, h: 1500, vy: 0, eng: 0, dust: 0, seed: S.rng() * 99 };
@@ -10245,7 +10944,7 @@ function startCine() {
 function cineStep(dt) {
   const c = S.cine; S.t += dt;
   if (c.phase === 'descent') { c.t += dt;
-    if (c.t === dt && AU.ctx) { NASA.cine = NASA.play('land', 58, 100, { gain: .4, dest: AU.radio, fade: 1 }); sfx.alarm(); }
+    if (c.t === dt && AU.ctx) { NASA.cine = NASA.play('land', 2, 44, { gain: .4, dest: AU.radio, fade: 1 }); sfx.alarm(); }
     /* The retro lights on the call (or late and rough on its own if the call is missed) and burns until the tanks are
        dry, a few metres up. From there she falls. She hits, bounces once on what is left of her legs, and stays. */
     const q0 = c.q[0], q3 = c.q[3], out = c.t >= FLAMEOUT, lit = q0.done !== 0 && !out;
@@ -10440,8 +11139,8 @@ function render(dt, now) {
   if (!frozen) {
     // characters into the dynamic batch
     const B = R.batch; B.reset(); const smear = [];
-    if (inGame && sceneOn) { const ce = cam.e; for (const f of (S.watch && !S.watch.hide ? S.foes.concat([S.watch.f]) : S.foes)) { const d = Math.hypot(f.x - ce[0], f.z - ce[2]); if (d > 170 || S.cine) continue; const st = { x: f.x, z: f.z, heading: f.heading, speed: f.spd, scale: 1.45 * (f.vsc || 1), stun: f.down ? 1 : Math.max(0, f.stun), alert: f.chgS ? 1 : f.alert, active: f.active, open: f.open, dup: f.kind !== 'crew', charge: f.chgS === 1 ? clamp(f.chgT / f.v.chg.wind, 0, 1) : 0 }; if (f.kind === 'crew') { st.gest = f.gest || null; st.pointYaw = f.pointYaw; st.lookYaw = f.lookYaw; st.fear = f.panic; st.hurt = f.down ? 1 : 0; st.gun = f.ammo > 0; st.aim = f.aimT > 0 ? f.aimAt : undefined; st.fire = f.flash > 0 ? f.flash / .09 : 0; if (f.gest === 'down' && ASTRO.GESTURES) st.stun = 0; }
-        const n0 = B.n; if (f.kind === 'kei') { if (f.active) st.look = Math.atan2(ce[0] - f.x, -(ce[2] - f.z)); f.rig.fat = (d > 22 ? 1.8 : 1) * (f.vfat || 1); KEI.update(f.rig, st, dt, groundY); KEI.emit(B, f.rig, d > 22 ? 1 : 0); } else { ASTRO.update(f.rig, st, dt, f.cy ? (x, z) => groundY(x, z) + f.cy : groundY); ASTRO.emit(B, f.rig); } if (S.watch && f === S.watch.f) { const k = clamp((d - 14) / 20, 0, 1); for (let i = n0; i < B.n; i++) { B.d[i * STRIDE + 9] *= 1 + 1.9 * k; B.d[i * STRIDE + 10] += .09 * k; } }   // far off against a black sky a dark thing is nothing at all: up there it catches the sun
+    if (inGame && sceneOn) { const ce = cam.e; for (const f of (S.watch && !S.watch.hide ? S.foes.concat([S.watch.f]) : S.foes)) { const d = Math.hypot(f.x - ce[0], f.z - ce[2]); if (d > 170 || S.cine) continue; const st = { x: f.x, z: f.z, heading: f.heading, speed: f.spd, scale: 1.45 * (f.vsc || 1), stun: f.down ? 1 : Math.max(0, f.stun), alert: f.chgS ? 1 : f.alert, active: f.active, open: f.open, dup: f.kind !== 'crew', charge: f.chgS === 1 ? clamp(f.chgT / f.v.chg.wind, 0, 1) : 0 }; if (f.kind === 'crew') { st.gest = f.gest || null; st.pointYaw = f.pointYaw; st.lookYaw = f.lookYaw; st.fear = f.panic; st.hurt = f.down ? 1 : 0; st.gun = f.ammo > 0 && !f.down && !f.cy ? (f.aimT > 0 ? 2 : f.panic > .15 || f.fired ? 1 : 0) : 0; st.aim = f.aimAt; st.fire = f.flash > 0 ? f.flash / .09 : 0; if (f.gest === 'down' && ASTRO.GESTURES) st.stun = 0; }
+        const n0 = B.n; if (f.kind === 'kei') { if (f.active) st.look = Math.atan2(ce[0] - f.x, -(ce[2] - f.z)); f.rig.fat = (d > 22 ? 1.8 : 1) * (f.vfat || 1); KEI.update(f.rig, st, dt, groundY); KEI.emit(B, f.rig, d > 22 ? 1 : 0); } else { ASTRO.update(f.rig, st, dt, f.cy ? (x, z) => groundY(x, z) + f.cy : groundY); ASTRO.emit(B, f.rig, d > 16 ? 1 : 0); } if (S.watch && f === S.watch.f) { const k = clamp((d - 14) / 20, 0, 1); for (let i = n0; i < B.n; i++) { B.d[i * STRIDE + 9] *= 1 + 1.9 * k; B.d[i * STRIDE + 10] += .09 * k; } }   // far off against a black sky a dark thing is nothing at all: up there it catches the sun
         smear.push([n0, B.n - n0, f.kind === 'kei' ? (f.stun > 0 ? .45 : .02 + f.alert * .14) : f.kind === 'dup' ? (f.active ? .05 : 0) : 0]); }
       if (!S.cine) { const ce2 = cam.e; const nb0 = B.n;
         emitTracers(B, cam, dt); emitBreakup(B, cam); if (S.depart !== undefined) emitDepart(B, cam, S.depart); else if (S.stage === 3 && S.launchT > LAUNCH_HOLD) emitDepart(B, cam, S.launchT - LAUNCH_HOLD);
