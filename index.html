@@ -3564,7 +3564,7 @@ function buildPropsMesh(withSentinels) {
   // lamp tripods
   for (const l of W.lamps) { for (const a of [0, 2.1, 4.2]) B.seg([l.x + Math.cos(a) * .6, l.y, l.z + Math.sin(a) * .6], [l.x, l.y + 2.2, l.z], .025, .025, 4, TL.METAL, 1); B.box([l.x, l.y + 2.35, l.z], [.22, 0, 0], up(.14), [0, 0, .12], TL.WHITE, 1, 1.5); }
   }
-  if (typeof POD !== 'undefined' && POD.exterior) POD.exterior(B, START.x, groundY(START.x, START.z), START.z, Math.PI / 2, groundY);
+  { const n0 = B.n;if (typeof POD !== 'undefined' && POD.exterior) POD.exterior(B, START.x, groundY(START.x, START.z), START.z, Math.PI / 2, groundY); W.podRange = [n0, B.n]; }   // drawn apart: on the way down you are in her, not looking at her
   if (withSentinels && typeof KEI !== 'undefined') for (const s of W.sentinels) { const rig = KEI.create(s.seed); rig.fat = 2; KEI.pose(rig, { x: s.x, z: s.z, heading: s.heading, speed: 0, scale: s.scale, stun: 0, alert: 0 }, groundY); KEI.emit(B, rig); }
   return B.d.slice(0, B.n * STRIDE);
 }
@@ -8744,7 +8744,7 @@ function auInit() {
   AU.suit = C.createGain(); AU.suit.gain.value = 1; const sl = C.createBiquadFilter(); sl.type = 'lowpass'; sl.frequency.value = 1150; sl.Q.value = .4;
   const sl2 = C.createBiquadFilter(); sl2.type = 'lowpass'; sl2.frequency.value = 2200; const shp = C.createBiquadFilter(); shp.type = 'highpass'; shp.frequency.value = 55;
   AU.suit.connect(sl); sl.connect(sl2); sl2.connect(shp); shp.connect(AU.master);
-  VOICE.load(); NASA.load(); TTS.load();
+  VOICE.load(); SND.load();
 }
 function env(gn, t, a, peak, dur) { gn.gain.cancelScheduledValues(t); gn.gain.setValueAtTime(0.0001, t); gn.gain.linearRampToValueAtTime(peak, t + a); gn.gain.exponentialRampToValueAtTime(0.0001, t + dur); }
 function noise(dest, t, dur, type, f, q, vol, f2) { const C = AU.ctx, s = C.createBufferSource(); s.buffer = AU.nb; s.loop = true; const fl = C.createBiquadFilter(); fl.type = type; fl.frequency.setValueAtTime(f, t); if (f2) fl.frequency.exponentialRampToValueAtTime(f2, t + dur); fl.Q.value = q; const gn = C.createGain(); env(gn, t, .005, vol, dur); s.connect(fl); fl.connect(gn); gn.connect(dest); s.start(t, Math.random()); s.stop(t + dur + .05); }
@@ -8783,8 +8783,6 @@ const sfx = {
       for (const [fa, fbq] of [[520, 300], [1850, 2300]]) { const f = C.createBiquadFilter(); f.type = 'bandpass'; f.Q.value = 7; f.frequency.setValueAtTime(fa, t); f.frequency.linearRampToValueAtTime(fbq, t + .18 * rate); o.connect(f); f.connect(g0); }
       g0.connect(rm); o.start(t); o.stop(t + .3); noise(rm, t + .16 * rate, .12, 'highpass', 5200, 1, .5); }
   },
-  garble(pitch, len, calm) { if (!AU.ctx) return; let t = now() + .02; noise(AU.radio, t, .08, 'bandpass', 1800, 1, .4); t += .08; const n = Math.min(26, len);
-    for (let i = 0; i < n; i++) { if (Math.random() < .14) { t += .07; continue; } tone(AU.radio, t, .055, 'sawtooth', pitch * (calm ? 1 : 1.25) * (.8 + Math.random() * (calm ? .25 : .7)), 0, .16); t += calm ? .075 : .058; } noise(AU.radio, t, .1, 'bandpass', 1800, 1, .35); },
 };
 
 // ---------------------------------------------------------------- the voice bank
@@ -8845,21 +8843,25 @@ async function toggleMic(onFail) {
   catch (e) { if (onFail) onFail(); return false; }
 }
 
-/* NASA: real flight recordings (public domain, streamed from Wikimedia Commons) used for the controls and effects.
-   Each effect is a cut out of one of these. If a recording has not loaded (offline), the synthesiser above is used. */
-const NASA = {
-  base: 'https://upload.wikimedia.org/wikipedia/commons/',
-  files: { land: 'e/e5/Pouso_da_Apollo_11_na_Lua.ogg', eagle: '8/87/Apollo_11_Eagle_Has_Landed.mp3', prob: '2/28/Apollo13problem.ogg', lift: '5/55/Apollo_8_liftoff.ogg', tli: 'f/fb/Apollo_8_go_for_TLI.ogg',
-    eerie: 'd/de/Eerie_Sounds_of_Saturn%E2%80%99s_Radio_Emissions_%28PIA07966%29.wav', biz: 'a/a0/Bizarre_Sounds_of_Saturn%E2%80%99s_Radio_Emissions_%28PIA07967%29.wav' },
-  label: { land: 'Apollo 11 lunar landing air-to-ground', eagle: 'Apollo 11 "The Eagle has landed"', prob: 'Apollo 13 "Houston, we\'ve had a problem"', lift: 'Apollo 8 liftoff', tli: 'Apollo 8 "go for TLI"', eerie: 'Cassini: Saturn radio emissions (PIA07966)', biz: 'Cassini: Saturn radio emissions (PIA07967)' },
-  buf: {}, started: false,
-  load() { if (this.started) return; this.started = true; for (const k in this.files) fetch(this.base + this.files[k]).then(r => { if (!r.ok) throw 0; return r.arrayBuffer(); }).then(a => AU.ctx.decodeAudioData(a)).then(b => { this.buf[k] = b; this.ready(k); }).catch(() => { }); },
-  play(k, t0, t1, o) { o = o || {}; const b = this.buf[k]; if (!b || !AU.ctx) return null; const C = AU.ctx, s = C.createBufferSource(), g = C.createGain(), t = C.currentTime, dur = (t1 - t0) / (o.rate || 1), v = o.gain === undefined ? .7 : o.gain;
-    s.buffer = b; s.playbackRate.value = o.rate || 1; s.connect(g); g.connect(o.dest || AU.master); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(v, t + (o.fade || .008));
-    if (o.loop) { s.loop = true; s.loopStart = t0; s.loopEnd = t1; s.start(t, t0); } else { g.gain.setValueAtTime(v, t + Math.max(.01, dur - .03)); g.gain.linearRampToValueAtTime(0, t + dur); s.start(t, t0, t1 - t0); }
-    return { s, g, stop(f) { try { g.gain.cancelScheduledValues(C.currentTime); g.gain.setTargetAtTime(0, C.currentTime, f || .15); s.stop(C.currentTime + (f || .15) * 5); } catch (e) { } } }; },
-  ready(k) { if (k === 'eerie') this.amb = this.play('eerie', 6, 71, { loop: true, gain: .3, fade: 3, dest: AU.radio }); if (k === 'lift') this.eng = this.play('lift', 40, 96, { loop: true, gain: 1.6, dest: AU.engG }); },
+/* SND: recorded sound. Every file in audio/ is a real recording (NASA flight and spacecraft audio, machinery, a street,
+   a band; all public domain or CC0, listed in audio/SOURCES.md), re-encoded to mono MP3. An effect is a cut out of one
+   of them, played through the same chains as everything else: AU.suit for what reaches the ear through the body and
+   the structure, AU.radio for the loop, AU.master only where there is air to carry it. If a file has not loaded the
+   synthesiser above stands in, so nothing is ever silent for want of a download. */
+const SND = {
+  base: 'audio/', buf: {}, started: false, want: {},
+  files: ['land', 'eagle', 'prob', 'lift', 'tli', 'eerie', 'biz'],
+  load() { if (this.started) return; this.started = true; for (const k of this.files) fetch(this.base + k + '.mp3').then(r => { if (!r.ok) throw 0; return r.arrayBuffer(); }).then(a => AU.ctx.decodeAudioData(a)).then(b => { this.buf[k] = b; this.ready(k); }).catch(() => { }); },
+  // play(key, t0, t1, opts): a cut. t1 null = to the end. opts: gain, rate, dest, loop, fade (in), out (fade out), pan, at (start delay)
+  play(k, t0, t1, o) { o = o || {}; const b = this.buf[k]; if (!b || !AU.ctx) return null; const C = AU.ctx, s = C.createBufferSource(), g = C.createGain(), t = C.currentTime + (o.at || 0);
+    t0 = t0 || 0; if (t1 == null || t1 > b.duration) t1 = b.duration; const rate = o.rate || 1, dur = (t1 - t0) / rate, v = o.gain === undefined ? .7 : o.gain, fo = o.out || .03;
+    s.buffer = b; s.playbackRate.value = rate; s.connect(g); let dest = o.dest || AU.master; if (o.pan) { const pn = C.createStereoPanner(); pn.pan.value = o.pan; pn.connect(dest); dest = pn; } g.connect(dest);
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(v, t + (o.fade || .008));
+    if (o.loop) { s.loop = true; s.loopStart = t0; s.loopEnd = t1; s.start(t, t0 + (o.rand ? Math.random() * (t1 - t0) : 0)); } else { g.gain.setValueAtTime(v, t + Math.max(.01, dur - fo)); g.gain.linearRampToValueAtTime(0, t + dur); s.start(t, t0, t1 - t0); }
+    return { s, g, v, set(x, tc) { g.gain.setTargetAtTime(x, C.currentTime, tc || .1); }, stop(f) { try { g.gain.cancelScheduledValues(C.currentTime); g.gain.setTargetAtTime(0, C.currentTime, f || .15); s.stop(C.currentTime + (f || .15) * 5); } catch (e) { } } }; },
+  ready(k) { if (k === 'eerie') this.amb = this.play('eerie', 6, 71, { loop: true, gain: .3, fade: 3, dest: AU.radio }); if (k === 'lift') this.eng = this.play('lift', 40, 96, { loop: true, gain: 1.6, dest: AU.engG }); if (this.want[k]) { const f = this.want[k]; this.want[k] = null; f(); } },
 };
+const NASA = SND;
 { const S0 = Object.assign({}, sfx);
   sfx.click = () => NASA.play('land', 0, .07, { gain: .6, dest: AU.suit }) || S0.click();
   sfx.tick = () => NASA.play('land', 4.2, 4.27, { gain: .5, dest: AU.radio }) || S0.tick();
@@ -8871,179 +8873,27 @@ const NASA = {
   sfx.kei = (vol, pan) => { S0.kei(vol, pan); if (!AU.ctx || !NASA.buf.biz) return; const pn = AU.ctx.createStereoPanner(); pn.pan.value = pan || 0; pn.connect(AU.radio); const a = Math.random() * 11; NASA.play('biz', a, a + 1.4, { gain: vol * .7, rate: .55 + Math.random() * .4, dest: pn, fade: .05 }); };
 }
 
-/* ---------------------------------------------------------------- synthesised speech
-   No recording of these people can be fetched from this machine, and the wiki stream does not survive a
-   local page, so every line is ALSO spoken by a formant synthesiser: one buzz source per utterance, three
-   bandpass formants glided from phone to phone, noise for the unvoiced consonants, and the whole thing
-   through the comms chain. It sounds like a person on a failing radio, which is what the game wants.
-   A real clip dropped into voices/<speaker>/<event><n>.mp3 still wins over this. */
-const VOWEL = {
-  aa: [730, 1090, 2440], ae: [660, 1720, 2410], ah: [640, 1190, 2390], ao: [570, 840, 2410], eh: [530, 1840, 2480],
-  ey: [430, 2050, 2600], ih: [390, 1990, 2550], iy: [280, 2250, 2990], ow: [450, 900, 2400], uw: [310, 870, 2240],
-  er: [490, 1350, 1690], oy: [450, 1100, 2500], aw: [650, 1000, 2400], ay: [660, 1700, 2500],
+/* ---------------------------------------------------------------- voices
+   Nobody in this game is spoken for by a machine. A line is heard only when there is a real recording of it: a cut out
+   of the black box recording or the Baker footage (voices/media/), or a clip dropped into voices/<speaker>/. Every other
+   line arrives as text on the loop, with the sound a loop really makes when somebody keys it: for the ground, the two
+   Quindar tones (2525 Hz to open, 2475 Hz to close) either side of an open carrier; for a suit, the relay click and
+   the squelch tail. */
+sfx.loopOpen = function (kind, len) {
+  if (!AU.ctx) return; const C = AU.ctx, t = now() + .02, hold = Math.min(4.5, .6 + (len || 20) * .045);
+  const carrier = (t0, d, v) => { const s = C.createBufferSource(); s.buffer = AU.nb; s.loop = true; const f = C.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 2100; f.Q.value = .5; const g = C.createGain();
+    g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(v, t0 + .03); g.gain.setValueAtTime(v, t0 + d - .05); g.gain.linearRampToValueAtTime(0, t0 + d); s.connect(f); f.connect(g); g.connect(AU.radio); s.start(t0, Math.random()); s.stop(t0 + d + .05); };
+  const q = (t0, f) => { const o = C.createOscillator(); o.frequency.value = f; const g = C.createGain(); g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(.2, t0 + .004); g.gain.setValueAtTime(.2, t0 + .246); g.gain.linearRampToValueAtTime(0, t0 + .25); o.connect(g); g.connect(AU.radio); o.start(t0); o.stop(t0 + .27); };
+  if (kind === 'ground') { q(t, 2525); carrier(t, hold + .5, .05); q(t + hold + .25, 2475); }
+  else if (kind === 'suit') { if (!SND.play('sw', 0, null, { gain: .5, dest: AU.radio })) noise(AU.radio, t, .03, 'highpass', 1800, 1, .3); carrier(t + .02, hold * .6, .035); noise(AU.radio, t + hold * .6, .11, 'bandpass', 1500, 1, .2); }
+  else if (kind === 'pa') { tone(AU.radio, t, .07, 'sine', 1320, 0, .1); tone(AU.radio, t + .09, .11, 'sine', 990, 0, .1); }
 };
-// [F1, F2, F3, voiced, noise centre, noise Q, seconds]
-const CONS = {
-  m: [250, 1050, 2200, 1, 0, 0, .070], n: [250, 1700, 2600, 1, 0, 0, .062], ng: [250, 2000, 2600, 1, 0, 0, .070],
-  l: [360, 1300, 2700, 1, 0, 0, .058], r: [320, 1050, 1400, 1, 0, 0, .058], w: [300, 610, 2200, 1, 0, 0, .052],
-  y: [280, 2250, 2990, 1, 0, 0, .048], b: [300, 800, 2300, 1, 520, .9, .052], d: [300, 1700, 2600, 1, 1900, 1, .044],
-  g: [300, 1300, 2200, 1, 1500, .9, .050], v: [320, 1100, 2300, 1, 4200, 1.4, .062], z: [300, 1700, 2600, 1, 5200, 1.6, .070],
-  j: [300, 1800, 2600, 1, 2600, 1.4, .062], p: [0, 0, 0, 0, 900, .8, .050], t: [0, 0, 0, 0, 2600, 1, .044],
-  k: [0, 0, 0, 0, 1700, .9, .054], s: [0, 0, 0, 0, 6200, 1.6, .086], sh: [0, 0, 0, 0, 3000, 1.2, .092],
-  f: [0, 0, 0, 0, 4800, 1.1, .076], th: [0, 0, 0, 0, 5600, 1.1, .070], h: [0, 0, 0, 0, 1400, .5, .052],
-  ch: [0, 0, 0, 0, 2800, 1.2, .082],
-};
-const VD = { ee: 'iy', ea: 'iy', oo: 'uw', ou: 'aw', ow: 'ow', oa: 'ow', ai: 'ey', ay: 'ey', oi: 'oy', oy: 'oy', au: 'ao', aw: 'ao', ie: 'iy', ei: 'ey', ue: 'uw', ui: 'uw', eu: 'uw' };
-const SHORT = { a: 'ae', e: 'eh', i: 'ih', o: 'ao', u: 'ah' };
-const LONG = { a: 'ey', e: 'iy', i: 'ay', o: 'ow', u: 'uw' };
-// letters to phones: enough rules that the prosody and the consonant rhythm of real English come through
-function g2p(w) {
-  w = w.toLowerCase().replace(/[^a-z]/g, ''); const out = [], n = w.length; if (!n) return out;
-  for (let i = 0; i < n;) {
-    const c = w[i], c2 = w.substr(i, 2), c3 = w.substr(i, 3), nx = w[i + 1] || '', nx2 = w[i + 2] || '', last = i === n - 1;
-    if (c3 === 'tch') { out.push('ch'); i += 3; continue; }
-    if (c3 === 'igh') { out.push('ay'); i += 3; continue; }
-    if (c2 === 'sh' || c2 === 'ch' || c2 === 'th' || c2 === 'ng') { out.push(c2); i += 2; continue; }
-    if (c2 === 'ph') { out.push('f'); i += 2; continue; }
-    if (c2 === 'wh') { out.push('w'); i += 2; continue; }
-    if (c2 === 'ck') { out.push('k'); i += 2; continue; }
-    if (c2 === 'qu') { out.push('k', 'w'); i += 2; continue; }
-    if (c2 === 'kn' || c2 === 'gn') { out.push('n'); i += 2; continue; }
-    if (VD[c2] && !(c2 === 'ie' && last)) { out.push(VD[c2]); i += 2; continue; }
-    if (SHORT[c]) {
-      if (nx === 'r' && !'aeiou'.includes(nx2)) { out.push(c === 'a' || c === 'o' ? 'ao' : 'er', 'r'); i += 2; continue; }
-      if (c === 'e' && last && out.length) { i++; continue; }                                  // silent final e
-      if (nx && !'aeiouy'.includes(nx) && nx2 === 'e' && i + 2 === n - 1) { out.push(LONG[c]); i++; continue; }   // a-e pattern: name, hope
-      if (last || (nx === 'y' && i + 1 === n - 1)) { out.push(c === 'e' ? 'iy' : LONG[c]); i += last ? 1 : 2; continue; }
-      out.push(SHORT[c]); i++; continue;
-    }
-    if (c === 'y') { out.push(i === 0 ? 'y' : last ? 'iy' : 'ay'); i++; continue; }
-    if (c === 'c') { out.push('eiy'.includes(nx) ? 's' : 'k'); i++; continue; }
-    if (c === 'x') { out.push('k', 's'); i++; continue; }
-    if (CONS[c]) { if (out[out.length - 1] !== c) out.push(c); i++; continue; }
-    i++;
-  }
-  if (!out.some(p => VOWEL[p])) out.push('ah');
-  return out;
-}
-/* voice profiles: [pitch Hz, formant scale (vocal tract), rasp, rate, jitter]. Pitch and tract length
-   are what make one person sound unlike another; the rest is the radio. */
-const VOX = {
-  prof: {
-    baker: [102, .97, .22, .98, .018], waldron: [127, 1.03, .16, 1.08, .024], algo: [114, 1.0, .30, 1.0, .030],
-    bart: [92, .92, .38, .92, .034], watkins: [149, 1.11, .14, 1.14, .028], nick: [110, 1.0, .10, 1.02, .012],
-    entity: [56, .78, .95, .70, .120], pa: [118, 1.0, .04, .96, .004],
-  },
-  lines: {
-    spot: ['I have movement. Bearing on my mark.', 'Something is out there with us.', 'Contact. I see it moving.'],
-    panic: ['It is coming, it is coming, go, go!', 'Get it off me! Get it off!', 'I cannot hold here, falling back!'],
-    hurt: ['I am hit. Suit is venting.', 'My leg, my leg is gone.', 'I am down, I am down.'],
-    calm: ['Holding. Still breathing.', 'Copy that. Moving up.', 'I am all right. Keep going.'],
-    death: ['No, no, no, do not let it, do not let it.', 'Tell them what happened here.', 'God, it is inside the suit.'],
-  },
-};
-function speakSyn(sp, text, opts) {
-  if (!AU.ctx) return false; opts = opts || {}; const C = AU.ctx;
-  const P = VOX.prof[sp] || VOX.prof.nick; let p0 = P[0], fs = P[1], rasp = P[2], rate = P[3], jit = P[4];
-  if (opts.dup) { p0 *= .74; rate *= .84; rasp = Math.max(rasp, .55); fs *= .96; }
-  if (opts.panic) { p0 *= 1.20; rate *= 1.16; jit *= 1.6; }
-  if (opts.calm) { rate *= .94; }
-  const raw = TTS.clean(text); if (!raw || !/[a-z]/i.test(raw)) return false;
-  const ask = /\?\s*$/.test(raw), bang = /!/.test(raw);
-  if (bang) { p0 *= 1.08; rate *= 1.07; }
-  // phone schedule
-  const seq = []; const words = raw.split(/\s+/).slice(0, 14);
-  for (let wi = 0; wi < words.length; wi++) {
-    const pw = g2p(words[wi]); if (!pw.length) continue;
-    let firstV = true;
-    for (const k of pw) {
-      if (VOWEL[k]) { seq.push({ k, v: 1, d: (firstV ? .118 : .092) * (pw.length > 5 ? .9 : 1), a: firstV ? .62 : .46 }); firstV = false; }
-      else { const c = CONS[k]; if (c) seq.push({ k, v: c[3], d: c[6], a: c[3] ? .30 : 0 }); }
-    }
-    const tail = /[.,;:!?]$/.test(words[wi]);
-    seq.push({ gap: 1, d: tail ? (/[.!?]$/.test(words[wi]) ? .20 : .14) : .052 });
-    if (seq.reduce((s, q) => s + q.d, 0) / rate > 4.2) break;
-  }
-  if (!seq.length) return false;
-  let total = 0; for (const q of seq) { q.d /= rate; total += q.d; }
-  const t0 = C.currentTime + .035, tEnd = t0 + total;
-  // ---- nodes
-  const out = C.createGain(); out.gain.value = (opts.gain === undefined ? 1.9 : opts.gain);
-  let tip = out;
-  if (rasp > .5) { const rm = C.createGain(); rm.gain.value = 1 - rasp * .45; const ro = C.createOscillator(); ro.frequency.value = 23 + rasp * 44; const rg = C.createGain(); rg.gain.value = rasp * .5; ro.connect(rg); rg.connect(rm.gain); ro.start(t0); ro.stop(tEnd + .2); rm.connect(out); tip = rm; }
-  const mix = C.createGain(); mix.gain.value = 1; mix.connect(tip); out.connect(AU.radio);
-  const vg = C.createGain(); vg.gain.value = .0001;
-  const osc = C.createOscillator(); osc.type = 'sawtooth'; const o2 = C.createOscillator(); o2.type = 'square';
-  const o2g = C.createGain(); o2g.gain.value = .22; osc.connect(vg); o2.connect(o2g); o2g.connect(vg);
-  const FT = []; [[7, 1], [9, .52], [11, .2]].forEach(([q, g], i) => { const f = C.createBiquadFilter(); f.type = 'bandpass'; f.Q.value = q; f.frequency.value = 500; const gg = C.createGain(); gg.gain.value = g; vg.connect(f); f.connect(gg); gg.connect(mix); FT.push(f); });
-  const ns = C.createBufferSource(); ns.buffer = AU.nb; ns.loop = true; const nf = C.createBiquadFilter(); nf.type = 'bandpass'; nf.Q.value = 1; nf.frequency.value = 2500;
-  const ng = C.createGain(); ng.gain.value = .0001; ns.connect(nf); nf.connect(ng); ng.connect(mix);
-  // ---- automation
-  let t = t0, i = 0, nv = 0; const nVow = seq.filter(q => q.v).length || 1;
-  osc.frequency.setValueAtTime(p0, t0); o2.frequency.setValueAtTime(p0, t0);
-  let lastF = [500, 1500, 2500];
-  for (const q of seq) {
-    const prog = nv / nVow, dec = 1 - prog * .16;                       // pitch falls across the sentence
-    if (q.gap) { vg.gain.setTargetAtTime(.0001, t, .012); ng.gain.setTargetAtTime(.0001, t, .012); t += q.d; continue; }
-    if (q.v) {
-      const F = VOWEL[q.k] || CONS[q.k], f1 = F[0] * fs, f2 = F[1] * fs, f3 = F[2] * fs;
-      const ramp = Math.min(.035, q.d * .5);
-      FT[0].frequency.setValueAtTime(lastF[0], t); FT[0].frequency.linearRampToValueAtTime(f1, t + ramp);
-      FT[1].frequency.setValueAtTime(lastF[1], t); FT[1].frequency.linearRampToValueAtTime(f2, t + ramp);
-      FT[2].frequency.setValueAtTime(lastF[2], t); FT[2].frequency.linearRampToValueAtTime(f3, t + ramp);
-      lastF = [f1, f2, f3];
-      const stress = VOWEL[q.k] ? 1 : .82;
-      let hz = p0 * dec * stress * (1 + (Math.random() - .5) * jit * 2);
-      if (ask && nv > nVow - 2) hz *= 1.16;
-      osc.frequency.linearRampToValueAtTime(hz, t + q.d * .7); o2.frequency.linearRampToValueAtTime(hz, t + q.d * .7);
-      vg.gain.setTargetAtTime(q.a, t, .010);
-      if (VOWEL[q.k]) nv++;
-      const nF = CONS[q.k] && CONS[q.k][4]; if (nF) { nf.frequency.setValueAtTime(nF, t); ng.gain.setTargetAtTime(.055, t, .008); } else ng.gain.setTargetAtTime(.0001, t, .010);
-    } else {
-      const c = CONS[q.k]; vg.gain.setTargetAtTime(.0001, t, .006);                       // the voice stops for a stop
-      nf.frequency.setValueAtTime(c[4], t); nf.Q.value = c[5];
-      const burst = q.k === 'p' || q.k === 't' || q.k === 'k' || q.k === 'ch';
-      ng.gain.cancelScheduledValues(t); ng.gain.setValueAtTime(.0001, t);
-      ng.gain.linearRampToValueAtTime(burst ? .30 : .16, t + (burst ? .006 : .016));
-      ng.gain.exponentialRampToValueAtTime(.0001, t + q.d * (burst ? .8 : 1));
-    }
-    t += q.d; i++;
-  }
-  vg.gain.setTargetAtTime(.0001, tEnd, .02); ng.gain.setTargetAtTime(.0001, tEnd, .02);
-  osc.start(t0); o2.start(t0); ns.start(t0, Math.random() * 1.5);
-  osc.stop(tEnd + .15); o2.stop(tEnd + .15); ns.stop(tEnd + .15);
-  // the loop opening and closing around the transmission
-  noise(AU.radio, t0 - .03, .055, 'bandpass', 1700, 1, .26); noise(AU.radio, tEnd + .02, .09, 'bandpass', 1500, 1, .22);
-  return true;
-}
-VOICE.speak = speakSyn;
-/* one call for the whole game: a real clip if there is one, otherwise the line is spoken. */
-/* Spoken lines. Every line of dialogue in the game also exists as a recording in voices/tts/, rendered once on the
-   player's own machine by its speech synthesiser (voices/make-voices.sh), one voice per character. They are played
-   through the comms chain like everything else on the loop. A line with no recording falls through to the formant
-   synthesiser below, so a missing file is never silence. */
-const TTS = { ok: null, buf: {}, wait: {}, base: 'voices/tts/',
-  rate: { baker: .97, waldron: 1.03, algo: 1.0, bart: .93, watkins: 1.07, nick: 1.0, pa: 1.0, entity: .72 },
-  clean(text) { return String(text || '').replace(/\[[^\]]*\]/g, ' ').replace(/-{2,}/g, ' ').replace(/\s+/g, ' ').trim(); },
-  key(sp, text) { const s = sp + '|' + this.clean(text).toLowerCase(); let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return sp + '_' + (h >>> 0).toString(16).padStart(8, '0'); },
-  load() { if (this.ok !== null) return; this.ok = {};
-    fetch(this.base + 'index.json', { cache: 'no-store' }).then(r => { if (!r.ok) throw 0; return r.json(); }).then(list => { for (const k of list) this.ok[k] = 1; let i = 0; const next = () => { if (i < list.length) this.get(list[i++]).then(next, next); }; next(); next(); next(); }).catch(() => { }); },
-  get(k) { if (this.buf[k]) return Promise.resolve(this.buf[k]); if (!this.wait[k]) this.wait[k] = fetch(this.base + k + '.m4a').then(r => { if (!r.ok) throw 0; return r.arrayBuffer(); }).then(b => AU.ctx.decodeAudioData(b)).then(b => { this.buf[k] = b; return b; }); return this.wait[k]; },
-  play(b, sp, opts) { const C = AU.ctx, t = C.currentTime + .03, r = (this.rate[sp] || 1) * (opts.dup ? .8 : 1) * (opts.panic ? 1.05 : 1);
-    const one = (rate, delay, vol) => { const s = C.createBufferSource(), g = C.createGain(); s.buffer = b; s.playbackRate.value = rate; g.gain.value = vol; s.connect(g); g.connect(AU.radio); s.start(t + delay); };
-    if (opts.dup) { one(r, 0, 1.5); one(r * .9, .3, .9); } else one(r, 0, opts.gain === undefined ? 1.9 : opts.gain);
-    noise(AU.radio, t - .03, .055, 'bandpass', 1700, 1, .26); noise(AU.radio, t + b.duration / r + .02, .09, 'bandpass', 1500, 1, .22); },
-  say(sp, text, opts) { if (!AU.ctx || !this.ok) return false; const k = this.key(sp, text); if (!this.ok[k]) return false;
-    if (this.buf[k]) this.play(this.buf[k], sp, opts); else this.get(k).then(b => this.play(b, sp, opts), () => speakSyn(sp, text, opts)); return true; },
-};
-VOICE.utter = function (sp, ev, text, opts) {
-  opts = opts || {};
-  if (sp && ev && this.say(sp, ev, Object.assign({ fail: () => this.utter(sp, null, text || (VOX.lines[ev] || VOX.lines.calm)[0], opts) }, opts))) return true;
-  if (text && /[a-z]/i.test(TTS.clean(text)) && TTS.say(sp || 'nick', text, Object.assign({ panic: ev === 'panic' || ev === 'hurt' || ev === 'death' }, opts))) return true;
-  let line = text;
-  if (!line || !/[a-z]/i.test(line)) line = (VOX.lines[ev] || VOX.lines.calm)[(Math.random() * (VOX.lines[ev] || VOX.lines.calm).length) | 0];
-  return speakSyn(sp || 'nick', line, Object.assign({ panic: ev === 'panic' || ev === 'hurt' || ev === 'death' }, opts));
-};
+VOICE.utter = function (sp, ev, text, opts) { opts = opts || {}; return !!(sp && ev && this.say(sp, ev, opts)); };
+/* burns and the landing: stand-ins until the recordings load (see the SND wiring below them) */
+sfx.ignite = v => { if (!AU.ctx) return; sfx.rumble(1.2 * v); noise(AU.suit, now(), .7, 'lowpass', 260, 1, .7 * v); };
+sfx.gear = () => { if (!AU.ctx) return; noise(AU.suit, now(), .09, 'lowpass', 420, 1, .7); noise(AU.suit, now() + .32, .14, 'lowpass', 180, 1, .9); };
+sfx.touchdown = v => { if (!AU.ctx) return; sfx.rumble(1.7 * v); noise(AU.suit, now(), .22, 'lowpass', 120, 1, 1.2 * v); noise(AU.suit, now() + .16, .5, 'lowpass', 300, 1, .5 * v); };
+sfx.puff = v => { if (!AU.ctx) return; noise(AU.suit, now(), .12, 'bandpass', 900, .6, .12 * (v || 1)); };
 
 /* ================================================================ PART TWO: ERV ITHACA, AND HOME
    Argus A-2 carries you up to the Earth Return Vehicle, parked cold round Callisto for two years. You are the only
@@ -9223,7 +9073,7 @@ function shUse(it, p, X) {
 function shFire(dt, cmd, p, X) {
   if (cmd.fire) p.fireBuf = .16; else p.fireBuf -= dt;
   const w = X.w;
-  if (p.fireBuf > 0 && S.crew.id === 'baker' && p.fireT > .38) { p.fireBuf = 0;
+  if (p.fireBuf > 0 && p.fireT > (S.crew.id === 'baker' ? .3 : .42)) { p.fireBuf = 0;
     if (p.ammo <= 0) { p.fireT = .2; if (AU.ctx) sfx.click(); }
     else { p.ammo--; p.fireT = 0; S.shake = Math.max(S.shake, .35); if (AU.ctx) sfx.shot(); shNoise(p.x, p.z, 30); hudDirty = true;
       const yw = p.yaw + p.kickY, pt = p.pitch + p.kickP, cp = Math.cos(pt), o = [p.x, p.eye - .06, p.z], dir = [Math.sin(yw) * cp, Math.sin(pt), -Math.cos(yw) * cp]; p.kickP += .055; p.kickY += (S.rng() - .5) * .03;
@@ -9379,7 +9229,17 @@ function shipRender(dt, t, asp) {
   for (const b of X.bl) { const dB = Math.hypot(b.x - e[0], b.z - e[2]); if (dB > 34) continue;
     if (BLK_OK) { BLANK.update(b.rig, { x: b.x, z: b.z, heading: b.heading, speed: b.spd, frozen: b.frozen, reach: b.reach, cut: b.cut, look: Math.atan2(e[0] - b.x, -(e[2] - b.z)), stun: Math.max(0, b.stun) }, dt, flat0); BLANK.emit(B, b.rig, dB > 20 ? 1 : 0); }
     else { const lay = b.stun > 0; B.box(lay ? [b.x, .06, b.z] : [b.x, .95, b.z], [lay ? .9 : .16, 0, 0], [0, lay ? .04 : .95, 0], [0, 0, .03], TL.METAL, .8, 0); } mark(b.stun > 0 ? .3 : 0); }
-  if (S.crew.id === 'baker' && !S.over && !X.hide && !p.low && !X.burn) { emitGun(B, cam, p, dt); mark(0); }
+  if (!S.over && !X.hide && !p.low && !X.burn) { emitGun(B, cam, p, dt); mark(0); }
+  /* Cold gas. Opening the propellant valves dumps the line pressure into the compartment through the reliefs for a few
+     seconds, and on the burn the bow jets fire across the flight deck windows to hold her nose on the line home. */
+  if (X.valT > 0) { const s = st.valve, k = Math.min(1, X.valT / 1.2), ox = s.x + .5 + s.face[0] * .42, oz = s.z + .5 + s.face[1] * .42;
+    for (let i = 0; i < 4; i++) { const fz = hsh(i, Math.floor(t * 17)); if (fz < .25) continue; const y = .5 + i * .45, a = (i - 1.5) * .5 + (fz - .5) * .3;
+      const d = V3.norm([-s.face[0] * Math.cos(a) - s.face[1] * Math.sin(a), .25 * (i % 2 ? 1 : -1) + .1, -s.face[1] * Math.cos(a) + s.face[0] * Math.sin(a)]);
+      gasJet(B, cam, [ox, y, oz], d, (1.1 + fz) * k, .03, .5, 1.3, 1 - .85 * k); gasJet(B, cam, [ox, y, oz], d, .5 * k, .015, .12, 2.6, 1 - .95 * k); } mark(0); }
+  if (X.burn) { const u = X.burnT;
+    for (let i = 0; i < 4; i++) { const sx = i < 2 ? 9.3 : 18.7, dx = i < 2 ? 1 : -1, y = i % 2 ? 2.3 : .9, f = u < .5 ? [1, u] : rcsFire(u + i * .19, i, 3) || (hsh(i, Math.floor(u * 3)) < .6 ? [1, .3] : null);
+      rcsJet(B, cam, [sx, y, -1.6], V3.norm([dx * .55, i % 2 ? -.15 : .2, -.8]), f, 4.5); }
+    if (u < 1.2) gasPuff(B, cam, [14, 1.5, -6], 3 + u * 16, 2 + u * 9, 1.4, .25 + u * .7); mark(0); }
   gl.bindBuffer(gl.ARRAY_BUFFER, R.dyn.b); gl.bufferSubData(gl.ARRAY_BUFFER, 0, B.d.subarray(0, B.n * STRIDE));
   gl.bindFramebuffer(gl.FRAMEBUFFER, R.fbo); gl.viewport(0, 0, R.sw, R.sh); gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   p2Sky(cam, t, asp, 0); p2Cull(R.deck, cam, 46, pitch); p2Depth(R.deck, cam);
@@ -9388,7 +9248,7 @@ function shipRender(dt, t, asp) {
   const u = p2World(cam, t, flash * (1 - .4 * flick), [0, .004 + flick * .05, 0]);
   const stS = { reactor: X.bus ? 2 : 1, core: X.core ? 2 : 1, nav: X.core === 2 ? 2 : X.core === 1 ? 1 : 0, valve: X.valve ? 2 : 1, burn: X.burn ? 2 : done3 ? 1 : 0 };
   const Ls = []; for (const l of R.deckInfo.lights || []) { let i; if (l.kind === 'console') { const s = stS[l.station] || 0; i = s === 2 ? l.i : s === 1 ? l.i * 1.5 * (.55 + .45 * Math.sin(5.5 * t)) : 0; } else i = l.kind === 'emg' ? l.i * (1 - flick * .6) : l.i * flick * .68; if (i > .01) Ls.push([l.x, l.y, l.z, l.r, i]); }
-  if (p.fireT < .07 && S.crew.id === 'baker') Ls.push([GUN.mz[0], GUN.mz[1], GUN.mz[2], 22, 3.4]);
+  if (p.fireT < .07) Ls.push([GUN.mz[0], GUN.mz[1], GUN.mz[2], 22, 3.4]);
   if (!DK_OK) for (const it of shInteracts(X)) if (it.id !== 'hide') Ls.push([it.x, 1.3, it.z, 3.2, .35 + .25 * Math.sin(t * 4)]);
   if (X.burn) Ls.push([13.5, 1.5, 3.5, 30, X.burnT * .8]);
   p2Lights(u, Ls, e);
@@ -9433,10 +9293,10 @@ function p2Hud(o) {
   txt(garbleText(obj, gz * .6), cw / 2, top, 14, 'center', C_AMB);
   hx.fillStyle = 'rgba(236,236,230,.25)'; hx.fillRect(mx * u, 236 * u, 70 * u, 3 * u); hx.fillStyle = '#ececE6'; hx.fillRect(mx * u, 236 * u, 70 * u * p.stam, 3 * u);
   if (X.cut) txt(`CUT ${X.cut} OF 3`, mx, 232, 12, 'left', C_RED);
-  if (S.crew.id === 'baker') txt(`ROUNDS ${p.ammo}`, cw - mx, 180, 14, 'right', p.ammo ? C_AMB : C_RED); else if (p.pulses > 0) txt(`PULSE ${p.pulses}  [Q]`, cw - mx, 180, 14, 'right', C_AMB);
+  txt(`ROUNDS ${p.ammo}`, cw - mx, 180, 14, 'right', p.ammo ? C_AMB : C_RED); if (p.pulses > 0) txt(`PULSE ${p.pulses}  [Q]`, cw - mx, 164, 14, 'right', C_AMB);
   shMinimap(u, cw - mx - 54, 186, 54, p, X);
   if (S.near) { txt(`HOLD E  ${S.near.label}`, cw / 2, 176, 14, 'center'); if (p.hold > 0 && S.near.id !== 'hide') { hx.fillStyle = 'rgba(236,236,230,.25)'; hx.fillRect((cw / 2 - 50) * u, 182 * u, 100 * u, 4 * u); hx.fillStyle = '#fff'; hx.fillRect((cw / 2 - 50) * u, 182 * u, 100 * u * p.hold, 4 * u); } }
-  else if (S.crew.id === 'baker') { hx.fillStyle = 'rgba(255,255,255,.7)'; hx.fillRect((cw / 2 - .5) * u, 143.5 * u, u, u); }
+  else { hx.fillStyle = 'rgba(255,255,255,.7)'; hx.fillRect((cw / 2 - .5) * u, 143.5 * u, u, u); }
   if (p.hitT < .1) { hx.strokeStyle = '#fff'; hx.lineWidth = 1.2 * u; hx.beginPath(); for (const [a, b] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) { hx.moveTo((cw / 2 + a * 3) * u, (144 + b * 3) * u); hx.lineTo((cw / 2 + a * 7) * u, (144 + b * 7) * u); } hx.stroke(); }
   radio(212);
 }
@@ -9506,7 +9366,7 @@ function homeAudioFrame() {
 const $ = id => document.getElementById(id);
 const CREW = [
   { id: 'baker', name: 'CASE D. BAKER', short: 'BAKER', role: 'MISSION COMMANDER', tag: 'CDR C. BAKER', pitch: 150,
-    bio: 'Commanded Odyssey 9 and picked Stewart for the ground chair himself. The only one of the five who came home. He has not spoken about it since.', trait: 'Steady under fire. Carried the sidearm.' },
+    bio: 'Commanded Odyssey 9 and picked Stewart for the ground chair himself. The only one of the five who came home. He has not spoken about it since.', trait: 'Steady under fire. The best shot of the five.' },
   { id: 'waldron', name: 'FORREST WALDRON', short: 'WALDRON', role: 'PILOT', tag: 'PLT F. WALDRON', pitch: 210,
     bio: 'Flew the descent to Callisto. His twin brother, Forrest Starling, asked questions after the mission and was silenced.', trait: 'Calm, curious, quick on his feet.' },
   { id: 'algo', name: 'MATEO O. ALGO', short: 'O. ALGO', role: 'MISSION SPECIALIST', tag: 'MS M. O. ALGO', pitch: 170,
@@ -9534,8 +9394,8 @@ uniform mat4 uVP,uSVP; uniform vec3 uOfs; out vec3 vW,vUv,vN,vC,vS;
 invariant gl_Position;
 void main(){ vW=aPos+uOfs; vUv=aUv; vN=aN; vC=aC; vec4 s=uSVP*vec4(vW+aN*.4,1.); vS=s.xyz*.5+.5; gl_Position=uVP*vec4(vW,1.); }`;
 const VS_D = `#version 300 es
-layout(location=0) in vec3 aPos; uniform mat4 uSVP; uniform vec3 uOfs; invariant gl_Position;
-void main(){ vec3 w=aPos+uOfs; gl_Position=uSVP*vec4(w,1.); }`;
+layout(location=0) in vec3 aPos; layout(location=3) in vec3 aC; uniform mat4 uSVP; uniform vec3 uOfs; invariant gl_Position;
+void main(){ vec3 w=aPos+uOfs; gl_Position=aC.z>.001?vec4(2.,2.,2.,1.):uSVP*vec4(w,1.); }`;
 const FS_D = `#version 300 es
 precision highp float; void main(){}`;
 /* Surface shading follows how airless regolith actually reflects: Lommel-Seeliger rather than Lambert, with an
@@ -9548,6 +9408,7 @@ ${GLSL_NOISE}
 float ls(float m0,float m){ return 2.*m0/(m0+m+1e-3); }
 void main(){
  vec4 t=texture(uTex,vUv); if(t.a<.5) discard;
+ if(vC.z>.001&&h21(gl_FragCoord.xy+vec2(floor(uTime*24.)*7.31,3.7))<vC.z) discard;
  vec3 n=normalize(vN); float bk=1.; vec3 tc=uCam-vW; float d=length(tc); vec3 V=tc/d; vec3 alb=t.rgb*vC.x*uTint[int(vUv.z+.5)];
  if(uTerr>.5){ float e=.045; vec2 p=vW.xz; float fade=clamp(1.-d/110.,0.,1.);
    float cl=clamp(1.-d/26.,0.,1.);
@@ -9664,7 +9525,7 @@ const FOE_KEI = [[214, 246], [46, 192], [196, 120], [164, 280], [100, 160], [134
 function newGame(crewIdx) {
   const rng = mulberry(2011 + crewIdx), c = CREW[crewIdx];
   S = { t: 0, left: 600, rng, crew: c, crewIdx, stage: 0, over: null, overT: 0, micOn: false, cine: null,
-    players: [{ x: START.x + 3.7, z: START.z + .6, yaw: 0, pitch: 0, vx: 0, vz: 0, stam: 1, lamp: true, bob: 0, breach: 0, ammo: 12, pulses: c.id === 'algo' ? 3 : 0, y: 0, vy: 0, air: 0, coyote: 0, jbuf: 0, fireT: 9, fireBuf: 0, kickP: 0, kickY: 0, hitT: 9, fovK: 0, hold: 0, holdId: null, stepD: 0 }],
+    players: [{ x: START.x + 3.7, z: START.z + .6, yaw: 0, pitch: 0, vx: 0, vz: 0, stam: 1, lamp: true, bob: 0, breach: 0, ammo: c.id === 'baker' ? 21 : 12, pulses: c.id === 'algo' ? 3 : 0, y: 0, vy: 0, air: 0, coyote: 0, jbuf: 0, fireT: 9, fireBuf: 0, kickP: 0, kickY: 0, hitT: 9, fovK: 0, hold: 0, holdId: null, stepD: 0 }],
     foes: [], reactor: false, lines: [], spawnT: 40, cr: {}, code: 0, flow: new Int16Array(MW * MH), flowT: 0,
     prints: [], dust: [], brass: [], climb: null, brk: {}, signal: 1, glitch: 0, burstT: 6, burst: 0, freeze: 0, prox: 0, breath: 0, heartT: 0, keiT: 3, scanT: 0, scan: [], shake: 0, white: 0, script: 0, killer: null, launchT: 0, said: {} };
   FOE_KEI.forEach(([x, z], i) => S.foes.push(mkFoe('kei', x, z, -1, i)));
@@ -9698,7 +9559,7 @@ function say(who, text, o) { o = o || {}; S.lines.push({ who, text, t: S.t, calm
   // who is talking: the explicit voice slot, else the name on the line
   const sp = o.voice ? o.voice[0] : /nick/i.test(who) ? 'nick' : /odyssey|capcom|houston|suit|argus|ithaca/i.test(who) ? 'pa' : /unknown|keis/i.test(who) ? 'entity' : (CREW.find(c => who.indexOf(c.short.split(' ').pop()) >= 0) || {}).id || 'nick';
   if (VOICE.utter(sp, o.voice ? o.voice[1] : null, text, { dup: o.dup, calm: o.calm })) return;
-  sfx.garble(o.pitch || 120, text.length, o.calm); }
+  if (sp === 'entity') sfx.kei(.5, 0); else sfx.loopOpen(sp === 'nick' ? 'ground' : sp === 'pa' ? 'pa' : 'suit', text.length); }
 const pitchOf = id => (CREW.find(c => c.id === id) || {}).pitch || 110;
 function buildScript() {
   const me = S.crew.id, sc = [];
@@ -9758,6 +9619,12 @@ function crewRole(f, dt, p, d) {
   let kd = 1e9; for (const g of S.foes) if (g.kind === 'kei' && g.stun <= 0 && !g.kin) { const gd = Math.hypot(g.x - f.x, g.z - f.z); if (gd < kd) kd = gd; }
   f.panic = lerp(f.panic, clamp(1 - kd / 22, 0, 1), dt * 2); f.open = lerp(f.open, f.panic > .6 ? 1 : 0, dt * 3);
   if (f.bait && kd < 1.25) { crewTaken(f); return true; }
+  /* Everyone carries the sidearm and everyone uses it. None of them is Baker: they wait until it is close, they miss
+     about half the time, and a hit buys three seconds, not eight. It never stops the one that has come for them. */
+  if (id !== 'baker' && f.ammo > 0 && !f.cy) { f.shotT = (f.shotT || 0) - dt;
+    if (f.shotT <= 0) { let b = null, bd = 17; for (const g of S.foes) if (g.kind === 'kei' && g.stun <= 0 && g.active && !g.kin) { const gd = Math.hypot(g.x - f.x, g.z - f.z); if (gd < bd && los(f.x, f.z, g.x, g.z)) { bd = gd; b = g; } }
+      if (!b) f.shotT = .35; else { f.ammo--; f.flash = .09; f.fired = S.t; f.aimAt = Math.atan2(b.x - f.x, -(b.z - f.z)); f.shotT = 1.1 + S.rng() * 1.6; if (AU.ctx) sfx.tick();
+        if (!b.lock && S.rng() < .55) b.stun = Math.max(b.stun, 3); if (f.ammo === 0) crewLine(id, 'I AM OUT. I AM OUT.'); } } }
   if (id === 'watkins') {
     if (f.rs === 0) { f.active = false; f.heading += angd(Math.atan2(p.x - f.x, -(p.z - f.z)), f.heading) * Math.min(1, dt * 2); if (S.t > 12) { f.rs = 1; crewLine('watkins', 'I AM NOT STAYING HERE. I AM GOING FOR THE SHIP.'); } }
     else { crewPath(f, 5.4, dt); f.bait = true; if (f.rs === 1 && Math.hypot(f.x - f.x0, f.z - f.z0) > 22) { f.rs = 2; crewTaker(f, 'rusher', 57); crewLine('watkins', 'WHAT THE F--- WAS THAT?', 'spot'); } } }
@@ -9785,7 +9652,7 @@ function crewRole(f, dt, p, d) {
       if (f.rs === 2 && d > 6.5) crewGo(f, p.x, p.z, Math.min(5.6, 2 + d * .5), dt); else f.active = false;
       f.shotT -= dt;
       if (f.shotT <= 0) { let b = null, bd = 48; for (const g of S.foes) if (g.kind === 'kei' && g.stun <= 0 && g.active && !g.kin) { const gd = Math.hypot(g.x - f.x, g.z - f.z); if (gd < bd && Math.hypot(g.x - p.x, g.z - p.z) < 42 && los(f.x, f.z, g.x, g.z)) { bd = gd; b = g; } }
-        if (!b) f.shotT = .4; else { f.ammo--; f.flash = .09; f.shotT = 1.5 + S.rng(); b.stun = 8; f.heading = Math.atan2(b.x - f.x, -(b.z - f.z)); if (AU.ctx) sfx.tick();
+        if (!b) f.shotT = .4; else { f.ammo--; f.flash = .09; f.fired = S.t; f.aimAt = Math.atan2(b.x - f.x, -(b.z - f.z)); f.shotT = 1.5 + S.rng(); b.stun = 8; f.heading = f.aimAt; if (AU.ctx) sfx.tick();
           if (f.ammo === 6) { f.shotT = 4.5; crewLine('baker', 'I GOT A GUN!! RELOADING!!', 'panic'); }
           else if (f.ammo <= 0) { f.rs = 3; crewLine('baker', 'That is all of it. I am dry. Go on. I will hold them here.'); } } }
       if (f.rs < 3 && S.climb) { f.rs = 3; crewLine('baker', 'Climb. Do not look down. I will keep them off the ladder.'); } }
@@ -9898,7 +9765,7 @@ function step(dt, cmd) {
   // sidearm. A click is buffered briefly so a shot asked for just before the gun is ready still fires.
   if (cmd.fire) p.fireBuf = .16; else p.fireBuf -= dt; p.hitT += dt;
   p.kickP *= Math.exp(-dt * 7); p.kickY *= Math.exp(-dt * 13);
-  if (p.fireBuf > 0 && S.crew.id === 'baker' && p.fireT > .38) { p.fireBuf = 0;
+  if (p.fireBuf > 0 && p.fireT > (S.crew.id === 'baker' ? .3 : .42)) { p.fireBuf = 0;
     if (p.ammo <= 0) { p.fireT = .2; if (AU.ctx) sfx.click(); }
     else { p.ammo--; p.fireT = 0; S.shake = Math.max(S.shake, .35); if (AU.ctx) sfx.shot(); if (p.ammo === 6) selfVoice('panic', 5);
       ejectCase(p);
@@ -9989,6 +9856,58 @@ function skyStep(dt) {
   if (K.boom && !K.boomed && tt > K.boom) { K.boomed = 1; S.shake = 1; if (AU.ctx) sfx.rumble(1.6); say('SUIT', 'GROUND SHOCK. NOTHING ON THE LOOP.'); }
 }
 /* The ascent stage leaving without you: a hard-edged plume, because there is no air to spread it. */
+/* Gas has no surface. Every puff is written with a thinness in the spare vertex channel (0 solid, 1 nothing) and the
+   world shader cuts it down to film grain, so a cloud thins out toward its edge instead of ending at one. */
+const gasV = (B, p, em, a) => { B.v(p, .5, .5, TL.WHITE, [0, 1, 0], 0, em); B.d[(B.n - 1) * STRIDE + 11] = a < .004 ? .004 : a > 1 ? 1 : a; };
+function gasPuff(B, cam, p, rx, ry, em, thin) {
+  if (thin >= 1) return; const N = 10; let q = V3.mad(p, cam.r, rx);
+  for (let i = 1; i <= N; i++) { const a = i / N * 6.28318, r = V3.mad(V3.mad(p, cam.r, Math.cos(a) * rx), cam.up, Math.sin(a) * ry); gasV(B, p, em, thin); gasV(B, r, em * .7, 1); gasV(B, q, em * .7, 1); q = r; }
+}
+/* a jet seen from the side: dense on the axis at the throat, opening as it goes, gone at the flanks and the tip */
+function gasJet(B, cam, o, dir, len, w0, w1, em, thin) {
+  if (thin >= 1) return; let sd = V3.cross(dir, cam.f); const sl = Math.hypot(sd[0], sd[1], sd[2]); if (sl < .05) return gasPuff(B, cam, V3.mad(o, dir, len * .4), w1, w1, em, thin); sd = V3.mul(sd, 1 / sl);
+  const N = 4; let c0 = o, l0 = V3.mad(o, sd, w0), r0 = V3.mad(o, sd, -w0), t0 = thin, e0 = em;
+  for (let i = 1; i <= N; i++) { const k = i / N, w = w0 + (w1 - w0) * Math.pow(k, .8), c1 = V3.mad(o, dir, len * k), l1 = V3.mad(c1, sd, w), r1 = V3.mad(c1, sd, -w), t1 = thin + (1 - thin) * Math.pow(k, 1.3), e1 = em * (1 - .55 * k);
+    gasV(B, c0, e0, t0); gasV(B, l0, e0, 1); gasV(B, l1, e1, 1); gasV(B, c0, e0, t0); gasV(B, l1, e1, 1); gasV(B, c1, e1, t1);
+    gasV(B, c0, e0, t0); gasV(B, c1, e1, t1); gasV(B, r1, e1, 1); gasV(B, c0, e0, t0); gasV(B, r1, e1, 1); gasV(B, r0, e0, 1);
+    c0 = c1; l0 = l1; r0 = r1; t0 = t1; e0 = e1; }
+}
+const hsh = (a, b) => { const x = Math.sin(a * 127.1 + b * 311.7) * 43758.5453; return x - Math.floor(x); };
+/* Attitude jets are cold nitrogen: a hard white cone for as long as the valve is open, and a ball of it left
+   drifting off and thinning for a third of a second after. They fire in short opposed pairs on a ragged count. */
+function rcsFire(t, side, seed) { const L = .62, sl = Math.floor(t / L), h = hsh(sl + seed * 17.3, side * 3.1 + 1), tin = t - sl * L, dur = .07 + h * 1.6;
+  if (h > .3) return null; return tin < dur ? [1, tin] : tin - dur < .34 ? [0, tin - dur] : null; }
+function rcsJet(B, cam, o, dir, st, sc) { if (!st) return; const fl = .8 + .2 * Math.sin(S.t * 71 + o[0] * 9);
+  if (st[0]) { const k = Math.min(1, st[1] * 14); gasJet(B, cam, o, dir, .95 * sc * k * fl, .025 * sc, .34 * sc, 1.5, .12); gasJet(B, cam, o, dir, .42 * sc * k, .012 * sc, .09 * sc, 3.2, .02); }
+  else { const a = st[1]; gasPuff(B, cam, V3.mad(o, dir, (.75 + a * 2.6) * sc), (.26 + a * 1.5) * sc, (.26 + a * 1.5) * sc, 1.1, .45 + a * 1.7); } }
+/* Ground dust under a hovering engine goes out flat and fast in rays along the regolith and falls straight back:
+   there is no air to hold it, so it never billows. k is how hard the plume is on the ground, burst a one-off ring. */
+function gasGround(B, cx, cz, k, t, burst) {
+  const g = (dx, dz) => [cx + dx, groundY(cx + dx, cz + dz) + .12 + Math.hypot(dx, dz) * .03, cz + dz];
+  if (k > .01) for (let i = 0; i < 64; i++) { const a = i * 2.39996 + hsh(i, 2) * .4, sp = 34 + 30 * hsh(i, 5), R1 = 18 + 50 * k, ph = (t * sp / R1 + hsh(i, 9)) % 1, r0 = 1.5 + ph * R1, ln = (5 + 9 * hsh(i, 4)) * (.4 + ph), r1 = r0 + ln;
+    const ca = Math.cos(a), sa = Math.sin(a), px = -sa, pz = ca, w0 = .3 + r0 * .05, w1 = .3 + r1 * .07, th = clamp(1 - k * (1 - ph * ph) * .95, .1, 1), t1 = th + (1 - th) * .55, em = .95;
+    const a0 = g(ca * r0 - px * w0, sa * r0 - pz * w0), b0 = g(ca * r0 + px * w0, sa * r0 + pz * w0), c0 = g(ca * r0, sa * r0), a1 = g(ca * r1 - px * w1, sa * r1 - pz * w1), b1 = g(ca * r1 + px * w1, sa * r1 + pz * w1), c1 = g(ca * r1, sa * r1);
+    gasV(B, a0, em, 1); gasV(B, c0, em, th); gasV(B, c1, em, t1); gasV(B, a0, em, 1); gasV(B, c1, em, t1); gasV(B, a1, em, 1);
+    gasV(B, c0, em, th); gasV(B, b0, em, 1); gasV(B, b1, em, 1); gasV(B, c0, em, th); gasV(B, b1, em, 1); gasV(B, c1, em, t1); }
+  if (burst !== undefined && burst < 1.5) { const r = 4 + 60 * (1 - Math.exp(-burst * 2.2)), th = .08 + burst * .62;
+    for (let i = 0; i < 28; i++) { const a0 = i / 28 * 6.28318, a1 = (i + 1) / 28 * 6.28318, j = .75 + .5 * hsh(i, 7), ri = r * .45 * j, ro = r * j;
+      const p0 = g(Math.cos(a0) * ri, Math.sin(a0) * ri), p1 = g(Math.cos(a1) * ri, Math.sin(a1) * ri), q0 = g(Math.cos(a0) * ro, Math.sin(a0) * ro), q1 = g(Math.cos(a1) * ro, Math.sin(a1) * ro), m0 = g(Math.cos(a0) * (ri + ro) * .5, Math.sin(a0) * (ri + ro) * .5), m1 = g(Math.cos(a1) * (ri + ro) * .5, Math.sin(a1) * (ri + ro) * .5);
+      gasV(B, p0, 1, 1); gasV(B, p1, 1, 1); gasV(B, m1, 1, th); gasV(B, p0, 1, 1); gasV(B, m1, 1, th); gasV(B, m0, 1, th);
+      gasV(B, m0, 1, th); gasV(B, m1, 1, th); gasV(B, q1, 1, 1); gasV(B, m0, 1, th); gasV(B, q1, 1, 1); gasV(B, q0, 1, 1); } }
+}
+/* What the pod does to the outside of its own window: the nose jets, the skirt of the descent engine fanning out
+   wide below the sill the way a plume does with no air to hold it in, the puff of the gear charges, and the dust. */
+function emitPodFX(B, cam, o) {
+  const R = cam.r, U = cam.up, F = cam.f, e = cam.e, L = (x, y, z) => [e[0] + R[0] * x + U[0] * y - F[0] * z, e[1] + R[1] * x + U[1] * y - F[1] * z, e[2] + R[2] * x + U[2] * y - F[2] * z];
+  const D = (x, y, z) => V3.norm([R[0] * x + U[0] * y - F[0] * z, R[1] * x + U[1] * y - F[1] * z, R[2] * x + U[2] * y - F[2] * z]);
+  rcsJet(B, cam, L(-.26, -.5, -2.2), D(-.86, .34, -.2), o.rl, 1.5); rcsJet(B, cam, L(.26, -.5, -2.2), D(.86, .34, -.2), o.rr, 1.5); rcsJet(B, cam, L(0, -.56, -2.3), D(0, .93, -.3), o.ru, 1.3);
+  if (o.eng > .01) { const fh = V3.norm([F[0], 0, F[2]]), eo = [e[0] - fh[0] * 1.3, e[1] - 2.1, e[2] - fh[2] * 1.3], rt = [fh[2], 0, -fh[0]];
+    for (let i = 0; i < 17; i++) { const fz = hsh(i, Math.floor(S.t * 19)); if (fz < .2) continue; const az = (i / 16 - .5) * 2.6, tl = .62 + .5 * hsh(i, 3) + .12 * Math.sin(S.t * 23 + i);
+      const d = V3.norm([fh[0] * Math.cos(az) * Math.sin(tl) + rt[0] * Math.sin(az) * Math.sin(tl), -Math.cos(tl), fh[2] * Math.cos(az) * Math.sin(tl) + rt[2] * Math.sin(az) * Math.sin(tl)]);
+      gasJet(B, cam, V3.mad(eo, d, 1.1), d, (8 + 6 * fz) * o.eng, .2, 2.1, .85, 1 - .8 * o.eng * (.55 + .45 * fz)); } }
+  if (o.ign !== undefined && o.ign < .8) { const a = o.ign; gasPuff(B, cam, L(0, -.62 + a * .5, -2.3), .7 + a * 4.5, .5 + a * 3.2, 1.5, .2 + a * 1.05); }
+  if (o.gear !== undefined && o.gear < .5) { const a = o.gear; for (const sx of [-1, 1]) gasPuff(B, cam, L(sx * (.5 + a * .5), -.36 - a * .2, -1.5), .08 + a * .9, .08 + a * .7, 1.3, .25 + a * 1.6); }
+}
 function emitDepart(B, cam, t) {
   const sy = groundY(SHIP.x, SHIP.z), base = sy + 1.1;
   const h = 2.8 * t * t, c = [SHIP.x, base + h, SHIP.z], fl = .72 + .28 * Math.sin(S.t * 37);
@@ -10019,6 +9938,11 @@ function emitDepart(B, cam, t) {
         TL.WHITE, 0, (1.15 + .75 * Math.abs(Math.sin(i * 2.1 + S.t * 9))) * fade * fl);
     }
   }
+  // what the eye mostly catches of a plume in vacuum is the skirt: a wide, thin fan of gas round the hard core
+  gasJet(B, cam, [c[0], c[1] - .3, c[2]], [0, -1, 0], pl * 1.8, .5, 1 + pl * .55, 1.1 * fl, .32);
+  gasGround(B, SHIP.x, SHIP.z, clamp(1 - h / 45, 0, 1), S.t, t);
+  // attitude jets high on the ascent stage, holding her upright as she goes
+  for (let i = 0; i < 4; i++) { const sx = [1, -1, 0, 0][i], sz = [0, 0, 1, -1][i]; rcsJet(B, cam, [c[0] + sx * 2.6, c[1] + 12, c[2] + sz * 2.6], V3.norm([sx, .22, sz]), rcsFire(S.t + i * .23, i, 5), 5.5); }
 }
 function emitBreakup(B, cam) {
   const tt = S.t - BRK_T0; if (tt < 0 || tt > BRK_IMPACT + 2) return;
@@ -10086,22 +10010,32 @@ const QTES = [{ t: 6, key: 'Space', label: 'PRESS SPACE', what: 'FIRE RETRO BURN
 const CINE_LINES = [[1.5, 'NICK (CAPCOM)', 'EP-2, Nick. You are separated and go for powered descent.', 'nick'], [9.5, 'PLT F. WALDRON', 'Copy, Nick. Guidance and navigation look solid.', 'waldron'], [17, 'FE D. WATKINS', 'Pod is flying clean. Odyssey is holding station above us.', 'watkins'], [24.5, 'SO J. BARTOLOZZI', 'Noting an unscheduled power draw from Specialist Algo\'s locker.', 'bart'], [27, 'MS M. O. ALGO', 'Ignore the reading, Nick.', 'algo'], [33.5, 'CDR C. BAKER', 'Contact. Everything looks green up here, Houston.', 'baker'], [36.5, 'NICK (CAPCOM)', 'Enjoy the ride out there, buddies. Odyssey 9 is right over your heads.', 'nick']];
 function startCine() {
   const shots = W.sentinels.map(s => { let best = null, bd = 1e9; for (const p of PATHS[0].pts) { const d = Math.hypot(p[0] - s.x, p[1] - s.z); if (d < bd) { bd = d; best = p; } } return { s, cam: best, d: bd }; }).filter(o => o.d > 25 && o.d < 90).sort((a, b) => b.d - a.d).slice(0, 3);
-  S.cine = { t: 0, fails: 0, q: QTES.map(q => Object.assign({ done: 0, held: 0 }, q, q.hold ? (S.rng() < .5 ? { key: 'KeyD', label: 'HOLD D' } : {}) : {})), li: 0, shots, phase: 'descent', shotN: -1, skip: 0 };
+  S.cine = { t: 0, fails: 0, q: QTES.map(q => Object.assign({ done: 0, held: 0 }, q, q.hold ? (S.rng() < .5 ? { key: 'KeyD', label: 'HOLD D' } : {}) : {})), li: 0, shots, phase: 'descent', shotN: -1, skip: 0, h: 1500, vy: 0, eng: 0, dust: 0, seed: S.rng() * 99 };
   for (const k in keys) keys[k] = false;
   if (AU.ctx) NASA.cine = NASA.play('land', 58, 100, { gain: .5, dest: AU.radio, fade: 1 });
 }
 function cineStep(dt) {
   const c = S.cine; c.t += dt; S.t += dt;
-  if (c.t >= 30 && !c.td) { c.td = 1; if (NASA.cine) NASA.cine.stop(.2); if (AU.ctx) NASA.play('eagle', 0, 5.3, { gain: .9, dest: AU.radio }); }
   if (c.phase === 'descent') {
-    while (c.li < CINE_LINES.length && CINE_LINES[c.li][0] <= c.t) { const l = CINE_LINES[c.li++]; say(l[1], l[2], { pitch: pitchOf(l[3]), calm: true }); }
+    /* The engine lights on the retro burn call (or late and rough on its own if the call is missed), holds her
+       in a hover a man's height off the regolith, and the cut drops her the rest of the way onto her gear. */
+    const q0 = c.q[0], q3 = c.q[3], lit = q0.done !== 0 && !q3.done;
+    if (q0.done && c.ignT === undefined) { c.ignT = c.t; S.shake = Math.max(S.shake, q0.done > 0 ? .8 : 1.2); if (AU.ctx) sfx.ignite(q0.done > 0 ? 1 : 1.4); }
+    if (c.q[2].done > 0 && c.gearT === undefined) { c.gearT = c.t; S.shake = Math.max(S.shake, .5); if (AU.ctx) sfx.gear(); }
+    c.eng = lerp(c.eng, lit ? 1 : 0, Math.min(1, dt * (lit ? 5 : 14)));
+    if (!q3.done) c.h = cineAlt(c.t) - 9 + 1.7 + (c.t > 28 ? .1 * Math.sin(c.t * 2.3) : 0);
+    else if (!c.td) { if (c.cutT === undefined) c.cutT = c.t; c.vy -= 2.7 * dt; c.h += c.vy * dt;
+      if (c.h <= 0) { c.h = 0; c.td = 1; c.tdT = c.t; c.imp = clamp(-c.vy / 3, .7, 1.2) * (q3.done < 0 ? 1.35 : 1); S.shake = 1.6 * c.imp;
+        if (NASA.cine) NASA.cine.stop(.2); if (AU.ctx) { sfx.touchdown(c.imp); NASA.play('eagle', 0, 5.3, { gain: .9, dest: AU.radio, at: .9 }); } } }
+    c.dust = lerp(c.dust, c.eng * clamp(1 - c.h / 70, 0, 1), Math.min(1, dt * (lit ? 3 : 9)));
+    while (c.li < CINE_LINES.length) { const l = CINE_LINES[c.li], at = c.li < 5 ? l[0] : c.td ? c.tdT + (c.li === 5 ? 1.3 : 4.3) : 1e9; if (at > c.t) break; c.li++; say(l[1], l[2], { pitch: pitchOf(l[3]), calm: true }); }
     for (const q of c.q) { if (q.done || c.t < q.t) continue; const age = c.t - q.t;
       if (q.hold) { if (keys[q.key]) q.held += dt; if (q.held >= q.hold) { q.done = 1; if (AU.ctx) sfx.ok(); } } else if (keys[q.key] && !q.was) { q.done = 1; if (AU.ctx) sfx.ok(); }
       q.was = keys[q.key];
       if (!q.done && age > 3.2) { q.done = -1; c.fails++; S.shake = 1; if (AU.ctx) { sfx.bad(); sfx.rumble(.9); } } }
-    S.shake = Math.max(S.shake - dt * .8, .12 + (c.t > 29.5 ? 0 : .1));
-    if (AU.ctx) AU.engG.gain.setTargetAtTime(c.t < 30 ? .5 : 0, AU.ctx.currentTime, .3);
-    if (c.t > 39) { c.phase = 'card1'; c.pt = 0; }
+    S.shake = Math.max(S.shake - dt * (c.td ? 1.5 : .8), c.td ? 0 : .04 + .2 * c.eng);
+    if (AU.ctx) AU.engG.gain.setTargetAtTime(.55 * c.eng, AU.ctx.currentTime, .12);
+    if (c.td && c.t > c.tdT + 7.5) { c.phase = 'card1'; c.pt = 0; }
   } else { c.pt += dt;
     if (c.phase === 'card1' && c.pt > 3.6) { c.phase = 'card2'; c.pt = 0; }
     else if (c.phase === 'card2' && c.pt > 2.8) { c.phase = 'photo'; c.pt = 0; c.shotN = 0; if (AU.ctx) sfx.shutter(); }
@@ -10151,7 +10085,7 @@ function drawHud() {
   const txt = (s, x, y, size, al, col) => { hx.font = `500 ${Math.round(size * .66 * u)}px ${FONT}`; hx.textAlign = al || 'left'; hx.fillStyle = 'rgba(0,0,0,.6)'; hx.fillText(s, x * u + u * .7, y * u + u * .7); hx.fillStyle = col || '#ececE6'; hx.fillText(s, x * u, y * u); };
   const radio = y0 => { const l = S.lines[S.lines.length - 1]; if (!l) return; const age = S.t - l.t; if (age > 8 || age < 0) return; const full = (l.who + ': ' + l.text).slice(0, l.who.length + 2 + Math.floor(age * 38)); hx.globalAlpha = clamp(8 - age, 0, 1); wrap(full, 52).forEach((r, i) => txt(garbleText(r, gz * (l.calm ? .25 : .55)), cw / 2, y0 + i * 12, 13, 'center')); hx.globalAlpha = 1; };
   if (S.cine) { const c = S.cine;
-    if (c.phase === 'descent') { const alt = cineAlt(c.t); txt('ALT ' + String(Math.max(0, Math.round(alt))).padStart(5, ' ') + ' M', mx, top, 14); txt('DESCENT', cw - mx, top, 14, 'right', C_AMB); radio(216);
+    if (c.phase === 'descent') { const alt = c.h; txt('ALT ' + String(Math.max(0, Math.round(alt))).padStart(5, ' ') + ' M', mx, top, 14); txt('DESCENT', cw - mx, top, 14, 'right', C_AMB); radio(216);
       for (const q of c.q) { if (q.done || c.t < q.t) continue; const k = 1 - (c.t - q.t) / 3.2; txt(q.label, cw / 2, 128, 30, 'center'); txt(q.what, cw / 2, 146, 14, 'center', C_AMB); hx.fillStyle = 'rgba(236,236,230,.25)'; hx.fillRect((cw / 2 - 60) * u, 154 * u, 120 * u, 4 * u); hx.fillStyle = '#fff'; hx.fillRect((cw / 2 - 60) * u, 154 * u, 120 * u * (q.hold ? q.held / q.hold : k), 4 * u); }
       if (c.fails) txt('HULL STRESS ' + c.fails, cw - mx, top + 14, 13, 'right', C_RED);
  }
@@ -10167,10 +10101,10 @@ function drawHud() {
   const dist = Math.max(0, W.shipDist[Math.floor(p.x / CS) + Math.floor(p.z / CS) * MW]) * CS;
   const obj = S.depart !== undefined ? 'ARGUS A-2 HAS DEPARTED' : S.climb ? `CLIMB  ${(Math.max(0, LADDER_TOP + 1.2 - S.climb.y)).toFixed(1)} M` : [`REACH ARGUS A-2  ${Math.round(dist)} M`, 'RESTART THE REACTOR', 'TAKE THE LADDER', ''][S.stage]; txt(garbleText(obj, gz * .6), cw / 2, top + 15, 13, 'center', C_AMB);
   hx.fillStyle = 'rgba(236,236,230,.25)'; hx.fillRect(mx * u, 236 * u, 70 * u, 3 * u); hx.fillStyle = '#ececE6'; hx.fillRect(mx * u, 236 * u, 70 * u * p.stam, 3 * u); if (p.breach) txt('SUIT BREACHED', mx, 232, 12, 'left', C_RED);
-  if (S.crew.id === 'baker') txt(`ROUNDS ${p.ammo}`, cw - mx, 180, 14, 'right', p.ammo ? C_AMB : C_RED); else if (p.pulses > 0) txt(`PULSE ${p.pulses}  [Q]`, cw - mx, 180, 14, 'right', C_AMB);
+  txt(`ROUNDS ${p.ammo}`, cw - mx, 180, 14, 'right', p.ammo ? C_AMB : C_RED); if (p.pulses > 0) txt(`PULSE ${p.pulses}  [Q]`, cw - mx, 164, 14, 'right', C_AMB);
   drawMinimap(u, cw - mx - 54, 186, 54, p);
   if (S.near) { txt(`HOLD E  ${S.near.label}`, cw / 2, 176, 14, 'center'); if (p.hold > 0) { hx.fillStyle = 'rgba(236,236,230,.25)'; hx.fillRect((cw / 2 - 50) * u, 182 * u, 100 * u, 4 * u); hx.fillStyle = '#fff'; hx.fillRect((cw / 2 - 50) * u, 182 * u, 100 * u * p.hold, 4 * u); } }
-  else if (S.crew.id === 'baker') { hx.fillStyle = 'rgba(255,255,255,.7)'; hx.fillRect((cw / 2 - .5) * u, 143.5 * u, u, u); }
+  else { hx.fillStyle = 'rgba(255,255,255,.7)'; hx.fillRect((cw / 2 - .5) * u, 143.5 * u, u, u); }
   if (p.hitT < .1) { hx.strokeStyle = '#fff'; hx.lineWidth = 1.2 * u; hx.beginPath(); for (const [a, b] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) { hx.moveTo((cw / 2 + a * 3) * u, (144 + b * 3) * u); hx.lineTo((cw / 2 + a * 7) * u, (144 + b * 7) * u); } hx.stroke(); }
   radio(212);
 }
@@ -10228,8 +10162,11 @@ function render(dt, now) {
   const frozen = inGame && S.freeze > 0 && !S.over && !S.cine; const asp = R.sw / R.sh; let flash = 0, pp = null, haze = .035, sunI = .7, sat = 1;
   if (inGame && S.cine) { const c = S.cine; glitch = .1;
     if (c.phase === 'descent') { const alt = cineAlt(c.t), k = clamp(c.t / 30, 0, 1), q = c.q[1], drift = (c.t > q.t && q.done <= 0) ? Math.min(1, (c.t - q.t) * .6) * (q.key === 'KeyA' ? 1 : -1) : 0; c.drift = lerp(c.drift || 0, drift, dt * 2);
-      const sh = S.shake * .02; cam = mat(Math.PI + .25 * Math.sin(c.t * .11) + c.drift * .5 + (Math.random() - .5) * sh, lerp(-1.25, -.2, k * k) + (Math.random() - .5) * sh, [START.x + c.drift * alt * .1, groundY(START.x, START.z) + alt, START.z + 2], asp, 1.15);
-      showShip = false; white = clamp((c.t - 26) / 6, 0, 1) * .25 * (c.t < 33 ? 1 : Math.max(0, 1 - (c.t - 33) / 3)); fade = clamp((39 - c.t) / 1.5, 0, 1) * clamp(c.t, 0, 1); breath = .5 + .5 * Math.sin(S.breath * 6.283); }
+      // touchdown: the gear strokes and rebounds, the nose pitches down and comes back, and everything loose in the cabin rings
+      const tau = c.td ? c.t - c.tdT : -1, imp = c.td ? c.imp : 0, jy = c.td ? -.34 * imp * Math.exp(-5 * tau) * Math.sin(14 * tau) : 0, jp = c.td ? -.07 * imp * Math.exp(-4 * tau) * Math.sin(10 * tau) : 0;
+      const sh = S.shake * .02 + (c.td ? .07 * imp * Math.exp(-3.2 * tau) : 0) + (c.ignT !== undefined ? .03 * Math.exp(-(c.t - c.ignT) * 3) : 0);
+      cam = mat(Math.PI + .25 * Math.sin(c.t * .11) + c.drift * .5 + (Math.random() - .5) * sh, lerp(-1.25, -.2, k * k) + jp + (Math.random() - .5) * sh, [START.x + c.drift * alt * .1, groundY(START.x, START.z) + 9 + c.h + jy, START.z + 2], asp, 1.15);
+      showShip = false; white = c.dust * .2 + (c.td ? .32 * Math.exp(-tau * 2.4) : 0) + (c.ignT !== undefined ? .22 * Math.exp(-(c.t - c.ignT) * 5) : 0); glitch = .1 + (c.td ? .7 * Math.exp(-tau * 3) : 0); fade = (c.td ? clamp((c.tdT + 7.5 - c.t) / 1.5, 0, 1) : 1) * clamp(c.t, 0, 1); breath = .5 + .5 * Math.sin(S.breath * 6.283); }
     else if (c.phase === 'photo' && c.shots[c.shotN]) { const s = c.shots[c.shotN], e = [s.cam[0], groundY(s.cam[0], s.cam[1]) + 1.5, s.cam[1]], tg = [s.s.x, groundY(s.s.x, s.s.z) + 2.4 * s.s.scale * .6, s.s.z], d = V3.sub(tg, e);
       cam = mat(Math.atan2(d[0], -d[2]) + .02 * Math.sin(c.shotN * 5.), Math.atan2(d[1], Math.hypot(d[0], d[2])) - .03, e, asp, [.42, .3, .17][c.shotN]); visor = 0; grain = .3; glitch = 0; haze = .42; sunI = 1.0; sat = 0; fade = clamp(c.pt * 6, 0, 1) * clamp((3.8 - c.pt) * 4, 0, 1); white = Math.max(0, .5 - c.pt * 3); }
     else { cam = mat(0, 0, [0, 9000, 0], asp, 1); sceneOn = false; visor = 0; grain = 1.6; }
@@ -10262,13 +10199,21 @@ function render(dt, now) {
           const ca = Math.cos(c.a), sa = Math.sin(c.a), hy = c.gnd ? 0 : 1, L = .0095;
           B.seg([c.x - ca * L, c.y - sa * L * hy, c.z - sa * L * (1 - hy)], [c.x + ca * L, c.y + sa * L * hy, c.z + sa * L * (1 - hy)], .0042, .0046, 5, TL.METAL, 1.5, 0, true); }
         if (B.n > nb0) smear.push([nb0, B.n - nb0, 0]); }
-      if (pp && S.crew.id === 'baker' && !S.over && !S.cine && !S.climb && S.stage !== 3) { const n0 = B.n; emitGun(B, cam, pp, dt); smear.push([n0, B.n - n0, 0]); }
-      if (S.cine && S.cine.phase === 'descent') { const n0 = B.n; emitPodInterior(B, cam, S.cine.t); smear.push([n0, B.n - n0, 0]); }
-      if (!S.cine && S.stage === 3) { const n0 = B.n; emitPodInterior(B, cam, S.launchT + 40); smear.push([n0, B.n - n0, 0]); }
+      if (pp && !S.over && !S.cine && !S.climb && S.stage !== 3) { const n0 = B.n; emitGun(B, cam, pp, dt); smear.push([n0, B.n - n0, 0]); }
+      if (S.cine && S.cine.phase === 'descent') { const n0 = B.n, c = S.cine; emitPodInterior(B, cam, c.t);
+        const q = c.q[1], hold = c.t > q.t && !q.done && keys[q.key], pre = c.ignT === undefined ? 1 : 0, live = !c.td;
+        emitPodFX(B, cam, { ru: live ? rcsFire(c.t + .17, 2, c.seed + pre * 3) : null, rl: live ? (hold && q.key === 'KeyA' ? [1, 1] : rcsFire(c.t, 0, c.seed + pre)) : null, rr: live ? (hold && q.key === 'KeyD' ? [1, 1] : rcsFire(c.t + .31, 1, c.seed + pre)) : null, eng: c.eng, ign: c.ignT === undefined ? undefined : c.t - c.ignT, gear: c.gearT === undefined ? undefined : c.t - c.gearT });
+        if (c.h < 80) gasGround(B, START.x + (c.drift || 0) * (9 + c.h) * .1, START.z + 2.6, c.dust, c.t, c.td ? c.t - c.tdT : undefined);
+        smear.push([n0, B.n - n0, 0]); }
+      if (!S.cine && S.stage === 3) { const n0 = B.n, u = S.launchT - LAUNCH_HOLD; emitPodInterior(B, cam, S.launchT + 40);
+        // the tanks vent on the hold, then the engine: its skirt under the sill, and the jets working all the way up
+        emitPodFX(B, cam, { ru: rcsFire(S.launchT + .17, 2, 7), rl: rcsFire(S.launchT, 0, 7), rr: rcsFire(S.launchT + .31, 1, 7), eng: clamp(u * 4, 0, 1), ign: u > 0 ? u : undefined, gear: S.launchT % .8 * (u > 0 ? 9 : 1) });
+        smear.push([n0, B.n - n0, 0]); }
       gl.bindBuffer(gl.ARRAY_BUFFER, R.dyn.b); gl.bufferSubData(gl.ARRAY_BUFFER, 0, B.d.subarray(0, B.n * STRIDE)); }
-    const svp = shadowMat(cam.e[1] > 500 ? [START.x, 0, START.z] : cam.e);
+    R.cam = cam; const svp = shadowMat(cam.e[1] > 500 ? [START.x, 0, START.z] : cam.e);
+    const hidePod = !!(inGame && S.cine && S.cine.phase === 'descent');
     const drawAll = (u, lit) => { gl.bindVertexArray(R.terrain.vao); if (lit) gl.uniform1f(u.uTerr, 1); gl.drawArrays(gl.TRIANGLES, 0, R.terrain.n); if (lit) gl.uniform1f(u.uTerr, 0);
-      gl.bindVertexArray(R.props.vao); gl.drawArrays(gl.TRIANGLES, 0, R.props.n);
+      gl.bindVertexArray(R.props.vao); if (hidePod && W.podRange) { const pr = W.podRange; gl.drawArrays(gl.TRIANGLES, 0, pr[0]); if (R.props.n > pr[1]) gl.drawArrays(gl.TRIANGLES, pr[1], R.props.n - pr[1]); } else gl.drawArrays(gl.TRIANGLES, 0, R.props.n);
       if (showShip) { if (shipLift) gl.uniform3f(u.uOfs, 0, shipLift, 0); gl.bindVertexArray(R.ship.vao); gl.drawArrays(gl.TRIANGLES, 0, R.ship.n); if (shipLift) gl.uniform3f(u.uOfs, 0, 0, 0); }
       gl.bindVertexArray(R.dyn.vao); if (lit) { for (const [o, n, s] of smear) { gl.uniform1f(u.uSmear, s); gl.drawArrays(gl.TRIANGLES, o, n); } gl.uniform1f(u.uSmear, 0); } else if (B.n) gl.drawArrays(gl.TRIANGLES, 0, B.n); };
     if (sceneOn) { gl.bindFramebuffer(gl.FRAMEBUFFER, R.shFbo); gl.viewport(0, 0, R.SM, R.SM); gl.enable(gl.DEPTH_TEST); gl.clearDepth(1); gl.clear(gl.DEPTH_BUFFER_BIT); gl.useProgram(R.depthP.p); gl.uniformMatrix4fv(R.depthP.u.uSVP, false, svp); gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2, 4); drawAll(R.depthP.u, false); gl.disable(gl.POLYGON_OFFSET_FILL); }
@@ -10280,9 +10225,10 @@ function render(dt, now) {
       const Ls = []; const fl = i => (Math.sin(t * (7 + i * 3.1)) > -.2 || Math.sin(t * 23.7 + i) > .3) ? 1 : .08;
       W.lamps.forEach((l, i) => Ls.push([l.x, l.y + 2.3, l.z, 15, 1.5 * (i ? fl(i) : 1)]));
       const sy = groundY(SHIP.x, SHIP.z); Ls.push([SHIP.x, sy + 2.5, SHIP.z + 6.5, 16, S && S.reactor ? 2.2 : .5], [SHIP.x, sy + 23, SHIP.z, 60, Math.sin(t * 2.5) > .7 ? 5 : 0], [SHIP_POINTS.panel.x, sy + 2, SHIP_POINTS.panel.z, 6, S && S.stage === 1 ? .8 + .6 * Math.sin(t * 5) : 0]);
-      if (pp && pp.fireT < .07 && S.crew.id === 'baker') Ls.push([GUN.mz[0], GUN.mz[1], GUN.mz[2], 30, 3.4]);
-      { const bk = S && S.cr && S.cr.baker; if (bk && bk.flash > 0) Ls.push([bk.x, groundY(bk.x, bk.z) + 1.5, bk.z, 34, 8]); }
+      if (pp && pp.fireT < .07) Ls.push([GUN.mz[0], GUN.mz[1], GUN.mz[2], 30, 3.4]);
+      if (S) for (const f of S.foes) if (f.kind === 'crew' && f.flash > 0) Ls.push([f.x, groundY(f.x, f.z) + 1.5, f.z, 34, 8]);
       if (S && S.depart !== undefined) Ls.push([SHIP.x, sy + 1.1 + shipLift, SHIP.z, 170, 7]);
+      if (S && S.cine && S.cine.phase === 'descent') { const c = S.cine, k = clamp(1 - c.h / 110, 0, 1); if (k > 0) Ls.push([cam.e[0], cam.e[1] - 1.5, cam.e[2] + 5, 130, k * k * (.55 + 1.15 * c.eng * (.86 + .14 * Math.sin(t * 31)))]); }   // her landing lamps, and the descent engine on the regolith ahead of the nose
       if (S && S.stage === 3 && S.launchT > LAUNCH_HOLD) Ls.push([SHIP.x, sy - 4 + shipLift, SHIP.z, 70 + shipLift * .4, 2.2]);   // the engine, well below the cabin: it lights the ground, not your lap
       Ls.sort((a, b) => Math.hypot(a[0] - cam.e[0], a[2] - cam.e[2]) - a[3] - Math.hypot(b[0] - cam.e[0], b[2] - cam.e[2]) + b[3]); const lp = new Float32Array(32), li = new Float32Array(8); for (let i = 0; i < 8 && i < Ls.length; i++) { lp.set(Ls[i].slice(0, 4), i * 4); li[i] = Ls[i][4]; } gl.uniform4fv(u.uLP, lp); gl.uniform1fv(u.uLI, li);
       gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, R.shTex); gl.uniform1i(u.uSh, 1); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D_ARRAY, R.tex); gl.uniform1i(u.uTex, 0);
@@ -10364,216 +10310,9 @@ function refreshFace(id) { const i = CREW_IDS.indexOf(id); if (i < 0) return; gl
   for (const [lay, open] of [[TL.FACE + i, false], [TL.FACE_OPEN + i, true]]) gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, lay, 256, 256, 1, gl.RGBA, gl.UNSIGNED_BYTE, faceLayer(id, open));
   gl.generateMipmap(gl.TEXTURE_2D_ARRAY); const box = $('crew'); if (box) { box.innerHTML = ''; buildSelect(); } }
 try { initGL(); buildMapCanvas(); loadPhotos(refreshFace); NASA_IMG.src = document.querySelector('.brand img').src; if (document.fonts && document.fonts.load) document.fonts.load('500 16px "IBM Plex Mono"').then(() => { hudDirty = true; }).catch(() => { }); buildSelect(); bindUI(); requestAnimationFrame(frame); } catch (e) { document.body.insertAdjacentHTML('beforeend', `<pre style="position:fixed;left:8px;bottom:8px;color:#fff;z-index:9">${String(e.message || e)}</pre>`); throw e; }
-window.__dbg = { R, W, SET, get S() { return S; }, startRun, show, step, ship(i) { startRun(i || 0, 'ship'); }, home() { homeBegin(); }, tp(x, z) { P().x = x; P().z = z; }, set screen(v) { screen = v; }, get screen() { return screen; } };
+window.__dbg = { R, W, SET, cine(dt) { cineStep(dt); }, get S() { return S; }, startRun, show, step, ship(i) { startRun(i || 0, 'ship'); }, home() { homeBegin(); }, tp(x, z) { P().x = x; P().z = z; }, set screen(v) { screen = v; }, get screen() { return screen; } };
 
 
-</script>
-<script type="text/plain" id="vx-speak">
-algo_0418a6e9	algo	I am all right. Keep going.
-algo_067e38c3	algo	Ignore the reading, Nick. Standard calibration equipment.
-algo_0ab906aa	algo	Ignore the reading, Nick.
-algo_10396d01	algo	Contact. I see it moving.
-algo_18d4d898	algo	Get it off me! Get it off!
-algo_259f1aa5	algo	My leg, my leg is gone.
-algo_51cb8bee	algo	I am hit. Suit is venting.
-algo_524deee2	algo	It is me. Wait there.
-algo_5c0d2b2d	algo	Copy that. Moving up.
-algo_60d08143	algo	Come back to the landing site. Everything looks green down here.
-algo_6296f0e2	algo	Tell them what happened here.
-algo_8f0e0682	algo	I have movement. Bearing on my mark.
-algo_a1abb317	algo	Help! The keys are chasing me!
-algo_a9f816c2	algo	I cannot hold here, falling back!
-algo_c9d3b6e7	algo	God, it is inside the suit.
-algo_d23a61bc	algo	Get it off me! Get it off me!
-algo_d25ea109	algo	Holding. Still breathing.
-algo_d2ea0f46	algo	Take these. Pulse charges, out of my locker. Q sets one off. They do not like it.
-algo_da164bf2	algo	Something is out there with us.
-algo_decba245	algo	No, no, no, do not let it, do not let it.
-algo_e1680dad	algo	It is off me. It is off me. Stay there.
-algo_e4adb266	algo	I am down, I am down.
-algo_e9fa9e74	algo	No no
-algo_f56964f7	algo	That is me! Check your target!
-algo_f9f282a5	algo	It is coming, it is coming, go, go!
-baker_0ce94f32	baker	I see you. Come up the valley. I have you covered from here.
-baker_2016c016	baker	Climb. Do not look down. I will keep them off the ladder.
-baker_250a718a	baker	I cannot hold here, falling back!
-baker_279c519d	baker	It is coming, it is coming, go, go!
-baker_3891528a	baker	Something is out there with us.
-baker_3a15bc85	baker	Copy that. Moving up.
-baker_569ef91a	baker	I have movement. Bearing on my mark.
-baker_5b957340	baker	Get it off me! Get it off!
-baker_61b9b14f	baker	God, it is inside the suit.
-baker_660a275a	baker	It is me. Wait there.
-baker_700ae596	baker	I am hit. Suit is venting.
-baker_7374ddbf	baker	Contact. Everything looks green up here, Houston.
-baker_87a3f04e	baker	I am down, I am down.
-baker_8d55de9f	baker	That is me! Check your target!
-baker_a965e43a	baker	Tell them what happened here.
-baker_b4683f01	baker	Holding. Still breathing.
-baker_df446dfc	baker	No no
-baker_df6c978b	baker	That is all of it. I am dry. Go on. I will hold them here.
-baker_e1684b3d	baker	My leg, my leg is gone.
-baker_e717ee49	baker	Contact. I see it moving.
-baker_f6cedefb	baker	Come back to the landing site. Everything looks green down here.
-baker_f6e5ad85	baker	I got a gun!! Reloading!!
-baker_f8952bbd	baker	No, no, no, do not let it, do not let it.
-baker_fd98abb1	baker	I am all right. Keep going.
-bart_18f53499	bart	My leg, my leg is gone.
-bart_1bbda627	bart	Come back to the landing site. Everything looks green down here.
-bart_1fbae8f4	bart	Get it off me! Get it off!
-bart_210718a5	bart	I am all right. Keep going.
-bart_23460533	bart	God, it is inside the suit.
-bart_39ebf7ca	bart	I am hit. Suit is venting.
-bart_47cfa21b	bart	This is Bartolozzi. I am down at the third light mast with a suit breach. I have the reactor start code.
-bart_4896fe06	bart	Something is out there with us.
-bart_4fe11064	bart	Hello? Hello?
-bart_528e56b6	bart	Tell them what happened here.
-bart_6398a7a7	bart	Over here, at the light mast. My suit is breached and I cannot stand.
-bart_64c494c6	bart	It is me. Wait there.
-bart_863e6bd1	bart	No, no, no, do not let it, do not let it.
-bart_8dde966d	bart	Holding. Still breathing.
-bart_a095f4d6	bart	I have movement. Bearing on my mark.
-bart_a462f3c5	bart	Contact. I see it moving.
-bart_bf7df2da	bart	I am down, I am down.
-bart_c933fa93	bart	Start code is four one one seven. It skips the cold checks. Go. Do not wait for me.
-bart_d0b4cdc8	bart	No no
-bart_e8cc0d51	bart	It is coming, it is coming, go, go!
-bart_eb76c33b	bart	That is me! Check your target!
-bart_ebcbdb89	bart	Copy that. Moving up.
-bart_f218870e	bart	I cannot hold here, falling back!
-bart_fcb6f7f9	bart	Noting an unscheduled power draw from Specialist Algo's locker.
-entity_b20d30cf	entity	keys keys keys! O. Algo! O. Algo!
-nick_15875b87	nick	It has you. Break its line of sight. Get into a locker or a crawlway, it cannot follow you into those.
-nick_1837e4e2	nick	Something is out there with us.
-nick_20e8bccf	nick	That was not from the surface. That channel is inside the ship with you.
-nick_2abf2836	nick	I am down, I am down.
-nick_347ff99e	nick	Wake her up. Main bus in the reactor room, aft. A guidance core from stores, seated in avionics. Propellant valves in the tank farm.
-nick_3560c81d	nick	Copy that. Moving up.
-nick_37f0e5be	nick	I am hit. Suit is venting.
-nick_39c4d359	nick	Good burn. Good burn. You are coming home.
-nick_42809352	nick	Tell them what happened here.
-nick_44a40e24	nick	You are aboard Ithaca. She has been parked cold round Callisto for two years. There is nobody on her.
-nick_4c286ad9	nick	I am all right. Keep going.
-nick_6e387034	nick	One minute. Get on that ladder. Get on it now.
-nick_78e24691	nick	Argus has gone. She went on the window. I am sorry.
-nick_7b61cccc	nick	Three minutes on the window. Argus will go without you. She is not waiting.
-nick_81585784	nick	That is not on her manifest. Keep your light on it and keep looking at it.
-nick_86eb93c2	nick	She is alive. Flight deck, at the bow. Fire the burn and come home.
-nick_8bdbf0e7	nick	E P two, Nick. You are separated and go for powered descent.
-nick_9199e9c8	nick	Get it off me! Get it off!
-nick_921836a3	nick	Enjoy the ride out there, buddies. Odyssey 9 is right over your heads.
-nick_a31259a1	nick	You are at the pad. The reactor is cold. Restart it from the service panel on the leg.
-nick_aa367bf5	nick	It is coming, it is coming, go, go!
-nick_b0e79b77	nick	Core is out. Avionics is forward of you, starboard side. Do not drop it.
-nick_b0f57055	nick	No, no, no, do not let it, do not let it.
-nick_b2b3b0fc	nick	Lights are up. That works both ways. It can see the whole corridor now and so can you.
-nick_bb3fe699	nick	E P two, Houston. Odyssey 9 has stopped answering. Stand by.
-nick_be2d572e	nick	That went through the whole frame. Move.
-nick_bef9837f	nick	Reactor is hot. Get on the ladder and climb. All the way up.
-nick_c70927d7	nick	God, it is inside the suit.
-nick_c8ef6c4c	nick	Then the flight deck at the bow, and you burn for home. Lockers and crawlways are on your plan.
-nick_d07692d2	nick	I cannot hold here, falling back!
-nick_d97b2955	nick	You are on the porch. Through the hatch. Go.
-nick_e72dc45b	nick	I am reading two of you on that channel. Do not answer it.
-nick_edce0a15	nick	My leg, my leg is gone.
-nick_eec75019	nick	Holding. Still breathing.
-nick_eff0dd31	nick	Contact. I see it moving.
-nick_f3e66e72	nick	I have movement. Bearing on my mark.
-nick_f41a1c4c	nick	I have a second heat source on your deck. Ithaca has no crew. Do not let it see your lamp.
-nick_fa3cdb2e	nick	Odyssey 9 is gone. E P two has no ascent stage. Argus A two is at the head of the valley, north. Her window closes in ten minutes.
-pa_1cfc6263	pa	Mic unavailable
-pa_2fa0c51a	pa	Contact. It took a cut of you. One of three.
-pa_34d9535b	pa	Something has the boot.
-pa_3851a71b	pa	Guidance core seated. Platform aligning.
-pa_40be2ac4	pa	Second cut. One more and the key is finished.
-pa_75ef00d2	pa	Suit breach. One layer left.
-pa_7ac7e546	pa	Trans earth injection. Main engine start.
-pa_7ca65358	pa	Ground shock. Nothing on the loop.
-pa_85ed609f	pa	Hands on the rail. W to climb.
-pa_9f986503	pa	Hatch sealed. Main engine start
-pa_e26e2219	pa	Propellant valves open. Tanks at pressure.
-pa_fa01b1ce	pa	Main bus closed. Cabin lighting restored.
-waldron_09b286a0	waldron	Over here. I have the panel open. Close the bus with me and she will start.
-waldron_21e1229c	waldron	Something is out there with us.
-waldron_2760e02f	waldron	I am all right. Keep going.
-waldron_2c7d67d4	waldron	I am hit. Suit is venting.
-waldron_35c1e538	waldron	Look up. Look up. She is opening.
-waldron_3725c080	waldron	It is me. Wait there.
-waldron_3be15297	waldron	Copy that. Moving up.
-waldron_3f21e818	waldron	I have movement. Bearing on my mark.
-waldron_467de83c	waldron	I cannot hold here, falling back!
-waldron_4abccde2	waldron	I will go up first and get the hatch.
-waldron_4b53ca63	waldron	My leg, my leg is gone.
-waldron_54dfcc1d	waldron	Come back to the landing site. Everything looks green down here.
-waldron_575361b4	waldron	Tell them what happened here.
-waldron_5f59ed7d	waldron	That is me! Check your target!
-waldron_697d1006	waldron	No no
-waldron_76bb259f	waldron	Contact. I see it moving.
-waldron_785a10f5	waldron	God, it is inside the suit.
-waldron_8c8cc6c1	waldron	Copy, Nick. Guidance and navigation look solid.
-waldron_989c53db	waldron	No, no, no, do not let it, do not let it.
-waldron_ba1da4ef	waldron	It is coming, it is coming, go, go!
-waldron_dad86514	waldron	I am down, I am down.
-waldron_de41228e	waldron	Get it off me! Get it off!
-waldron_fc12721c	waldron	Something has my leg no no
-waldron_fc2e2a2e	waldron	Is that a Gubby?
-waldron_fdf07a7b	waldron	Holding. Still breathing.
-watkins_01237e88	watkins	Something is out there with us.
-watkins_0518f83c	watkins	It is me. Wait there.
-watkins_14bb698b	watkins	Copy that. Moving up.
-watkins_3228ad00	watkins	I cannot hold here, falling back!
-watkins_3240b38c	watkins	What the f was that?
-watkins_348ce550	watkins	Tell them what happened here.
-watkins_50b68482	watkins	No no
-watkins_5fc87a63	watkins	It is coming, it is coming, go, go!
-watkins_636243c9	watkins	Pod is flying clean. Odyssey is holding station above us.
-watkins_63a9b9ff	watkins	No, no, no, do not let it, do not let it.
-watkins_6596e7f5	watkins	That is odyssey. That is odyssey coming down.
-watkins_92178609	watkins	God, it is inside the suit.
-watkins_ab050410	watkins	I am down, I am down.
-watkins_b80304a4	watkins	I have movement. Bearing on my mark.
-watkins_bd21b138	watkins	I am hit. Suit is venting.
-watkins_c269f427	watkins	Holding. Still breathing.
-watkins_cb3d43f2	watkins	Get it off me! Get it off!
-watkins_cbc10363	watkins	I am all right. Keep going.
-watkins_cef9c2eb	watkins	Contact. I see it moving.
-watkins_d4825cd9	watkins	Come back to the landing site. Everything looks green down here.
-watkins_e6c10ebe	watkins	I am not staying here. I am going for the ship.
-watkins_ed613729	watkins	That is me! Check your target!
-watkins_ef351f9f	watkins	My leg, my leg is gone.
-watkins_faf4ca54	watkins	I just seen a bro
-</script>
-<script type="text/plain" id="vx-conf">
-# speaker=VoiceName:words-per-minute   (VoiceName must be one listed by: say -v '?')
-nick=Daniel:172
-pa=Samantha:165
-baker=Reed (English (US)):165
-waldron=Eddy (English (UK)):175
-algo=Rocko (English (US)):168
-bart=Reed (English (UK)):158
-watkins=Eddy (English (US)):200
-entity=Whisper:95
-</script>
-<script type="text/plain" id="vx-make">
-#!/bin/bash
-# Renders the game's dialogue to voices/tts/<key>.m4a with this Mac's own speech synthesiser (say + afconvert).
-# Reads tts/speak.tsv (key <TAB> speaker <TAB> text) and tts/voices.conf (speaker=Voice:rate). Skips lines that
-# already have a recording, never deletes anything, and rewrites tts/index.json listing what exists.
-cd "$(dirname "$0")/tts" || exit 1
-made=0; total=0; failed=0
-while IFS=$'\t' read -r key sp text; do
-  [ -z "$key" ] && continue
-  total=$((total+1))
-  [ -s "$key.m4a" ] && continue
-  line=$(grep "^$sp=" voices.conf | head -1 | cut -d= -f2)
-  v="${line%%:*}"; r="${line##*:}"
-  if say -v "$v" -r "$r" -o "tmp_$key.aiff" -- "$text" </dev/null 2>/dev/null && afconvert "tmp_$key.aiff" "$key.m4a" -f m4af -d aac -b 48000 >/dev/null 2>&1 && [ -s "$key.m4a" ]; then made=$((made+1)); else failed=$((failed+1)); fi
-  rm -f "tmp_$key.aiff"
-done < speak.tsv
-printf '[' > index.json; first=1
-for f in *.m4a; do [ -e "$f" ] || continue; k="${f%.m4a}"; if [ $first = 1 ]; then first=0; else printf ',' >> index.json; fi; printf '"%s"' "$k" >> index.json; done
-printf ']\n' >> index.json
-echo "lines: $total  rendered now: $made  failed: $failed  recordings present: $(ls *.m4a 2>/dev/null | wc -l | tr -d ' ')  size: $(du -sh . | cut -f1)"
 </script>
 </body>
 </html>
