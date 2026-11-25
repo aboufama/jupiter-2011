@@ -5,6 +5,16 @@
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Jupiter 2011</title>
+<meta property="og:title" content="Jupiter 2011">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://aboufama.github.io/jupiter-2011/">
+<meta property="og:image" content="https://aboufama.github.io/jupiter-2011/preview.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://aboufama.github.io/jupiter-2011/preview.jpg">
+<link rel="icon" href="icon.png">
+<link rel="apple-touch-icon" href="icon.png">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root{--ink:#dcd9d0;--dim:#7c7c76;--amber:#e9b04a;--bg:#050505}
@@ -193,7 +203,7 @@ button:hover,button:focus-visible{border-color:var(--amber);color:var(--amber)}
 </div>
 
 <div class="screen" id="end">
-  <div class="ph"><canvas id="endPh" width="96" height="120"></canvas></div>
+  <div class="ph"><canvas id="endPh" width="384" height="480"></canvas></div>
   <h2 id="endH"></h2>
   <p id="endP"></p>
   <div class="row"><button id="againBtn">REWIND</button><button data-back>MAIN MENU</button></div>
@@ -231,7 +241,7 @@ const V3 = {
   perp: n => V3.norm(Math.abs(n[1]) < .9 ? V3.cross(n, [0, 1, 0]) : V3.cross(n, [1, 0, 0])),
 };
 // Character texture layers (a 2D texture array, 256x256 each). World layers come after these in the game.
-const TL = { WHITE: 0, SUIT: 1, DARK: 2, METAL: 3, PATCH: 4, FACE: 5, FACE_OPEN: 10, VISOR: 15, N: 16 };
+const TL = { WHITE: 0, SUIT: 1, DARK: 2, METAL: 3, PATCH: 4, FACE: 5, FACE_OPEN: 10, VISOR: 15, NASA: 16, N: 17 };
 // FACE + crewIndex (0..4) is that crew member's face, FACE_OPEN + crewIndex is the duplicate's open mouth version.
 // Face textures fill the whole layer; map them on a quad of aspect 4:5 (w:h) with uv (0,0) top-left to (1,1) bottom-right.
 function makeBatch(maxVerts) {
@@ -365,6 +375,7 @@ function buildCharLayers() {
   L[TL.DARK] = (() => { const c = noiseCanvas(30, 26, 3, 2), x = c.getContext('2d'), r = mulberry(8); x.strokeStyle = 'rgba(120,120,120,.35)'; for (let i = 0; i < 40; i++) { x.beginPath(); const a = r() * TS, b = r() * TS; x.moveTo(a, b); x.lineTo(a + (r() - .5) * 30, b + r() * 40); x.stroke(); } return c; })();
   L[TL.METAL] = (() => { const c = noiseCanvas(120, 30, 4, 2), x = c.getContext('2d'); x.fillStyle = 'rgba(0,0,0,.4)'; for (let i = 0; i < TS; i += 32) { x.fillRect(i, 0, 2, TS); x.fillRect(0, i, TS, 2); } return c; })();
   L[TL.PATCH] = drawPatch(TS);
+  L[TL.NASA] = noiseCanvas(236, 0, 5, 64);   // the agency emblem: a white enamel square until the image has loaded (main.js paints it in)
   CREW_IDS.forEach((id, i) => { L[TL.FACE + i] = faceLayer(id, false); L[TL.FACE_OPEN + i] = faceLayer(id, true); });
   L[TL.VISOR] = (() => { const c = noiseCanvas(10, 8, 5, 4), x = c.getContext('2d'); const g = x.createLinearGradient(0, 0, TS, TS); g.addColorStop(0, 'rgba(255,255,255,.3)'); g.addColorStop(.4, 'rgba(255,255,255,0)'); x.fillStyle = g; x.fillRect(0, 0, TS, TS); return c; })();
   return L;
@@ -3565,7 +3576,8 @@ function buildPropsMesh(withSentinels) {
   for (const l of W.lamps) { for (const a of [0, 2.1, 4.2]) B.seg([l.x + Math.cos(a) * .6, l.y, l.z + Math.sin(a) * .6], [l.x, l.y + 2.2, l.z], .025, .025, 4, TL.METAL, 1); B.box([l.x, l.y + 2.35, l.z], [.22, 0, 0], up(.14), [0, 0, .12], TL.WHITE, 1, 1.5); }
   }
   { const n0 = B.n;if (typeof POD !== 'undefined' && POD.exterior) POD.exterior(B, START.x, groundY(START.x, START.z), START.z, Math.PI / 2, groundY); W.podRange = [n0, B.n]; }   // drawn apart: on the way down you are in her, not looking at her
-  if (withSentinels && typeof KEI !== 'undefined') for (const s of W.sentinels) { const rig = KEI.create(s.seed); rig.fat = 2; KEI.pose(rig, { x: s.x, z: s.z, heading: s.heading, speed: 0, scale: s.scale, stun: 0, alert: 0 }, groundY); KEI.emit(B, rig); }
+  const sn0 = B.n; if (withSentinels && typeof KEI !== 'undefined') for (const s of W.sentinels) { const rig = KEI.create(s.seed); rig.fat = 2; KEI.pose(rig, { x: s.x, z: s.z, heading: s.heading, speed: 0, scale: s.scale, stun: 0, alert: 0 }, groundY); KEI.emit(B, rig); }
+  W.sentRange = [sn0, B.n];   // drawn only in the recovered photographs: in play the ridges are empty until the one that matters is standing there
   return B.d.slice(0, B.n * STRIDE);
 }
 function buildShipMesh() {
@@ -8862,16 +8874,54 @@ const SND = {
   ready(k) { if (k === 'eerie') this.amb = this.play('eerie', 6, 71, { loop: true, gain: .3, fade: 3, dest: AU.radio }); if (k === 'lift') this.eng = this.play('lift', 40, 96, { loop: true, gain: 1.6, dest: AU.engG }); if (this.want[k]) { const f = this.want[k]; this.want[k] = null; f(); } },
 };
 const NASA = SND;
-{ const S0 = Object.assign({}, sfx);
-  sfx.click = () => NASA.play('land', 0, .07, { gain: .6, dest: AU.suit }) || S0.click();
-  sfx.tick = () => NASA.play('land', 4.2, 4.27, { gain: .5, dest: AU.radio }) || S0.tick();
-  sfx.ok = () => NASA.play('tli', 4.0, 5.3, { gain: .8, dest: AU.radio }) || S0.ok();
-  sfx.bad = () => NASA.play('prob', 0, 1.7, { gain: .9, dest: AU.radio }) || S0.bad();
-  sfx.rumble = v => NASA.play('lift', 12, 13.6, { gain: v * 1.1, dest: AU.suit }) || S0.rumble(v);
-  sfx.hatch = () => { S0.hatch(); NASA.play('lift', 9, 11.5, { gain: .7, dest: AU.suit }); };
-  sfx.breach = () => { S0.breach(); NASA.play('prob', 0, 3.4, { gain: .9, dest: AU.radio }); };
-  sfx.kei = (vol, pan) => { S0.kei(vol, pan); if (!AU.ctx || !NASA.buf.biz) return; const pn = AU.ctx.createStereoPanner(); pn.pan.value = pan || 0; pn.connect(AU.radio); const a = Math.random() * 11; NASA.play('biz', a, a + 1.4, { gain: vol * .7, rate: .55 + Math.random() * .4, dest: pn, fade: .05 }); };
+/* CUT: every effect is a named cut (or a few, picked at random) out of one of the recordings: [file, from, to, gain].
+   fx(name, opts) plays one and returns its handle, or null if that file has not loaded, and then the synthesiser
+   below it in each wrapper stands in. Times are seconds into the file as shipped in audio/. */
+const CUT = {/*CUTS*/};
+function fx(name, o) { if (!AU.ctx) return null; let c = CUT[name]; if (!c) return null; if (Array.isArray(c[0])) c = c[(Math.random() * c.length) | 0];
+  o = o || {}; return SND.play(c[0], c[1], c[2], Object.assign({}, o, { gain: (c[3] === undefined ? .7 : c[3]) * (o.gain === undefined ? 1 : o.gain) })); }
+const panTo = (pan, dest) => { const pn = AU.ctx.createStereoPanner(); pn.pan.value = pan || 0; pn.connect(dest); return pn; };
+{ const S0 = Object.assign({}, sfx), jit = a => 1 + (Math.random() - .5) * a;
+  // through the boot and up the leg
+  sfx.step = run => { if (!AU.ctx) return; fx('thud', { dest: AU.suit, gain: run ? 1 : .62, rate: (run ? 1.05 : .9) * jit(.16) }) || S0.step(run); };
+  // no report in vacuum: the slide and the frame through the glove, the recoil up the arm, and the loop clipping
+  sfx.shot = () => { if (!AU.ctx) return; if (!fx('shot', { dest: AU.suit, gain: 1.25, rate: jit(.06) })) return S0.shot(); fx('boom', { dest: AU.suit, gain: .45, rate: 1.5 }); noise(AU.radio, now(), .1, 'bandpass', 1100, .6, .4); };
+  sfx.click = () => { if (!AU.ctx) return; fx('click', { dest: AU.suit, rate: jit(.1) }) || S0.click(); };
+  sfx.sw = () => { if (!AU.ctx) return; fx('switch', { dest: AU.suit }) || S0.click(); };
+  sfx.tick = () => { if (!AU.ctx) return; fx('beep', { dest: AU.radio, gain: .5 }) || S0.tick(); };
+  sfx.ok = () => { if (!AU.ctx) return; fx('go', { dest: AU.radio }) || S0.ok(); };
+  sfx.bad = () => { if (!AU.ctx) return; const a = fx('buzz', { dest: AU.radio }), b = fx('problem', { dest: AU.radio, at: .25 }); if (!a && !b) S0.bad(); };
+  sfx.shutter = () => { if (!AU.ctx) return; fx('switch', { dest: AU.suit, rate: 1.3 }) || S0.shutter(); };
+  sfx.rumble = v => { if (!AU.ctx) return; fx('rumble', { dest: AU.suit, gain: v, rate: jit(.2) }) || S0.rumble(v); };
+  sfx.hatch = () => { if (!AU.ctx) return; fx('hatch', { dest: AU.suit }) || S0.hatch(); };
+  sfx.locker = v => { if (!AU.ctx) return; fx('locker', { dest: AU.suit, gain: v === undefined ? 1 : v }) || S0.click(); };
+  sfx.door = (v, pan) => { if (!AU.ctx || v < .03) return; fx('door', { dest: panTo(pan, AU.suit), gain: v, rate: jit(.08) }) || noise(AU.suit, now(), .11, 'lowpass', 130, 1, v * .7); };
+  sfx.ladder = () => { if (!AU.ctx) return; fx('rung', { dest: AU.suit, rate: jit(.2) }) || (S0.step(false), S0.click()); };
+  // the only loud thing out there is your own air leaving past your ear
+  sfx.breach = () => { if (!AU.ctx) return; const a = fx('hiss', { dest: AU.master, gain: 1.1 }); if (!a) return S0.breach(); fx('alarm', { dest: AU.radio }); fx('problem', { dest: AU.radio, at: .6 }); };
+  sfx.legs = (vol, pan) => { if (!AU.ctx) return; fx('thud', { dest: panTo(pan, AU.suit), gain: vol * 1.5, rate: .62 * jit(.2) }) || S0.legs(vol, pan); };
+  /* KEIS. Its voice is the one on the black box recording and nothing else: a slice of it, slowed, doubled a fifth
+     down against itself, arriving on the loop over the radio noise of the planet. */
+  sfx.kei = (vol, pan) => { if (!AU.ctx) return; const C = AU.ctx, dest = panTo(pan, AU.radio), m = VOICE.media.box, cuts = (VOICE.cuts.entity || {}).spot || [];
+    if (m && m.buf && cuts.length) { const c = cuts[(Math.random() * cuts.length) | 0], a = c[1], b = c[2], len = Math.min(b - a, .5 + Math.random() * 1.1), t0 = a + Math.random() * (b - a - len), t = C.currentTime + .02;
+      for (const [r, dl, v] of [[.78 * jit(.2), 0, 1], [.52 * jit(.1), .09 + Math.random() * .2, .7]]) { const s = C.createBufferSource(), g = C.createGain(); s.buffer = m.buf; s.playbackRate.value = r; g.gain.setValueAtTime(0, t + dl); g.gain.linearRampToValueAtTime(vol * v * 1.3, t + dl + .06); g.gain.setValueAtTime(vol * v * 1.3, t + dl + len / r - .12); g.gain.linearRampToValueAtTime(0, t + dl + len / r); s.connect(g); g.connect(dest); s.start(t + dl, t0, len); } }
+    const z = Math.random() * 9; SND.play('biz', z, z + 1.4, { gain: vol * .6, rate: .55 + Math.random() * .4, dest, fade: .05, out: .3 }); };
+  sfx.ignite = v => { if (!AU.ctx) return; fx('ignite', { dest: AU.suit, gain: v, out: .8 }) || (S0.rumble(1.2 * v), noise(AU.suit, now(), .7, 'lowpass', 260, 1, .7 * v)); };
+  sfx.gear = () => { if (!AU.ctx) return; const a = fx('hydraulic', { dest: AU.suit, out: .2 }); fx('thud', { dest: AU.suit, gain: 1.4, rate: .7, at: a ? 1.1 : .3 }); if (!a) noise(AU.suit, now(), .09, 'lowpass', 420, 1, .7); };
+  sfx.touchdown = v => { if (!AU.ctx) return; const a = fx('boom', { dest: AU.suit, gain: 1.5 * v, rate: .6 }); fx('thud', { dest: AU.suit, gain: 1.6 * v, rate: .5 }); fx('locker', { dest: AU.suit, gain: .7 * v, at: .08 }); fx('rumble', { dest: AU.suit, gain: 1.2 * v, at: .05 });
+    if (!a) { S0.rumble(1.7 * v); noise(AU.suit, now(), .22, 'lowpass', 120, 1, 1.2 * v); } };
+  sfx.puff = (v, pan) => { if (!AU.ctx) return; fx('puff', { dest: panTo(pan, AU.suit), gain: (v || 1), rate: jit(.3), out: .08 }) || noise(AU.suit, now(), .12, 'bandpass', 900, .6, .12 * (v || 1)); };
+  sfx.vent = v => { if (!AU.ctx) return; fx('hiss', { dest: AU.master, gain: .55 * (v || 1), out: .6 }) || noise(AU.master, now(), 1.4, 'bandpass', 2600, 2, .3); };
+  sfx.valve = () => { if (!AU.ctx) return; fx('hydraulic', { dest: AU.suit, gain: 1.1 }) || S0.hatch(); };
+  sfx.alarm = () => { if (!AU.ctx) return; fx('alarm', { dest: AU.radio }) || S0.bad(); };
+  sfx.buzz = () => { if (!AU.ctx) return; fx('buzz', { dest: AU.radio }) || S0.bad(); };
+  sfx.beacon = v => { if (!AU.ctx) return; fx('beacon', { dest: AU.radio, gain: v }); };
 }
+/* Beds. Breathing is yours and inside the helmet with you, so it is the one thing heard clean; the planet's own radio
+   noise rides the loop; a ship that is alive hums through the deck plates. Each is a loop whose level the game sets. */
+SND.bed = function (name, dest) { const c = CUT[name]; if (!c || !this.buf[c[0]]) return null; this.beds = this.beds || {}; if (!this.beds[name]) { const h = this.play(c[0], c[1], c[2], { loop: true, gain: 0, dest, rand: true }); if (h) { h.k = c[3] === undefined ? .7 : c[3]; this.beds[name] = h; } } return this.beds[name]; };
+SND.level = function (name, v, dest, tc) { if (!AU.ctx) return false; const h = this.bed(name, dest || AU.master); if (!h) return false; h.g.gain.setTargetAtTime(v * h.k, AU.ctx.currentTime, tc || .25); return true; };
+SND.quiet = function (tc) { for (const k in (this.beds || {})) this.beds[k].g.gain.setTargetAtTime(0, AU.ctx.currentTime, tc || .3); };
 
 /* ---------------------------------------------------------------- voices
    Nobody in this game is spoken for by a machine. A line is heard only when there is a real recording of it: a cut out
@@ -8889,11 +8939,8 @@ sfx.loopOpen = function (kind, len) {
   else if (kind === 'pa') { tone(AU.radio, t, .07, 'sine', 1320, 0, .1); tone(AU.radio, t + .09, .11, 'sine', 990, 0, .1); }
 };
 VOICE.utter = function (sp, ev, text, opts) { opts = opts || {}; return !!(sp && ev && this.say(sp, ev, opts)); };
-/* burns and the landing: stand-ins until the recordings load (see the SND wiring below them) */
-sfx.ignite = v => { if (!AU.ctx) return; sfx.rumble(1.2 * v); noise(AU.suit, now(), .7, 'lowpass', 260, 1, .7 * v); };
-sfx.gear = () => { if (!AU.ctx) return; noise(AU.suit, now(), .09, 'lowpass', 420, 1, .7); noise(AU.suit, now() + .32, .14, 'lowpass', 180, 1, .9); };
-sfx.touchdown = v => { if (!AU.ctx) return; sfx.rumble(1.7 * v); noise(AU.suit, now(), .22, 'lowpass', 120, 1, 1.2 * v); noise(AU.suit, now() + .16, .5, 'lowpass', 300, 1, .5 * v); };
-sfx.puff = v => { if (!AU.ctx) return; noise(AU.suit, now(), .12, 'bandpass', 900, .6, .12 * (v || 1)); };
+/* ears after an impact: a thin high tone that is nowhere, fading over a few seconds. The one sound here with no source. */
+sfx.ring = d => { if (!AU.ctx) return; const C = AU.ctx, t = C.currentTime; for (const [f, v] of [[3840, .05], [5210, .022]]) { const o = C.createOscillator(), g = C.createGain(); o.frequency.value = f; g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(v, t + .15); g.gain.exponentialRampToValueAtTime(.0001, t + d); o.connect(g); g.connect(AU.master); o.start(t); o.stop(t + d + .1); } };
 
 /* ================================================================ PART TWO: ERV ITHACA, AND HOME
    Argus A-2 carries you up to the Earth Return Vehicle, parked cold round Callisto for two years. You are the only
@@ -9048,8 +9095,8 @@ function shipStep(dt, cmd) {
   for (const d of X.doors) { let near = (!X.hide && Math.hypot(p.x - d.x, p.z - d.z) < 1.9) ? 2 : 0; if (!near && w.stun <= 0 && Math.hypot(w.x - d.x, w.z - d.z) < 2.0) near = 1;
     if (!near) for (const b of X.bl) if (b.woke && !b.frozen && Math.hypot(b.x - d.x, b.z - d.z) < 1.8) { near = 1; break; }
     const was = d.open; d.open = clamp(d.open + (near ? 1 : -1) * dt * (X.power > .5 ? 3 : 1.15), 0, 1);
-    if (was === 0 && d.open > 0) { const dd = Math.hypot(p.x - d.x, p.z - d.z); shThud(clamp(1 - dd / 14, 0, 1) * .7, 130); if (near === 2) shNoise(d.x, d.z, 7); } }
-  for (const l of X.lockers) { if (l.wt > 0) { l.wt -= dt; l.want = 1; if (l.wt <= 0) l.want = 0; } l.open = clamp(l.open + (l.want ? 1 : -1) * dt * 4, 0, 1); }
+    if (was === 0 && d.open > 0) { const dd = Math.hypot(p.x - d.x, p.z - d.z); if (AU.ctx) sfx.door(clamp(1 - dd / 14, 0, 1), clamp(((d.x - p.x) * Math.cos(p.yaw) + (d.z - p.z) * Math.sin(p.yaw)) / (dd || 1), -1, 1)); if (near === 2) shNoise(d.x, d.z, 7); } }
+  for (const l of X.lockers) { if (l.wt > 0) { l.wt -= dt; l.want = 1; if (l.wt <= 0) l.want = 0; } const lw = l.open; l.open = clamp(l.open + (l.want ? 1 : -1) * dt * 4, 0, 1); if (AU.ctx && ((lw === 0 && l.open > 0) || (lw === 1 && l.open < 1))) sfx.locker(clamp(1.2 - Math.hypot(l.fx - p.x, l.fz - p.z) / 9, 0, 1)); }
   if (X.power > 0 && X.power < 1) X.power = Math.min(1, X.power + dt * .45);
   if (wardenStep(dt, p, X) || blanksStep(dt, p, X)) return;
   // what the suit makes of it: the link fills with static when something has you, and the deck tells you where it is
@@ -9063,11 +9110,11 @@ function shipStep(dt, cmd) {
 function shUse(it, p, X) {
   if (it.id === 'hide') { const w = X.w; X.hide = { i: it.k, t: 0, lamp: p.lamp, saw: w.stun <= 0 && (w.sees || (w.st === 'hunt' && w.lost < 1.2)) }; p.lamp = false; X.useWas = true; shThud(.5, 240); S.near = null; return; }
   if (AU.ctx) sfx.ok();
-  if (it.id === 'bus') { X.bus = 1; X.power = .01; S.shake = .6; shNoise(p.x, p.z, 20); if (AU.ctx) { sfx.hatch(); sfx.rumble(.6); } say('ITHACA', 'MAIN BUS CLOSED. CABIN LIGHTING RESTORED.'); X.busT = 5; shProgress(X); }
-  else if (it.id === 'core') { X.core = 1; shNoise(p.x, p.z, 6); say('NICK (CAPCOM)', 'Core is out. Avionics is forward of you, starboard side. Do not drop it.'); }
-  else if (it.id === 'nav') { X.core = 2; shNoise(p.x, p.z, 8); say('ITHACA', 'GUIDANCE CORE SEATED. PLATFORM ALIGNING.'); shProgress(X); }
-  else if (it.id === 'valve') { X.valve = 1; S.shake = .8; shNoise(p.x, p.z, 22); if (AU.ctx) sfx.rumble(.8); say('ITHACA', 'PROPELLANT VALVES OPEN. TANKS AT PRESSURE.'); X.valT = 4; shProgress(X); }
-  else if (it.id === 'burn') { X.burn = 1; X.burnT = 0; say('ITHACA', 'TRANS EARTH INJECTION. MAIN ENGINE START.'); if (AU.ctx) { NASA.play('lift', 8, 26, { gain: 1.0, fade: .4, dest: AU.suit }); sfx.rumble(1.2); } }
+  if (it.id === 'bus') { X.bus = 1; X.power = .01; S.shake = .6; shNoise(p.x, p.z, 20); if (AU.ctx) { sfx.sw(); sfx.hatch(); sfx.rumble(.6); } say('ITHACA', 'MAIN BUS CLOSED. CABIN LIGHTING RESTORED.'); X.busT = 5; shProgress(X); }
+  else if (it.id === 'core') { X.core = 1; shNoise(p.x, p.z, 6); if (AU.ctx) sfx.locker(1); say('NICK (CAPCOM)', 'Core is out. Avionics is forward of you, starboard side. Do not drop it.'); }
+  else if (it.id === 'nav') { X.core = 2; shNoise(p.x, p.z, 8); if (AU.ctx) { sfx.locker(.8); sfx.sw(); } say('ITHACA', 'GUIDANCE CORE SEATED. PLATFORM ALIGNING.'); shProgress(X); }
+  else if (it.id === 'valve') { X.valve = 1; S.shake = .8; shNoise(p.x, p.z, 22); if (AU.ctx) { sfx.valve(); sfx.vent(1); sfx.rumble(.8); } say('ITHACA', 'PROPELLANT VALVES OPEN. TANKS AT PRESSURE.'); X.valT = 4; shProgress(X); }
+  else if (it.id === 'burn') { X.burn = 1; X.burnT = 0; say('ITHACA', 'TRANS EARTH INJECTION. MAIN ENGINE START.'); if (AU.ctx) { NASA.play('lift', 8, 26, { gain: 1.0, fade: .4, dest: AU.suit }); sfx.ignite(1.3); sfx.rumble(1.2); } }
 }
 /* The sidearm and the pulse work aboard exactly as they did outside, and both are heard from one end of her to the other. */
 function shFire(dt, cmd, p, X) {
@@ -9287,7 +9334,7 @@ function p2Hud(o) {
   if (X.hide) { // the locker door: louvres across the view
     hx.fillStyle = '#000'; const gap = 5 * u, pitch = 15 * u, y0 = H * .30, y1 = H * .62; hx.fillRect(0, 0, cw * u, y0); hx.fillRect(0, y1, cw * u, H - y1); for (let y = y0; y < y1; y += pitch) hx.fillRect(0, y + gap, cw * u, pitch - gap);
     txt('E  LEAVE', cw / 2, 262, 13, 'center'); radio(232); return; }
-  txt(garbleText(S.crew.short, gz), mx, top, 13, 'left', C_BLU);
+  txt(garbleText(S.crew.short, gz), mx, top, 13, 'left', C_BLU); if (S.mode === 'ship') crewVitals(txt, mx, top + 13, gz, true);
   const sig = Math.round(S.signal * 100); txt(garbleText(sig < 25 ? 'LINK LOST' : `LINK ${sig}%`, gz), cw - mx, top, 13, 'right', C_BLU); if (S.micOn) txt('MIC OPEN', cw - mx, top + 13, 13, 'right');
   const n = shDone(X), obj = X.burn ? 'BURN IN PROGRESS' : n >= 3 ? 'FIRE THE BURN FROM THE FLIGHT DECK' : X.core === 1 ? 'SEAT THE CORE IN AVIONICS' : `WAKE ITHACA  ${n} OF 3`;
   txt(garbleText(obj, gz * .6), cw / 2, top, 14, 'center', C_AMB);
@@ -9346,7 +9393,10 @@ function homeAudio(on) {
   A.g = C.createGain(); A.g.gain.value = 0; A.g.gain.setTargetAtTime(.9, t + .5, 1.5); A.lp = C.createBiquadFilter(); A.lp.type = 'lowpass'; A.lp.frequency.value = 16000; A.g.connect(A.lp); A.lp.connect(AU.master);
   const src = (type, f, q, vol, lfo) => { const s = C.createBufferSource(); s.buffer = AU.nb; s.loop = true; s.playbackRate.value = .8 + Math.random() * .4; const fl = C.createBiquadFilter(); fl.type = type; fl.frequency.value = f; fl.Q.value = q; const g = C.createGain(); g.gain.value = vol; s.connect(fl); fl.connect(g); g.connect(A.g); s.start();
     if (lfo) { const o = C.createOscillator(); o.frequency.value = lfo; const og = C.createGain(); og.gain.value = vol * .45; o.connect(og); og.connect(g.gain); o.start(); A.nodes.push(o); } A.nodes.push(s); };
-  src('bandpass', 520, .5, .5, .11); src('bandpass', 1300, .7, .32, .17); src('highpass', 3400, .5, .1, .23); src('bandpass', 880, 1.2, .2, .07);
+  // the street as it was recorded: a parade passing, a crowd at a little distance, and the band
+  SND.quiet(.4); A.real = 0; for (const [k, v] of [['street', .8], ['crowd', 1], ['march', .75]]) { const c = CUT[k]; if (c && SND.buf[c[0]]) { const h = SND.play(c[0], c[1], c[2], { loop: true, gain: v * (c[3] === undefined ? .7 : c[3]), dest: A.g, fade: 2.5, rand: k !== 'march' }); if (h) { A.nodes.push(h.s); A.real++; } } }
+  A.cheer = 3; A.sir = 14;
+  if (!A.real) { src('bandpass', 520, .5, .5, .11); src('bandpass', 1300, .7, .32, .17); src('highpass', 3400, .5, .1, .23); src('bandpass', 880, 1.2, .2, .07); }
   A.next = t + 1.2; A.bar = 0; AU.hiss.gain.setTargetAtTime(0, t, .3); AU.stat.gain.setTargetAtTime(0, t, .3); AU.droneG.gain.setTargetAtTime(0, t, .3);
 }
 function homeAudioFrame() {
@@ -9354,6 +9404,10 @@ function homeAudioFrame() {
   AU.stat.gain.setTargetAtTime(h.duck * .05, t, .05); AU.droneG.gain.setTargetAtTime(h.duck * .12, t, .2);
   A.lp.frequency.setTargetAtTime(16000 * Math.pow(.012, h.duck), t, .08); A.g.gain.setTargetAtTime(S.over ? 0 : .9 * (1 - h.duck * .8), t, .15);
   // a street march, two bars ahead: bass drum on the beat, snare off it, and a plain rising call in the horns
+  if (A.real) { const dt = Math.min(.1, t - (A.pt || t)); A.pt = t; A.cheer -= dt; A.sir -= dt;
+    if (A.cheer <= 0) { A.cheer = 4 + Math.random() * 7; fx('cheer', { dest: A.g, gain: .5 + Math.random() * .5, rate: .92 + Math.random() * .16, pan: Math.random() * 1.6 - .8 }); }
+    if (A.sir <= 0) { A.sir = 30 + Math.random() * 20; fx('siren', { dest: A.g, gain: .22, out: 1.5, fade: 1, pan: -.4 }); }
+    A.next = t + 1; return; }
   const beat = .5; while (A.next < t + .6) { const b = A.bar % 16, T0 = A.next; const drum = (tt, f, v, d) => { const o = C.createOscillator(), g = C.createGain(); o.frequency.setValueAtTime(f, tt); o.frequency.exponentialRampToValueAtTime(f * .5, tt + d); env(g, tt, .004, v, d); o.connect(g); g.connect(A.g); o.start(tt); o.stop(tt + d + .05); };
     if (b % 2 === 0) drum(T0, 88, .5, .22); else noise(A.g, T0, .12, 'highpass', 1800, .7, .22); if (b % 4 === 3) noise(A.g, T0 + beat / 2, .08, 'highpass', 2200, .7, .16);
     const tune = [392, 392, 523, 523, 659, 587, 523, 0, 440, 440, 587, 587, 698, 659, 587, 0][b]; if (tune) for (const [m, v] of [[1, .085], [1.5, .05], [.5, .07]]) { const o = C.createOscillator(), g = C.createGain(), f = C.createBiquadFilter(); o.type = 'sawtooth'; o.frequency.value = tune * m * (1 + (Math.random() - .5) * .006); f.type = 'lowpass'; f.frequency.value = 1900; env(g, T0, .03, v, beat * .95); o.connect(f); f.connect(g); g.connect(A.g); o.start(T0); o.stop(T0 + beat + .05); }
@@ -9403,7 +9457,7 @@ precision highp float; void main(){}`;
 const FS_W = `#version 300 es
 precision highp float; precision highp sampler2DArray; precision highp sampler2DShadow;
 in vec3 vW,vUv,vN,vC,vS; uniform sampler2DArray uTex; uniform sampler2DShadow uSh; uniform vec3 uCam,uDir,uSun,uJup; uniform float uFlash,uTime,uSmear,uTerr,uSunI; uniform vec3 uAmb;
-uniform vec4 uLP[8]; uniform float uLI[8]; uniform vec3 uTint[20]; out vec4 o;
+uniform vec4 uLP[8]; uniform float uLI[8]; uniform vec3 uTint[24]; out vec4 o;
 ${GLSL_NOISE}
 float ls(float m0,float m){ return 2.*m0/(m0+m+1e-3); }
 void main(){
@@ -9451,26 +9505,26 @@ const FS_POST = `#version 300 es
 precision highp float; in vec2 vUv; uniform sampler2D uScene,uHud; uniform vec2 uSRes,uORes,uSway; uniform float uTime,uGlitch,uBreath,uNoSig,uFade,uFlashW,uHudOn,uVisor,uGrain,uSat; out vec4 o;
 ${GLSL_NOISE}
 float h(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
-void main(){ vec2 p=vUv*2.-1.; float t=uTime, gz=uGlitch; float ft=floor(t*24.);
+void main(){ vec2 p=vUv*2.-1.; float t=uTime, gz=uGlitch*mix(.45,1.,uGlitch); float ft=floor(t*24.);   // quiet links stay quiet; only a dying one tears
  vec2 hp=p+uSway; hp.y+=.03; float sd=pow(pow(abs(hp.x)/.985,3.4)+pow(abs(hp.y)/.95,3.4),1./3.4);
- vec2 q=mix(p,p*(1.+.06*dot(p,p))/1.075,uVisor); q+=(vec2(h(vec2(ft,1.)),h(vec2(ft,2.)))-.5)*.0025; vec2 uv=q*.5+.5;
+ vec2 q=mix(p,p*(1.+.045*dot(p,p))/1.056,uVisor); q+=(vec2(h(vec2(ft,1.)),h(vec2(ft,2.)))-.5)*.0014; vec2 uv=q*.5+.5;
  float by=floor(uv.y*30.)/30., bt=floor(t*13.);
- if(h(vec2(by*91.,bt))<gz*.3) uv.x+=(h(vec2(bt,by*33.))-.5)*.16*gz;
- float band=fract(uv.y-t*.11); float bm=smoothstep(0.,.02,band)*smoothstep(.08,.05,band); uv.x+=bm*.006*sin(uv.y*380.+t*60.)*(.3+gz*3.);
+ if(h(vec2(by*91.,bt))<gz*.24) uv.x+=(h(vec2(bt,by*33.))-.5)*.11*gz;
+ float band=fract(uv.y-t*.11); float bm=smoothstep(0.,.02,band)*smoothstep(.08,.05,band); uv.x+=bm*.004*sin(uv.y*380.+t*60.)*(.12+gz*2.4);
  vec2 bl=floor(uv*vec2(48.,27.)); float hb=h(bl+bt*.37); vec2 buv=uv; if(hb<max(gz-.5,0.)*.22) buv=(bl+.5)/vec2(48.,27.)+vec2(h(bl)-.5,0.)*.12*step(.5,h(bl+3.));
  vec2 px=1./uSRes; vec3 src=texture(uScene,buv).rgb; float c=dot(src,vec3(.3,.59,.11)); vec3 chroma=mix(vec3(1.),src/max(c,.004),uSat*smoothstep(0.,.02,c));
  // film halation: bright areas bleed
  float bloom=0.; for(int i=0;i<8;i++){ float a=float(i)*.785; bloom+=max(texture(uScene,buv+vec2(cos(a),sin(a))*px*5.).g-.6,0.); } c+=bloom*.09;
- c=mix(c,max(c,texture(uScene,buv+vec2(.002+gz*.008,0.)).g),gz*.3);
+ c=mix(c,max(c,texture(uScene,buv+vec2(.0015+gz*.006,0.)).g),gz*.25);
  c=pow(max(c,0.),.86)*.94+.028;
- vec2 hv=vec2(uv.x,1.-uv.y); vec4 hud=texture(uHud,hv); float hg=texture(uHud,hv+vec2(.001+gz*.012,0.)).a;
+ vec2 hv=vec2(uv.x,1.-uv.y); vec4 hud=texture(uHud,hv); float hg=texture(uHud,hv+vec2(.001+gz*.007,0.)).a;
  vec3 hudc=(hud.rgb+hg*.08)*uHudOn*(.92+.08*h(vec2(ft,7.))); float hk=1.-hud.a*uHudOn;
  // grain: fine + clumped, stronger in the shadows like pushed film stock
  float gr=h(gl_FragCoord.xy+fract(t)*91.7), gr2=vn(gl_FragCoord.xy*.35+ft*7.3), gr3=vn(gl_FragCoord.xy*.09+ft*3.1);
  c+=((gr-.5)*.1+(gr2-.5)*.07+(gr3-.5)*.03)*(uGrain+gz*.7)*(1.25-.6*c);
  c*=.95+.05*h(vec2(ft*.7,3.));
- float sx=h(vec2(floor(t*3.),5.)); c+=smoothstep(.0012,0.,abs(vUv.x-sx))*step(.6,h(vec2(floor(t*3.),9.)))*step(.35,vn(vec2(vUv.y*9.,ft)))*.22;
- vec2 dk=floor(gl_FragCoord.xy/2.); c+=step(.99982,h(dk+ft*1.3))*.4-step(.99985,h(dk-ft*2.1))*.25;
+ float sx=h(vec2(floor(t*3.),5.)); c+=smoothstep(.0012,0.,abs(vUv.x-sx))*step(.6,h(vec2(floor(t*3.),9.)))*step(.35,vn(vec2(vUv.y*9.,ft)))*.11;
+ vec2 dk=floor(gl_FragCoord.xy/2.); c+=step(.99988,h(dk+ft*1.3))*.28-step(.9999,h(dk-ft*2.1))*.18;
  c+=bm*.04*gr;
  c=mix(c,gr*.55+.08,uNoSig);
  float vis=uVisor;
@@ -9521,7 +9575,7 @@ addEventListener('resize', resize);
 // ---------------------------------------------------------------- state
 let S = null, screen = 'disc';
 const keys = {}; let mdx = 0, mdy = 0, lockOK = false, wantFire = false, wantAbility = false, lampEdge = false;
-const FOE_KEI = [[214, 246], [46, 192], [196, 120], [164, 280], [100, 160], [134, 102], [104, 197]];
+const FOE_KEI = [];   // none to begin with. The more of them there are the less each one frightens; they arrive one at a time, and you see each one first
 function newGame(crewIdx) {
   const rng = mulberry(2011 + crewIdx), c = CREW[crewIdx];
   S = { t: 0, left: 600, rng, crew: c, crewIdx, stage: 0, over: null, overT: 0, micOn: false, cine: null,
@@ -9536,9 +9590,9 @@ function newGame(crewIdx) {
    you, and in which family of key they carry — which is generated from the same seed, so a walker and a
    hulk standing together are plainly two different things. */
 const KEI_VARI = [
-  { id: 'walker', w: .24, sc: 1.00, fat: 1.00, hp: 2, spd: 1.00, lit: .45 },
-  { id: 'stalker', w: .17, sc: 1.14, fat: .82, hp: 2, spd: 1.30, lit: .12 },   // will not come on while the lamp is on it
-  { id: 'rusher', w: .13, sc: .80, fat: .78, hp: 1, spd: 1.62, lit: .80 },   // small, quick, comes apart in one hit
+  { id: 'walker', w: .20, sc: 1.00, fat: 1.00, hp: 2, spd: 1.00, lit: .45 },
+  { id: 'stalker', w: .24, sc: 1.14, fat: .82, hp: 2, spd: 1.30, lit: .12 },   // will not come on while the lamp is on it
+  { id: 'rusher', w: .07, sc: .80, fat: .78, hp: 1, spd: 1.62, lit: .80 },   // small, quick, comes apart in one hit
   { id: 'hulk', w: .11, sc: 1.52, fat: 1.70, hp: 4, spd: .62, lit: .70 },   // four hits, and you hear it through the ground
   { id: 'crawler', w: .08, sc: .96, fat: 1.15, hp: 2, spd: 1.05, lit: .5, legs: 2 }, // already lost legs: it drags
   /* The two that sprint. Each stops dead, sets itself, and then comes in a straight line faster than you can run. It
@@ -9560,6 +9614,10 @@ function say(who, text, o) { o = o || {}; S.lines.push({ who, text, t: S.t, calm
   const sp = o.voice ? o.voice[0] : /nick/i.test(who) ? 'nick' : /odyssey|capcom|houston|suit|argus|ithaca/i.test(who) ? 'pa' : /unknown|keis/i.test(who) ? 'entity' : (CREW.find(c => who.indexOf(c.short.split(' ').pop()) >= 0) || {}).id || 'nick';
   if (VOICE.utter(sp, o.voice ? o.voice[1] : null, text, { dup: o.dup, calm: o.calm })) return;
   if (sp === 'entity') sfx.kei(.5, 0); else sfx.loopOpen(sp === 'nick' ? 'ground' : sp === 'pa' ? 'pa' : 'suit', text.length); }
+/* Everyone's vital signs as the suit telemetry has them, under your own name: the four you are not. Once you are
+   aboard Ithaca the ones left on the surface are out of range, which is not the same thing as dead. */
+function crewVitals(txt, mx, y, gz, far) { let i = 0; for (const c of CREW) { if (c.id === S.crew.id) continue; const f = S.cr && S.cr[c.id], up = !f || f.alive !== false;
+  txt(garbleText(c.short, gz * .5), mx, y + i * 10, 9, 'left', up ? C_BLU : C_RED); txt(up ? (far ? 'NO SIGNAL' : 'ALIVE') : 'NO PULSE', mx + 62, y + i * 10, 9, 'left', up ? (far ? C_AMB : '#f4f1e8') : C_RED); i++; } }
 const pitchOf = id => (CREW.find(c => c.id === id) || {}).pitch || 110;
 function buildScript() {
   const me = S.crew.id, sc = [];
@@ -9582,6 +9640,24 @@ function selfVoice(ev, gap) { if (!AU.ctx) return; if (S.said[ev] && S.t - S.sai
 
 // ---------------------------------------------------------------- simulation
 const solid = (cx, cz) => !passAt(cx, cz);
+/* The player does not move on the grid. The grid is two metres to a cell and stands a square wall round every boulder
+   and a staircase along the valley side, which is what you ran into in mid-air. You collide with the things themselves:
+   the smooth edge of the valley floor, and each rock, the pod and the ship as the round things they are. A rock is only
+   in the way below its shoulder; come down on it from above and you are standing on it. */
+const COLL = (() => { const o = []; for (const k of W.rocks) { if (corridorD(k.x, k.z) > 1.5) continue; o.push({ x: k.x, z: k.z, r: k.rad * .82, y: groundY(k.x, k.z), h: k.rad * k.sy * 1.15 }); }
+  o.push({ x: START.x, z: START.z, r: 2.5 }, { x: SHIP.x, z: SHIP.z, r: 3.7 }); return o; })();
+const EDGE = -.4;
+function rockTop(x, z, y) { let g = -1e9; for (const k of COLL) { if (k.h === undefined) continue; const d = Math.hypot(x - k.x, z - k.z); if (d < k.r * .9 && y >= k.y + k.h * .6) g = Math.max(g, k.y + k.h * (.78 + .22 * Math.cos(d / k.r * 1.5))); } return g; }
+function movePlayer(p, dx, dz) {
+  const r = .4; let x = p.x + dx, z = p.z + dz;
+  // the valley side: put back along its own normal, so running at it at an angle slides you along it
+  for (let it = 0; it < 2; it++) { const D = corridorD(x, z); if (D <= EDGE) break; const e = .3, gx = corridorD(x + e, z) - corridorD(x - e, z), gz = corridorD(x, z + e) - corridorD(x, z - e), gl = Math.hypot(gx, gz);
+    if (gl < 1e-4) { x = p.x; z = p.z; break; } const k = (D - EDGE + .01) / Math.max(.35, gl / (2 * e)); x -= gx / gl * k; z -= gz / gl * k; }
+  if (corridorD(x, z) > EDGE + .05) { x = p.x; z = p.z; }
+  for (const k of COLL) { const ex = x - k.x, ez = z - k.z, rr = k.r + r, d2 = ex * ex + ez * ez; if (d2 >= rr * rr) continue; if (k.h !== undefined && p.y >= k.y + k.h * .6) continue;
+    const d = Math.sqrt(d2) || .001, nx = k.x + ex / d * rr, nz = k.z + ez / d * rr; if (corridorD(nx, nz) <= EDGE) { x = nx; z = nz; } else { x = p.x; z = p.z; } }
+  p.x = x; p.z = z;
+}
 function moveCircle(o, dx, dz, r) {
   let nx = o.x + dx; if (!(solid(Math.floor((nx + Math.sign(dx) * r) / CS), Math.floor((o.z - r) / CS)) || solid(Math.floor((nx + Math.sign(dx) * r) / CS), Math.floor((o.z + r) / CS)))) o.x = nx;
   let nz = o.z + dz; if (!(solid(Math.floor((o.x - r) / CS), Math.floor((nz + Math.sign(dz) * r) / CS)) || solid(Math.floor((o.x + r) / CS), Math.floor((nz + Math.sign(dz) * r) / CS)))) o.z = nz;
@@ -9607,66 +9683,119 @@ const ROLE_POS = { watkins: [125, 384], algo: [150, 318], bart: [117.4, 228.6], 
 function nearPass(x, z) { for (let r = 0; r < 12; r++) for (let a = 0; a < 8; a++) { const px = x + Math.cos(a * .785) * r * CS, pz = z + Math.sin(a * .785) * r * CS; if (passAt(Math.floor(px / CS), Math.floor(pz / CS))) return [px, pz]; } return [x, z]; }
 function crewSetup(crewIdx) { S.cr = {};
   CREW.forEach((c, i) => { if (i === crewIdx) return; const [x, z] = nearPass(ROLE_POS[c.id][0], ROLE_POS[c.id][1]), f = mkFoe('crew', x, z, i, i + 1); f.role = c.id; f.rs = 0; f.rt = 0; f.ammo = 12; f.shotT = 2; f.flash = 0; f.cy = 0; f.x0 = x; f.z0 = z; S.foes.push(f); S.cr[c.id] = f; });
-  const a = S.cr.algo; if (a) { const k = mkFoe('kei', a.x + 6, a.z, -1, 31, 'walker'); k.kin = true; k.active = true; S.foes.push(k); a.chaser = k; a.ang = 0; a.gap = 1.0; }
+  const a = S.cr.algo; if (a) { const k = mkFoe('kei', a.x + 6, a.z, -1, 31, 'walker'); a.chaser = k; a.ang = 0; a.gap = 1.0; }   // his is not in the valley yet: it is the first one you see on the ridge
   if (S.cr.bart) S.cr.bart.down = 1; if (S.cr.waldron) S.cr.waldron.heading = -.9; }
 function crewLine(id, text, ev, o) { const c = CREW.find(q => q.id === id); say(c.short, text, Object.assign({ voice: [id, ev && VOICE.has(id, ev) ? ev : null], pitch: c.pitch }, o)); }
-function crewGo(f, tx, tz, v, dt) { const ex = tx - f.x, ez = tz - f.z, el = Math.hypot(ex, ez); if (el < .3) return el; const m = Math.min(el, v * dt); moveCircle(f, ex / el * m, ez / el * m, .35); f.heading += angd(Math.atan2(ex, -ez), f.heading) * Math.min(1, dt * 6); return el; }
-function crewPath(f, v, dt) { const pts = PATHS[0].pts; if (f.wp === undefined) { let b = 0, bd = 1e9; pts.forEach((q, i) => { const d = Math.hypot(q[0] - f.x, q[1] - f.z); if (d < bd) { bd = d; b = i; } }); f.wp = Math.min(b + 1, pts.length - 1); }
-  if (crewGo(f, pts[f.wp][0], pts[f.wp][1], v, dt) < 3 && f.wp < pts.length - 1) f.wp++; }
+/* How the crew get about. They do not walk at a point and stick on the first rock. Each has somewhere to be, a field of
+   distances to it over the same grid the KEIS use, and looks down that field for the furthest place he can walk straight
+   to, so he cuts corners and takes a rock wide the way a person does. He gets up to speed and comes back off it, turns at
+   the rate a man in a suit can turn, slows as he arrives, and keeps an arm's length off you and off the others. */
+const NAVF = new Map();
+function navField(gx, gz) { const [px, pz] = nearPass(gx, gz), g = Math.floor(px / CS) + Math.floor(pz / CS) * MW; let f = NAVF.get(g); if (f) return f;
+  f = new Int16Array(MW * MH).fill(-1); let h = 0, n = 0; FQ[n++] = g; f[g] = 0;
+  while (h < n) { const i = FQ[h++], x = i % MW, z = (i / MW) | 0, v = f[i] + 1; if (x + 1 < MW && f[i + 1] < 0 && W.pass[i + 1] === 1) { f[i + 1] = v; FQ[n++] = i + 1; } if (x > 0 && f[i - 1] < 0 && W.pass[i - 1] === 1) { f[i - 1] = v; FQ[n++] = i - 1; } if (z + 1 < MH && f[i + MW] < 0 && W.pass[i + MW] === 1) { f[i + MW] = v; FQ[n++] = i + MW; } if (z > 0 && f[i - MW] < 0 && W.pass[i - MW] === 1) { f[i - MW] = v; FQ[n++] = i - MW; } }
+  if (NAVF.size > 20) NAVF.clear(); NAVF.set(g, f); return f; }
+const NB8 = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]];
+function navAim(f, field, tx, tz) { if (los(f.x, f.z, tx, tz)) return [tx, tz];
+  let cx = Math.floor(f.x / CS), cz = Math.floor(f.z / CS), v = field[cx + cz * MW]; if (!(v > 0)) { const q = nearPass(f.x, f.z); return Math.hypot(q[0] - f.x, q[1] - f.z) > .2 ? q : [tx, tz]; }
+  let ax = tx, az = tz, got = false;
+  for (let k = 0; k < 16 && v > 0; k++) { let bx = 0, bz = 0, bv = v; for (const [dx, dz] of NB8) { if (dx && dz && (solid(cx + dx, cz) || solid(cx, cz + dz))) continue; if (!passAt(cx + dx, cz + dz)) continue; const vv = field[cx + dx + (cz + dz) * MW]; if (vv >= 0 && vv < bv) { bv = vv; bx = dx; bz = dz; } }
+    if (!bx && !bz) break; cx += bx; cz += bz; v = bv; const x = (cx + .5) * CS, z = (cz + .5) * CS; if (!got || los(f.x, f.z, x, z)) { ax = x; az = z; got = true; } else break; }
+  return [ax, az]; }
+function crewSteer(f, wx, wz, dt) { const p = P(); f.went = true;
+  const push = (ox, oz, r) => { const dx = f.x - ox, dz = f.z - oz, d = Math.hypot(dx, dz); if (d < r && d > .01) { const k = (r - d) / r * 3.2; wx += dx / d * k; wz += dz / d * k; } };
+  push(p.x, p.z, 1.5); for (const g of S.foes) if (g !== f && g.kind === 'crew') push(g.x, g.z, 1.3);
+  const k = 1 - Math.exp(-dt * 4.2); f.vx = lerp(f.vx || 0, wx, k); f.vz = lerp(f.vz || 0, wz, k); const sp = Math.hypot(f.vx, f.vz);
+  if (sp > .04) { const ox = f.x, oz = f.z; moveCircle(f, f.vx * dt, f.vz * dt, .35); if (dt > 0) { f.vx = lerp(f.vx, (f.x - ox) / dt, .5); f.vz = lerp(f.vz, (f.z - oz) / dt, .5); } }
+  if (sp > .6 && !(f.aimT > 0)) f.heading += clamp(angd(Math.atan2(f.vx, -f.vz), f.heading) * Math.min(1, dt * 7), -dt * 4.5, dt * 4.5); }
+function crewFace(f, yaw, dt, rate) { f.heading += clamp(angd(yaw, f.heading) * Math.min(1, dt * 5), -dt * (rate || 2.6), dt * (rate || 2.6)); }
+function crewGo(f, tx, tz, v, dt, field) { const dist = Math.hypot(tx - f.x, tz - f.z); let wx = 0, wz = 0;
+  if (dist > .3) { const a = navAim(f, field || navField(tx, tz), tx, tz), ex = a[0] - f.x, ez = a[1] - f.z, el = Math.hypot(ex, ez) || 1, sp = v * clamp(dist / 2.4, .22, 1); wx = ex / el * sp; wz = ez / el * sp; }
+  crewSteer(f, wx, wz, dt); return dist; }
+function crewPath(f, v, dt) { return crewGo(f, SHIP.x, SHIP.z + 6, v, dt, W.shipDist); }
+// off your shoulder and a little behind, moving when you move and standing when you stand
+function crewFollow(f, p, dt, side) { const sn = Math.sin(p.yaw), cs = Math.cos(p.yaw), tx = p.x + cs * side * 2.4 - sn * 1.7, tz = p.z + sn * side * 2.4 + cs * 1.7, dist = Math.hypot(tx - f.x, tz - f.z);
+  if (!f.fol && dist > 3.4) f.fol = 1; else if (f.fol && dist < 1.2) f.fol = 0;
+  if (f.fol) crewGo(f, tx, tz, clamp(1.4 + dist * .85, 0, 6.3), dt, S.flow); return dist; }
+function crewGest(f, g, dur) { f.gest = g; f.gestT = dur; }
 function crewTaker(f, vid, seed) { const a = f.heading, [x, z] = nearPass(f.x + Math.sin(a) * 15 + Math.cos(a) * 9, f.z - Math.cos(a) * 15 + Math.sin(a) * 9), k = mkFoe('kei', x, z, -1, seed, vid); k.lock = f; k.active = true; S.foes.push(k); return k; }
 function crewRole(f, dt, p, d) {
-  const id = f.role, see = d < 80 && los(f.x, f.z, p.x, p.z); f.rt += dt; f.active = true; f.flash = Math.max(0, f.flash - dt);
-  let kd = 1e9; for (const g of S.foes) if (g.kind === 'kei' && g.stun <= 0 && !g.kin) { const gd = Math.hypot(g.x - f.x, g.z - f.z); if (gd < kd) kd = gd; }
+  const id = f.role, see = d < 80 && los(f.x, f.z, p.x, p.z); f.rt += dt; f.active = true; f.flash = Math.max(0, f.flash - dt); f.went = false; f.aimT = Math.max(0, (f.aimT || 0) - dt);
+  if (f.gestT > 0) { f.gestT -= dt; if (f.gestT <= 0) f.gest = null; }
+  let kd = 1e9, kn = null; for (const g of S.foes) if (g.kind === 'kei' && g.stun <= 0 && !g.kin) { const gd = Math.hypot(g.x - f.x, g.z - f.z); if (gd < kd) { kd = gd; kn = g; } }
   f.panic = lerp(f.panic, clamp(1 - kd / 22, 0, 1), dt * 2); f.open = lerp(f.open, f.panic > .6 ? 1 : 0, dt * 3);
+  // where he is looking: at what is coming if anything is, otherwise at you when you are near, otherwise where he is going
+  f.lookYaw = kn && kd < 30 && kn.active ? Math.atan2(kn.x - f.x, -(kn.z - f.z)) : d < 14 && see ? Math.atan2(p.x - f.x, -(p.z - f.z)) : undefined;
   if (f.bait && kd < 1.25) { crewTaken(f); return true; }
   /* Everyone carries the sidearm and everyone uses it. None of them is Baker: they wait until it is close, they miss
-     about half the time, and a hit buys three seconds, not eight. It never stops the one that has come for them. */
+     some, and a hit buys five seconds, not eight. They shoot first at whatever is nearest YOU. It never stops the one
+     that has come for them. The pistol comes up a moment before the shot, so you can see who is about to fire. */
   if (id !== 'baker' && f.ammo > 0 && !f.cy) { f.shotT = (f.shotT || 0) - dt;
-    if (f.shotT <= 0) { let b = null, bd = 17; for (const g of S.foes) if (g.kind === 'kei' && g.stun <= 0 && g.active && !g.kin) { const gd = Math.hypot(g.x - f.x, g.z - f.z); if (gd < bd && los(f.x, f.z, g.x, g.z)) { bd = gd; b = g; } }
-      if (!b) f.shotT = .35; else { f.ammo--; f.flash = .09; f.fired = S.t; f.aimAt = Math.atan2(b.x - f.x, -(b.z - f.z)); f.shotT = 1.1 + S.rng() * 1.6; if (AU.ctx) sfx.tick();
-        if (!b.lock && S.rng() < .55) b.stun = Math.max(b.stun, 3); if (f.ammo === 0) crewLine(id, 'I AM OUT. I AM OUT.'); } } }
+    if (f.shotT <= .55 && !f.tgt) { let b = null, bd = 1e9; for (const g of S.foes) if (g.kind === 'kei' && g.stun <= 0 && g.active && !g.kin) { const gd = Math.hypot(g.x - f.x, g.z - f.z); if (gd > 24 || !los(f.x, f.z, g.x, g.z)) continue; const sc = Math.min(gd, Math.hypot(g.x - p.x, g.z - p.z)); if (sc < bd) { bd = sc; b = g; } } if (b) f.tgt = b; else f.shotT = .8; }
+    if (f.tgt) { const b = f.tgt; if (b.stun > 0 || S.foes.indexOf(b) < 0 || !los(f.x, f.z, b.x, b.z)) { f.tgt = null; f.shotT = .7; }
+      else { f.aimAt = Math.atan2(b.x - f.x, -(b.z - f.z)); f.aimT = .9; if (f.shotT <= 0) { f.tgt = null; f.ammo--; f.flash = .09; f.fired = S.t; f.shotT = 1.1 + S.rng() * 1.5; if (AU.ctx) sfx.tick();
+          const hit = S.rng() < .7; crewTracer(f, b, hit); if (hit && !b.lock) { b.stun = Math.max(b.stun, 5); b.wary = 3; } if (f.ammo === 0) crewLine(id, 'I AM OUT. I AM OUT.'); } } } }
   if (id === 'watkins') {
-    if (f.rs === 0) { f.active = false; f.heading += angd(Math.atan2(p.x - f.x, -(p.z - f.z)), f.heading) * Math.min(1, dt * 2); if (S.t > 12) { f.rs = 1; crewLine('watkins', 'I AM NOT STAYING HERE. I AM GOING FOR THE SHIP.'); } }
-    else { crewPath(f, 5.4, dt); f.bait = true; if (f.rs === 1 && Math.hypot(f.x - f.x0, f.z - f.z0) > 22) { f.rs = 2; crewTaker(f, 'rusher', 57); crewLine('watkins', 'WHAT THE F--- WAS THAT?', 'spot'); } } }
+    if (f.rs === 0) { f.active = false; crewFace(f, Math.atan2(p.x - f.x, -(p.z - f.z)), dt); if (!f.wv && S.t > 2.5 && see) { f.wv = 1; crewGest(f, 'wave', 3.4); } if (S.t > 12) { f.rs = 1; f.rt = 0; crewLine('watkins', 'I AM NOT STAYING HERE. I AM GOING FOR THE SHIP.'); crewGest(f, 'beckon', 2.6); } }
+    else { f.bait = true; const far = Math.hypot(f.x - f.x0, f.z - f.z0);
+      // he goes ahead, but he is not leaving you: when you fall behind he stops, turns round and waves you on
+      if (f.rs === 1 && d > 19 && (f.waitT || 0) < 14 && kd > 12) { f.waitT = (f.waitT || 0) + dt; crewFace(f, Math.atan2(p.x - f.x, -(p.z - f.z)), dt, 3.4); if (see && !(f.gestT > 0) && (f.bkT = (f.bkT || 0) - dt) <= 0) { f.bkT = 5; crewGest(f, d > 34 ? 'wave' : 'beckon', 2.8); } }
+      else { if (d < 9) f.waitT = 0; crewPath(f, f.rs === 1 ? 4.7 : 5.6, dt); }
+      if (f.rs === 1 && ((S.dir && S.dir.sd0 > 0 && W.shipDist[Math.floor(f.x / CS) + Math.floor(f.z / CS) * MW] < S.dir.sd0 * .52 && far > 60) || f.rt > 200)) { f.rs = 2; crewTaker(f, 'rusher', 57); crewLine('watkins', 'WHAT THE F--- WAS THAT?', 'spot'); } } }
   else if (id === 'algo') { const k = f.chaser, L = ROLE_POS.algo, R0 = 6.5;
-    if (f.rs <= 1) { // round and round the mast with it a few strides behind him, and the gap closing once you are there to see it
-      f.ang += dt * 4.4 / R0; f.x = L[0] + Math.cos(f.ang) * R0; f.z = L[1] + Math.sin(f.ang) * R0; f.heading = Math.atan2(-Math.sin(f.ang), -Math.cos(f.ang));
-      if (k.kin) { const b = f.ang - f.gap; k.x = L[0] + Math.cos(b) * R0; k.z = L[1] + Math.sin(b) * R0; k.heading = Math.atan2(-Math.sin(b), -Math.cos(b)); }
-      if (f.rs === 0) { if (!f.called && S.t > 22) { f.called = 1; crewLine('algo', 'HELP! THE KEIS ARE CHASING ME!', 'panic'); f.callT = S.t + 4.5; }
+    if (f.rs <= 1 && !k.on) { f.active = false; crewFace(f, f.lookYaw !== undefined ? f.lookYaw : Math.atan2(p.x - f.x, -(p.z - f.z)), dt); if (S.t > 150) { k.on = 1; k.kin = true; k.active = true; S.foes.push(k); f.ang = Math.atan2(f.z - L[1], f.x - L[0]); } }
+    else if (f.rs <= 1) { k.on += dt; const ease = Math.min(1, dt * (k.on < 2 ? 3 : 60)); // round and round the mast with it a few strides behind him, and the gap closing once you are there to see it
+      const RA = a => R0 + .9 * Math.sin(a * 2.3 + 1) + .45 * Math.sin(a * 5.1), a1 = f.ang + dt * (4.4 + .7 * Math.sin(f.ang * 1.7)) / R0, nx = L[0] + Math.cos(a1) * RA(a1), nz = L[1] + Math.sin(a1) * RA(a1); f.heading += angd(Math.atan2(nx - f.x, -(nz - f.z)), f.heading) * Math.min(1, dt * 9); f.ang = a1; f.x = lerp(f.x, nx, ease); f.z = lerp(f.z, nz, ease); f.went = true;
+      if (k.kin) { const b = f.ang - f.gap, kx = L[0] + Math.cos(b) * RA(b), kz = L[1] + Math.sin(b) * RA(b); k.heading += angd(Math.atan2(kx - k.x, -(kz - k.z)), k.heading) * Math.min(1, dt * 9); k.x = lerp(k.x, kx, ease); k.z = lerp(k.z, kz, ease); f.lookYaw = Math.atan2(k.x - f.x, -(k.z - f.z)); }
+      if (f.rs === 0) { if (!f.called && k.on > .6) { f.called = 1; crewLine('algo', 'HELP! THE KEIS ARE CHASING ME!', 'panic'); f.callT = S.t + 4.5; }
         if (f.callT && S.t > f.callT) { f.callT = 0; say('UNKNOWN', 'KEIS KEIS KEIS! O. ALGO! O. ALGO!', { voice: ['entity', 'spot'], pitch: 60 }); }
-        if (d < 38 && see) { f.rs = 1; f.rt = 0; crewLine('algo', 'GET IT OFF ME! GET IT OFF ME!'); } else if (S.t > 240) { k.kin = false; crewTaken(f, true); return true; } }
+        if (d < 38 && see) { f.rs = 1; f.rt = 0; crewLine('algo', 'GET IT OFF ME! GET IT OFF ME!'); } else if (k.on > 200) { k.kin = false; crewTaken(f, true); return true; } }
       else { f.gap = lerp(1.0, .17, f.rt / 16);
         if (k.stun > 0 || Math.hypot(k.x - p.x, k.z - p.z) < 7.5) { k.kin = false; k.stun = Math.max(k.stun, 1.6); f.rs = 2; f.rt = 0; crewLine('algo', 'IT IS OFF ME. IT IS OFF ME. STAY THERE.'); }
         else if (f.rt >= 16) { k.kin = false; crewTaken(f); return true; } } }
-    else if (f.rs === 2) { crewGo(f, p.x, p.z, 5, dt); if (d < 3.6) { f.rs = 3; f.rt = 0; p.pulses += 2; hudDirty = true; if (AU.ctx) sfx.ok(); crewLine('algo', 'Take these. Pulse charges, out of my locker. Q sets one off. They do not like it.', null, { calm: true }); } else if (f.rt > 25) { f.rs = 3; f.rt = 0; } }
-    else { crewPath(f, 4.8, dt); f.bait = f.rt > 14; if (f.rs === 3 && f.rt > 40) { f.rs = 4; crewTaker(f, 'runner', 61); } } }
+    else if (f.rs === 2) { crewGo(f, p.x, p.z, 5, dt, S.flow); if (d < 3.6) { f.rs = 3; f.rt = 0; p.pulses += 2; hudDirty = true; if (AU.ctx) sfx.ok(); crewLine('algo', 'Take these. Pulse charges, out of my locker. Q sets one off. They do not like it.', null, { calm: true }); } else if (f.rt > 25) { f.rs = 3; f.rt = 0; } }
+    else { crewFollow(f, p, dt, -1); if (!f.fol) crewFace(f, f.lookYaw !== undefined ? f.lookYaw : p.yaw, dt); f.bait = f.rt > 20; if (f.rs === 3 && f.rt > 85) { f.rs = 4; crewTaker(f, 'runner', 61); } } }
   else if (id === 'bart') { f.active = false;
     if (f.rs === 0 && !f.called && S.t > 62) { f.called = 1; crewLine('bart', 'This is Bartolozzi. I am down at the third light mast with a suit breach. I have the reactor start code.'); }
-    if (f.rs === 0 && d < 44 && see) { f.rs = 1; crewLine('bart', 'Over here, at the light mast. My suit is breached and I cannot stand.'); }
+    if (f.rs === 0 && d < 44 && see) { f.rs = 1; crewLine('bart', 'Over here, at the light mast. My suit is breached and I cannot stand.'); crewGest(f, 'wave', 3.2); }
     if (f.rs >= 1 && (d > 62 || S.t > 420)) { crewLine('bart', 'HELLO? HELLO? [LOSS OF SIGNAL]', 'panic'); crewTaken(f, true); return true; }
     if (f.rs === 0 && S.t > 330) { crewTaken(f, true); return true; } }
   else if (id === 'baker') {
-    if (f.rs === 0) { f.active = false; if (d < 85 && see) { f.rs = 1; crewLine('baker', 'I see you. Come up the valley. I have you covered from here.', null, { calm: true }); } }
+    if (f.rs === 0) { f.active = false; if (d < 85 && see) { f.rs = 1; crewLine('baker', 'I see you. Come up the valley. I have you covered from here.', null, { calm: true }); crewGest(f, 'wave', 3.4); } }
     else if (f.rs < 3) {
       if (f.rs === 1 && d < 14) f.rs = 2;
-      if (f.rs === 2 && d > 6.5) crewGo(f, p.x, p.z, Math.min(5.6, 2 + d * .5), dt); else f.active = false;
+      if (f.rs === 2) { crewFollow(f, p, dt, 1); if (!f.fol && !(f.aimT > 0)) crewFace(f, f.lookYaw !== undefined ? f.lookYaw : p.yaw, dt); } else { f.active = false; if (!(f.aimT > 0)) crewFace(f, Math.atan2(p.x - f.x, -(p.z - f.z)), dt); }
       f.shotT -= dt;
       if (f.shotT <= 0) { let b = null, bd = 48; for (const g of S.foes) if (g.kind === 'kei' && g.stun <= 0 && g.active && !g.kin) { const gd = Math.hypot(g.x - f.x, g.z - f.z); if (gd < bd && Math.hypot(g.x - p.x, g.z - p.z) < 42 && los(f.x, f.z, g.x, g.z)) { bd = gd; b = g; } }
-        if (!b) f.shotT = .4; else { f.ammo--; f.flash = .09; f.fired = S.t; f.aimAt = Math.atan2(b.x - f.x, -(b.z - f.z)); f.shotT = 1.5 + S.rng(); b.stun = 8; f.heading = f.aimAt; if (AU.ctx) sfx.tick();
+        if (!b) f.shotT = .4; else { f.ammo--; f.flash = .09; f.fired = S.t; f.aimAt = Math.atan2(b.x - f.x, -(b.z - f.z)); f.aimT = 1.2; f.shotT = 1.5 + S.rng(); b.stun = 8; b.wary = 3; crewTracer(f, b, true); if (AU.ctx) sfx.tick();
           if (f.ammo === 6) { f.shotT = 4.5; crewLine('baker', 'I GOT A GUN!! RELOADING!!', 'panic'); }
           else if (f.ammo <= 0) { f.rs = 3; crewLine('baker', 'That is all of it. I am dry. Go on. I will hold them here.'); } } }
       if (f.rs < 3 && S.climb) { f.rs = 3; crewLine('baker', 'Climb. Do not look down. I will keep them off the ladder.'); } }
     else { f.active = false; f.bait = true; } }
   else if (id === 'waldron') { const L = SHIP_POINTS.ladder;
-    if (f.rs === 0) { f.active = false; if (S.stage >= 1) { f.rs = 1; crewLine('waldron', 'Over here. I have the panel open. Close the bus with me and she will start.'); } }
-    else if (f.rs === 1) { f.active = false; f.heading += angd(Math.atan2(SHIP_POINTS.panel.x - f.x, -(SHIP_POINTS.panel.z - f.z)), f.heading) * Math.min(1, dt * 3); if (S.stage >= 2) { f.rs = 2; f.rt = 0; crewLine('waldron', 'I will go up first and get the hatch.'); } }
+    if (f.rs === 0) { f.active = false; if (!(f.gestT > 0)) f.gest = 'kneel'; if (S.stage >= 1) { f.rs = 1; crewLine('waldron', 'Over here. I have the panel open. Close the bus with me and she will start.'); crewGest(f, 'wave', 3); } }
+    else if (f.rs === 1) { f.active = false; if (!(f.gestT > 0)) { f.gest = 'kneel'; crewFace(f, Math.atan2(SHIP_POINTS.panel.x - f.x, -(SHIP_POINTS.panel.z - f.z)), dt); } else crewFace(f, Math.atan2(p.x - f.x, -(p.z - f.z)), dt, 3.4); if (S.stage >= 2) { f.rs = 2; f.rt = 0; f.gest = null; crewLine('waldron', 'I will go up first and get the hatch.'); crewGest(f, 'point', 1.8); f.pointYaw = Math.atan2(L.x - f.x, -(L.z - f.z)); } }
     else if (f.rs === 2) { if (!f.cy) { if (crewGo(f, L.x, SHIP.z + SHIP_POINTS.lz0 + .55, 4.2, dt) < .4 || f.rt > 6) f.cy = .01; }
       else { f.cy += dt * 1.2; f.x = L.x; f.z = SHIP.z + SHIP_POINTS.lz0 + .5 - (SHIP_POINTS.lz0 - SHIP_POINTS.lz1) * clamp(f.cy / LADDER_TOP, 0, 1); f.heading = 0;
         if (f.cy > 4.9) { f.rs = 3; f.vy = 0; S.shake = Math.max(S.shake, .5); if (AU.ctx) { sfx.kei(.8, 0); sfx.legs(1, 0); } crewLine('waldron', 'SOMETHING HAS MY LEG -- NO -- NO --'); } } }
     else { f.vy -= 16 * dt; f.cy = Math.max(0, f.cy + f.vy * dt); f.z += dt * 2.4; f.open = 1;
       if (f.cy <= 0) { crewTaken(f, true, 9); spawnKei(13, 20); return true; } } }
+  if (id === 'bart' && !(f.gestT > 0)) f.gest = 'down';
+  if (f.aimT > 0 && !f.went) crewFace(f, f.aimAt, dt, 5);
+  if (!f.went && !f.cy) crewSteer(f, 0, 0, dt);   // standing: whatever speed he had runs off, and he still gives you room
   return false;
 }
+/* A shot you can see. The round is gone before the eye can follow it; what is left for a few frames is the line it took,
+   from the muzzle to whatever it hit, or past it when it missed. */
+function crewTracer(f, b, hit) { const sc = 1.45, y0 = groundY(f.x, f.z) + 1.42 * sc * .82, a = [f.x + Math.sin(f.aimAt) * .7, y0, f.z - Math.cos(f.aimAt) * .7];
+  let e = [b.x, groundY(b.x, b.z) + 1.5 * (b.vsc || 1), b.z]; if (!hit) { const dx = e[0] - a[0], dy = e[1] - a[1], dz = e[2] - a[2], l = Math.hypot(dx, dy, dz) || 1, o = (S.rng() - .5) * 2.4; e = [a[0] + dx / l * (l + 30) + dz / l * o, a[1] + dy / l * (l + 30) + (S.rng() - .2) * 1.6, a[2] + dz / l * (l + 30) - dx / l * o]; }
+  (S.tracers || (S.tracers = [])).push({ a, b: e, t0: S.t, who: f }); }
+function emitTracers(B, cam, dt) { const T = S.tracers; if (!T) return; const ce = cam.e;
+  for (let i = T.length - 1; i >= 0; i--) { const q = T[i]; q.t = S.t - q.t0; if (q.t > .13 || q.t < 0) { T.splice(i, 1); continue; }
+    let a = q.a; if (q.who && q.who.rig && ASTRO.muzzle) { const m = ASTRO.muzzle(q.who.rig); if (m && m.p) a = m.p; }
+    const b = q.b, k = 1 - q.t / .13, dir = V3.sub(b, a), L = V3.len(dir) || 1, u = V3.mul(dir, 1 / L), h0 = Math.min(L, q.t * 900), t0 = Math.max(0, h0 - 26 - L * .2);   // a streak that runs out along the line and fades behind itself
+    const p0 = V3.add(a, V3.mul(u, t0)), p1 = V3.add(a, V3.mul(u, Math.max(h0, Math.min(L, 6)))), toC = V3.sub(ce, V3.mul(V3.add(p0, p1), .5)); let sd = V3.cross(u, toC); const sl = V3.len(sd) || 1, dm = V3.len(toC), w = Math.max(.012, dm * .0016); sd = V3.mul(sd, w / sl);
+    const em = 3.2 * k, th = .15 + .5 * (1 - k); gasV(B, V3.sub(p0, sd), em * .2, .75); gasV(B, V3.add(p0, sd), em * .2, .75); gasV(B, V3.add(p1, sd), em, th); gasV(B, V3.sub(p0, sd), em * .2, .75); gasV(B, V3.add(p1, sd), em, th); gasV(B, V3.sub(p1, sd), em, th); } }
 /* The climb. Nothing lifts you off this moon but your own arms: hand over hand up the ladder, in a suit,
    with whatever is behind you still coming. W climbs, S backs down, and the rate follows the cadence of
    the hands, so it rises in pulls rather than sliding. */
@@ -9682,7 +9811,7 @@ function climbStep(dt, cmd, p) {
   const prevHand = Math.floor(C.cad / Math.PI);
   if (want > 0) C.cad += dt * 2.5; else if (want < 0) C.cad -= dt * 1.7;
   const hand = Math.floor(C.cad / Math.PI);
-  if (hand !== prevHand) { C.hand = hand & 1 ? 1 : -1; if (AU.ctx) { sfx.step(false); sfx.click(); } S.shake = Math.max(S.shake, .07); }
+  if (hand !== prevHand) { C.hand = hand & 1 ? 1 : -1; if (AU.ctx) sfx.ladder(); S.shake = Math.max(S.shake, .07); }
   const pull = want > 0 ? .62 + .58 * Math.abs(Math.sin(C.cad)) : want < 0 ? -.75 : 0;
   C.y = clamp(C.y + pull * dt, 0, LADDER_TOP + 1.25);
   C.t += dt;
@@ -9707,6 +9836,7 @@ function launchStep(dt, cmd, p) {
   const by = Math.PI, bp = lerp(-.12, -.62, clamp(u / 6, 0, 1)); let oy = p.yaw - by; oy = Math.atan2(Math.sin(oy), Math.cos(oy));
   const k = 1 - Math.exp(-dt * 2.2); p.yaw = by + clamp(oy, -.5, .5) * (1 - k * .5); p.pitch = clamp(lerp(p.pitch, bp, k), bp - .3, bp + .3);
   S.shake = Math.max(S.shake * .9, u > 0 ? clamp(1.1 - u * .09, .25, 1) : S.launchT / LAUNCH_HOLD * .5);
+  if (AU.ctx) { if (u > 0 && !S.lit) { S.lit = 1; sfx.ignite(1.3); } let m = 0; for (let i = 0; i < 3; i++) { const f = rcsFire(S.launchT + [0, .31, .17][i], i, 7); if (f && f[0]) m |= 1 << i; } for (let i = 0; i < 3; i++) if ((m >> i & 1) && !((S.rm || 0) >> i & 1)) sfx.puff(.7, [-.6, .6, 0][i]); S.rm = m; }
   if (AU.ctx && Math.floor(S.launchT * 2) !== Math.floor((S.launchT - dt) * 2)) sfx.rumble(.5 + Math.min(1, S.shake) * .5);
   // the ones that were behind you come in under the engine and stop at the foot of the ladder
   for (const f of S.foes) { if (f.kind === 'crew') continue; const ox = f.x, oz = f.z, dx = SHIP.x - f.x, dz = SHIP.z + 7.5 - f.z, d = Math.hypot(dx, dz);
@@ -9718,7 +9848,7 @@ function launchStep(dt, cmd, p) {
 }
 function afterLaunch() { return shipBegin(); }
 function step(dt, cmd) {
-  const p = P(); S.t += dt;
+  const p = P(); S.t += dt; if (S.daze > 0) S.daze = Math.max(0, S.daze - dt / 10);
   if (S.over) { S.overT += dt; return; }
   if (S.mode === 'ship') return shipStep(dt, cmd);
   if (S.mode === 'home') return homeStep(dt, cmd);
@@ -9728,7 +9858,7 @@ function step(dt, cmd) {
   if (S.left <= 0) { S.left = 0;
     if (S.depart === undefined && S.stage !== 3) { S.depart = 0; S.shake = 1; S.white = .3;
       say('NICK (CAPCOM)', 'Argus has gone. She went on the window. I am sorry.');
-      if (AU.ctx) { NASA.play('lift', 8, 26, { gain: 1.0, dest: AU.suit }); sfx.rumble(1.5); } } }
+      if (AU.ctx) { NASA.play('lift', 8, 26, { gain: 1.0, dest: AU.suit }); sfx.rumble(1.5); sfx.alarm(); } } }
   if (S.depart !== undefined) { S.depart += dt; S.shake = Math.max(S.shake, clamp(1.3 - S.depart * .2, 0, 1));
     if (AU.ctx && S.depart < 7 && Math.floor(S.depart * 1.5) !== Math.floor((S.depart - dt) * 1.5)) sfx.rumble(Math.max(.2, 1 - S.depart * .13));
     if (S.depart > 9) return end('crush'); }
@@ -9740,17 +9870,21 @@ function step(dt, cmd) {
   const run = cmd.run && p.stam > .05 && cmd.mz > 0 && !cmd.use;
   const sp = (run ? 5.8 : 3.4) * (cmd.mz < 0 ? .72 : cmd.mz === 0 ? .85 : 1) * (p.breach ? .93 : 1) * (S.stage === 3 ? 0 : 1);
   const sn = Math.sin(p.yaw), cs = Math.cos(p.yaw); let wx = cmd.mx * cs + cmd.mz * sn, wz = cmd.mx * sn - cmd.mz * cs; const wl = Math.hypot(wx, wz) || 1; wx /= wl; wz /= wl;
-  const tv = (cmd.mx || cmd.mz) ? 1 : 0; const ak = 1 - Math.exp(-dt * (tv ? 10 : 14)); p.vx = lerp(p.vx, wx * sp * tv, ak); p.vz = lerp(p.vz, wz * sp * tv, ak); p.fovK = lerp(p.fovK, run ? 1 : 0, 1 - Math.exp(-dt * 6));
-  moveCircle(p, p.vx * dt, p.vz * dt, .4);
+  // on the ground you stop and turn at once; off it you keep what you left with and can only nudge it
+  const tv = (cmd.mx || cmd.mz) ? 1 : 0, inAir = p.air > 0; const ak = 1 - Math.exp(-dt * (inAir ? (tv ? 1.6 : .15) : tv ? 11 : 15)); p.vx = lerp(p.vx, wx * sp * tv, ak); p.vz = lerp(p.vz, wz * sp * tv, ak); p.fovK = lerp(p.fovK, run ? 1 : 0, 1 - Math.exp(-dt * 6));
+  movePlayer(p, p.vx * dt, p.vz * dt);
   // Callisto surface gravity is 1.236 m/s^2, about an eighth of Earth's: a push sends you up for a long, slow hop.
-  const G = 1.24; if (cmd.jump) p.jbuf = .18; else p.jbuf -= dt;
-  const gnd = groundY(p.x, p.z);
-  if (p.air <= 0) { p.y = gnd; p.coyote = .14; if (p.jbuf > 0) { p.jbuf = 0; p.vy = 3.0 + (run ? .7 : 0); p.air = 1; if (AU.ctx) sfx.step(true); } }
-  else { p.vy -= G * dt; p.y += p.vy * dt; if (p.y <= gnd && p.vy < 0) { const vi = -p.vy; p.y = gnd; p.vy = 0; p.air = 0; if (AU.ctx) sfx.step(true); S.shake = Math.max(S.shake, .1 + vi * .05); mark(p.x, p.z, p.yaw, 10 + vi * 5 | 0, 1.1 + vi * .5); } p.coyote -= dt; if (p.coyote > 0 && p.jbuf > 0) { p.jbuf = 0; p.vy = 3.0; } }
-  p.lift = p.y - gnd;
+  // Hold the key for the whole of it, or let go early and come down sooner.
+  const G = 1.24; if (cmd.jump && !p.jwas) p.jbuf = .2; else p.jbuf -= dt; p.jwas = cmd.jump;
+  const gnd = Math.max(groundY(p.x, p.z), rockTop(p.x, p.z, p.y === undefined ? -1e9 : p.y + .05));
+  const moved = p.px === undefined ? 9 : Math.hypot(p.x - p.px, p.z - p.pz); p.px = p.x; p.pz = p.z;
+  if (p.air <= 0) { if (moved < 1 && gnd < p.y - .45) { p.air = 1; p.vy = 0; p.coyote = .14; }   // walked off an edge: fall, do not snap
+    else { p.y = gnd; p.coyote = .14; if (p.jbuf > 0) { p.jbuf = 0; p.vy = 2.75 + (run ? .55 : 0); p.air = 1; if (AU.ctx) sfx.step(true); } } }
+  else { p.vy -= G * dt; if (!cmd.jump && p.vy > 1.1) p.vy -= 5 * dt; p.y += p.vy * dt; if (p.y <= gnd && p.vy <= 0) { const vi = -p.vy; p.y = gnd; p.vy = 0; p.air = 0; if (AU.ctx) sfx.step(true); S.shake = Math.max(S.shake, .08 + vi * .04); mark(p.x, p.z, p.yaw, 10 + vi * 5 | 0, 1.1 + vi * .5); } p.coyote -= dt; if (p.coyote > 0 && p.jbuf > 0 && p.vy <= 0) { p.jbuf = 0; p.vy = 2.75; } }
+  p.lift = p.y - groundY(p.x, p.z);
   const v = Math.hypot(p.vx, p.vz); if (p.air <= 0) { p.bob += v * dt; p.stepD += v * dt; if (p.stepD > (run ? 2.3 : 1.7)) { p.stepD = 0; sfx.step(run); p.foot = -(p.foot || 1); mark(p.x + Math.cos(p.yaw) * .17 * p.foot, p.z + Math.sin(p.yaw) * .17 * p.foot, p.yaw, run ? 5 : 3, run ? 1.1 : .7); } }
   p.stam = clamp(p.stam + (run ? -(S.crew.id === 'waldron' ? .09 : .15) : .12) * dt, 0, 1);
-  if (cmd.lamp) { p.lamp = !p.lamp; if (AU.ctx) sfx.click(); }
+  if (cmd.lamp) { p.lamp = !p.lamp; if (AU.ctx) sfx.sw(); }
   const dShip = Math.hypot(p.x - SHIP.x, p.z - SHIP.z);
   if (S.stage === 0 && dShip < 17) { S.stage = 1; say('NICK (CAPCOM)', 'You are at the pad. The reactor is cold. Restart it from the service panel on the leg.'); spawnKei(15, 24, 'lancer'); spawnKei(18, 28); }
   let near = null; for (const it of interacts()) if (it.on && Math.hypot(it.x - p.x, it.z - p.z) < 2.6) near = it; S.near = near;
@@ -9776,8 +9910,9 @@ function step(dt, cmd) {
       for (const f of S.foes) { const dx = f.x - p.x, dz = f.z - p.z, d = Math.hypot(dx, dz); if (d > 70 || d < .1 || !los(p.x, p.z, f.x, f.z)) continue;
         if (f.kind === 'kei' && KEI.hit) { const h = KEI.hit(f.rig, o, dir); if (h && h.t < bt) { best = f; bt = h.t; leg = h.leg; } }
         else { const along = dx * dir[0] + dz * dir[2]; if (along <= 0 || along >= bt) continue; const px = dx - dir[0] * along, pz = dz - dir[2] * along, hy = o[1] + dir[1] * along - groundY(f.x, f.z); if (Math.hypot(px, pz) < (f.kind === 'kei' ? .7 : .38) && hy > 0 && hy < (f.kind === 'kei' ? 4.6 : 1.95)) { best = f; bt = along; leg = -1; } } }
+      { const cy = Math.cos(yw), sy = Math.sin(yw), m = [o[0] + dir[0] * .55 + cy * .2, o[1] + dir[1] * .55 - .16, o[2] + dir[2] * .55 + sy * .2], L = best ? bt : 70; (S.tracers || (S.tracers = [])).push({ a: m, b: [o[0] + dir[0] * L, o[1] + dir[1] * L, o[2] + dir[2] * L], t0: S.t }); if (S.tracers.length > 12) S.tracers.shift(); }
       if (best) { p.hitT = 0; hudDirty = true; best.active = true; if (AU.ctx) sfx.tick();
-        if (best.kind === 'kei') { if (leg >= 0 && KEI.sever) { KEI.sever(best.rig, leg); best.stun = Math.max(best.stun, 1.1); if (AU.ctx) sfx.kei(.7, 0); } else best.stun = 9; }
+        if (best.kind === 'kei') { if (leg >= 0 && KEI.sever) { KEI.sever(best.rig, leg); best.stun = Math.max(best.stun, 1.1); if (AU.ctx) sfx.kei(.7, 0); } else { best.stun = 8; best.wary = 4.5; best.side = -(best.side || 1); best.hits = (best.hits || 0) + 1; if (best.hits >= 2 && !best.lock && !best.kin && S.stage < 1) { best.flee = true; best.wary = 99; } } }
         else if (best.kind === 'crew') { if (--best.hp <= 0) { const c = CREW[best.crew]; best.alive = false; best.dead = 1; say(c.short, '[NO SIGNAL]', { voice: [c.id, 'death'], pitch: c.pitch }); S.foes.splice(S.foes.indexOf(best), 1); } else { const c = CREW[best.crew]; say(c.short, 'THAT IS ME! CHECK YOUR TARGET!', { voice: [c.id, 'hurt'], pitch: c.pitch }); } }
         else if (--best.hp <= 0) { best.stun = 14; best.hp = (best.v ? best.v.hp : 2); } } } }
   if (cmd.ability && p.pulses > 0 && p.fireT > 1) { p.pulses--; p.fireT = 0; S.white = .6; if (AU.ctx) sfx.pulse(); for (const f of S.foes) if (Math.hypot(f.x - p.x, f.z - p.z) < 16) f.stun = 7; }
@@ -9788,6 +9923,10 @@ function step(dt, cmd) {
   const fx = Math.sin(p.yaw) * Math.cos(p.pitch), fz = -Math.cos(p.yaw) * Math.cos(p.pitch); let nearest = 99;
   // a KEI or a duplicate reaches you: the first time it opens the suit, the second time it is over
   const touch = (f, dx, dz, d) => { if (p.breach === 0) { p.breach = 1; f.stun = 3.5; S.shake = 1; S.burst = 1.2; if (AU.ctx) sfx.breach(); say('SUIT', 'SUIT BREACH. ONE LAYER LEFT.'); selfVoice('hurt', 1); p.vx += dx / (d || 1) * 9; p.vz += dz / (d || 1) * 9; return false; } S.killer = f; end('dup'); return true; };
+  /* The pack. There are few of them, so each one counts. The nearest holds your eye; the rest work round to the sides and
+     behind. None of them will walk down the barrel while you are looking at it, and they all come in together when one gets close. */
+  let commit = false; { const pk = []; for (const f of S.foes) if (f.kind === 'kei' && f.active && !f.kin && !f.lock && f.stun <= 0) { f.pd2 = (f.x - p.x) ** 2 + (f.z - p.z) ** 2; pk.push(f); }
+    pk.sort((a, b) => a.pd2 - b.pd2); pk.forEach((f, i) => { f.rank = i; if (!f.side) f.side = S.sideN = -(S.sideN || 1); if (i === 1 && pk[0].side === f.side && !f.sideT) { f.side = -f.side; f.sideT = 1; } if (f.pd2 < 49 || f.chgS === 2) commit = true; }); }
   for (const f of S.foes) {
     const dx = p.x - f.x, dz = p.z - f.z, d = Math.hypot(dx, dz); const cx = Math.floor(f.x / CS), cz = Math.floor(f.z / CS), fd = S.flow[cx + cz * MW]; const ox = f.x, oz = f.z;
     f.alert = lerp(f.alert, clamp(1 - d / 9, 0, 1), dt * 3); let moved = false;
@@ -9800,11 +9939,11 @@ function step(dt, cmd) {
     else if (fd >= 0) {
       const see = d < 46 && los(f.x, f.z, p.x, p.z);
       f.lit = (p.lamp && see && d < 16 && (-dx * fx - dz * fz) / (d || 1) > .95) ? 1 : 0; let spd = 0;
-      if (f.kind === 'kei') { if (!f.active && (fd < 44 || see)) f.active = true;
+      if (f.kind === 'kei') { if (!f.active && (f.amb ? (fd >= 0 && fd < 11) || (see && d < 26) : fd < 44 || see)) f.active = true; f.tac = null; if (f.wary > 0) f.wary -= dt;
         // a KEI goes for whoever is closest: the player, or one of the crew
         f.prey = null; let pd = see ? d : d + 14;
         for (const g of S.foes) if (g.kind === 'crew' && g.alive !== false && g.bait) { const gd = Math.hypot(g.x - f.x, g.z - f.z); if (gd < pd && gd < 60 && los(f.x, f.z, g.x, g.z)) { pd = gd; f.prey = g; } }
-        if (f.lock) { if (f.lock.alive === false) f.lock = null; else { f.prey = f.lock; pd = 5; } }
+        if (f.lock) { if (f.lock.alive === false) { f.lock = null; f.flee = true; f.wary = 99; } else { f.prey = f.lock; pd = 5; } }   // it came for one man. When it has him it goes
         const V = f.v || KEI_VARI[0];
         if (f.active) spd = (pd < 16 ? 4.5 : 2.9) * (f.lit ? V.lit : 1) * V.spd * (KEI.mobility ? KEI.mobility(f.rig) : 1);
         if (f.lock) spd = Math.max(spd, 6.6);
@@ -9818,20 +9957,26 @@ function step(dt, cmd) {
             const blocked = Math.hypot(f.x - ox, f.z - oz) < st * .4, past = dx * vx + dz * vz < -2.5;
             if (d < 1.15 && touch(f, dx, dz, d)) return;
             if (f.chgT > V.chg.len || blocked || past) { f.chgS = 0; f.cd = 4 + S.rng() * 3; f.stun = Math.max(f.stun, blocked ? 2.4 : 1.2); if (blocked) S.shake = Math.max(S.shake, clamp(.5 - d * .02, 0, .5)); } } }
-        // a stalker holds off while you are looking at it, and works round the side instead
-        if (V.id === 'stalker' && f.lit && d > 4) { const s = Math.atan2(dx, -dz) + Math.PI / 2; moveCircle(f, Math.cos(s - Math.PI / 2) * 2.4 * dt, Math.sin(s - Math.PI / 2) * 2.4 * dt, .35); } }
+        if (f.active && !f.prey && !f.lock && !f.chgS && see && d > 4.5 && d < 32) { const look = (-dx * fx - dz * fz) / (d || 1); let ang, face = false;
+          if (f.flee) { ang = Math.PI - f.side * .25; spd = 6.5; }                                                  // shot twice: it has had enough for now, and goes
+          else if (f.wary > 0) { ang = Math.PI - f.side * .7; spd = Math.max(spd, 3.8 * V.spd); face = true; }          // hit: it falls back and round, and comes again from somewhere else
+          else if (commit || d < 6.5) { ang = f.side * .3; spd *= 1.12; }                                           // one of them is on you: they all come
+          else if (look < .3) { ang = 0; spd *= 1.28; }                                                             // your back is to it
+          else if (look > .9) { ang = f.side * (V.id === 'stalker' ? 1.5 : 1.28); spd *= 1.1; face = true; }        // you are looking at it: it circles
+          else ang = f.side * (f.rank ? .9 : .5);
+          const ca = Math.cos(ang), sa = Math.sin(ang), ux = dx / d, uz = dz / d; f.tac = [f.x + (ux * ca - uz * sa) * 4, f.z + (ux * sa + uz * ca) * 4, face]; } }
       else { if (!f.active && see && d < 9) { f.active = true; const c = CREW[f.crew]; say(c.short + ' ?', 'It is me. Wait there.', { calm: true, dup: true, voice: [c.id, VOICE.has(c.id, 'calm') ? 'calm' : VOICE.has(c.id, 'spot') ? 'spot' : 'panic'], pitch: c.pitch * .8 }); } if (f.active && d > 30) f.active = false; if (f.active) spd = 2.8; else f.heading += Math.atan2(Math.sin(Math.atan2(dx, -dz) - f.heading), Math.cos(Math.atan2(dx, -dz) - f.heading)) * Math.min(1, dt * .4); f.open = lerp(f.open, f.active && d < 6 ? 1 : 0, dt * 4); }
       if (spd > 0) { if (d < nearest) nearest = d; let tx, tz;
-        if (f.kind === 'kei' && f.prey) { tx = f.prey.x; tz = f.prey.z; }        else if (f.kind === 'kei' && f.prey) { tx = f.prey.x; tz = f.prey.z; }
-        else if (see && fd <= 3) { tx = p.x; tz = p.z; } else { let bi = -1, bv = fd; for (const [ax, az] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]]) { if (ax && az && (solid(cx + ax, cz) || solid(cx, cz + az))) continue; const j = cx + ax + (cz + az) * MW, vv = S.flow[j]; if (vv >= 0 && vv < bv) { bv = vv; bi = j; } } if (bi >= 0) { tx = (bi % MW + .5) * CS; tz = (((bi / MW) | 0) + .5) * CS; } }
-        if (tx !== undefined) { const ex = tx - f.x, ez = tz - f.z, el = Math.hypot(ex, ez) || 1; moveCircle(f, ex / el * spd * dt, ez / el * spd * dt, .35); const th = Math.atan2(ex, -ez); f.heading += Math.atan2(Math.sin(th - f.heading), Math.cos(th - f.heading)) * Math.min(1, dt * 5); moved = true; }
+        if (f.kind === 'kei' && f.prey) { tx = f.prey.x; tz = f.prey.z; } else if (f.tac) { tx = f.tac[0]; tz = f.tac[1]; }
+        else if (see && fd <= 3 && !f.flee) { tx = p.x; tz = p.z; } else { let bi = -1, bv = fd; for (const [ax, az] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]]) { if (ax && az && (solid(cx + ax, cz) || solid(cx, cz + az))) continue; const j = cx + ax + (cz + az) * MW, vv = S.flow[j]; if (vv >= 0 && (f.flee ? vv > bv : vv < bv)) { bv = vv; bi = j; } } if (bi >= 0) { tx = (bi % MW + .5) * CS; tz = (((bi / MW) | 0) + .5) * CS; } }
+        if (tx !== undefined) { const ex = tx - f.x, ez = tz - f.z, el = Math.hypot(ex, ez) || 1; moveCircle(f, ex / el * spd * dt, ez / el * spd * dt, .35); if (f.tac && Math.hypot(f.x - ox, f.z - oz) < spd * dt * .45) { f.blk = (f.blk || 0) + dt; if (f.blk > .35) { f.side = -f.side; f.blk = 0; } } const th = f.tac && f.tac[2] ? Math.atan2(dx, -dz) : Math.atan2(ex, -ez); f.heading += Math.atan2(Math.sin(th - f.heading), Math.cos(th - f.heading)) * Math.min(1, dt * 5); moved = true; }
         if (d < .95 && touch(f, dx, dz, d)) return; }
     }
     f.spd = lerp(f.spd, moved ? Math.hypot(f.x - ox, f.z - oz) / dt : 0, dt * 8);
   }
   if (nearest < 12 && S.nearest >= 12) selfVoice('spot', 25);
   S.nearest = nearest; S.prox = clamp(1 - nearest / 18, 0, 1);
-  S.spawnT -= dt; if (S.spawnT <= 0 && S.foes.filter(f => f.kind === 'kei').length < 12) { S.spawnT = 32; spawnKei(22, 38); }
+  watchStep(dt, p);
   S.burstT -= dt; if (S.burstT <= 0) { S.burstT = 9 + S.rng() * 16; S.burst = .18 + S.rng() * .35; if (AU.ctx) sfx.zap(); }
   S.burst = Math.max(0, S.burst - dt);
   const target = clamp(.05 + (p.breach ? .05 : 0) + clamp((120 - S.left) / 120, 0, 1) * .1 + S.prox * S.prox * .3 + (S.burst > 0 ? .25 : 0), 0, 1); S.glitch = lerp(S.glitch, target, 1 - Math.exp(-dt * 8)); S.signal = 1 - S.glitch;
@@ -9971,7 +10116,53 @@ function emitBreakup(B, cam) {
 }
 /* A crew member is caught. What stands up where they fell wears their face and walks wrong. */
 /* One more of them, somewhere between lo and hi cells' walk from you. */
-function spawnKei(lo, hi, vid) { const opts = []; for (let i = 0; i < MW * MH; i++) if (S.flow[i] > lo && S.flow[i] < hi) opts.push(i); if (!opts.length) return null; const i = opts[(S.rng() * opts.length) | 0]; const f = mkFoe('kei', (i % MW + .5) * CS, (((i / MW) | 0) + .5) * CS, -1, S.foes.length + 20 + ((S.t * 3) | 0), vid); f.active = true; S.foes.push(f); return f; }
+/* The director. The valley is almost empty, and that is what makes it frightening. Each KEI is seen before it is met:
+   one figure, standing on the ridge, turned toward you. Look at it and it is gone over the back of the hill. A few
+   seconds later it comes down the slope at a run, and then it is in the valley with you. Never more than one early on,
+   two past the halfway mark, three at the pad. One that has been shot twice breaks off and goes back up. */
+// is there ground between two points? (the pass grid knows rocks, not hills)
+function clearView(ax, ay, az, bx, by, bz) { const d = Math.hypot(bx - ax, bz - az), n = Math.max(2, Math.ceil(d / 2.5)); for (let i = 1; i < n; i++) { const t = i / n, x = lerp(ax, bx, t), z = lerp(az, bz, t); if (x < 1 || z < 1 || x > WX - 1 || z > WZ - 1) return true; if (groundY(x, z) > lerp(ay, by, t) - .25) return false; } return true; }
+function watchStep(dt, p) {
+  const D = S.dir || (S.dir = { t: 9, n: 0, sd0: 0 }), cell = Math.floor(p.x / CS) + Math.floor(p.z / CS) * MW, sd = W.shipDist[cell]; if (sd > D.sd0) D.sd0 = sd; if (sd >= 0) { if (D.ls !== undefined && sd < D.ls) D.t -= (D.ls - sd) * .75; D.ls = D.ls === undefined ? sd : Math.min(D.ls, sd); }   // ground covered counts as time: run and they come sooner
+  if (S.tracers) while (S.tracers.length && S.t - S.tracers[0].t0 > .2) S.tracers.shift();
+  for (let i = S.foes.length - 1; i >= 0; i--) { const f = S.foes[i]; if (f.kind !== 'kei' || !f.flee || f.stun > 0) continue; const fd = Math.hypot(f.x - p.x, f.z - p.z); f.fleeT = (f.fleeT || 0) + dt; if (fd > 42 || (f.fleeT > 5 && !los(f.x, f.z, p.x, p.z))) { S.foes.splice(i, 1); D.t = Math.max(D.t, 30 + S.rng() * 25); } }
+  const w = S.watch;
+  if (!w) { D.t -= dt; if (D.t > 0 || S.climb || S.stage >= 3 || S.over) return;
+    let wild = 0; for (const f of S.foes) if (f.kind === 'kei' && !f.kin && !f.lock) wild++;
+    const prog = D.sd0 > 0 && sd >= 0 ? 1 - sd / D.sd0 : 0, allow = S.stage >= 1 ? 3 : prog > .45 ? 2 : 1; if (wild >= allow) { D.t = 4; return; }
+    /* Where it stands has to be somewhere you can actually see from where you are: up the valley side, clear of the
+       ground between, and best of all on the skyline with nothing behind it but the sky. A few dozen places are tried
+       each time and the best kept. The first one of the day stands over Algo's mast, because it is his. */
+    const fx = Math.sin(p.yaw), fz = -Math.cos(p.yaw), ey = groundY(p.x, p.z) + 1.6; let best = null, bs = 1e9;
+    const al = S.cr.algo, first = D.n === 0 && al && al.alive !== false && al.rs === 0 && !al.chaser.on;
+    for (let n = 0; n < 48; n++) { const a = S.rng() * 6.283, r = first ? 14 + S.rng() * 34 : 40 + S.rng() * 50, x = (first ? al.x : p.x) + Math.cos(a) * r, z = (first ? al.z : p.z) + Math.sin(a) * r; if (x < 8 || z < 8 || x > WX - 8 || z > WZ - 8) continue;
+      const cd = corridorD(x, z); if (cd < 5 || cd > 24) continue; const dx = x - p.x, dz = z - p.z, d = Math.hypot(dx, dz); if (d < 38 || d > 105) continue;
+      const y = groundY(x, z), hy = y + 3.2; if (!clearView(p.x, ey, p.z, x, hy, z)) continue;
+      const k = 1 + 70 / d, sky = clearView(x, hy, z, p.x + dx * k, ey + (hy - ey) * k, p.z + dz * k), en = nearPass(x, z), esd = W.shipDist[Math.floor(en[0] / CS) + Math.floor(en[1] / CS) * MW], inView = (dx * fx + dz * fz) / d;
+      if (Math.hypot(en[0] - x, en[1] - z) > 34) continue;
+      const sc = Math.abs(d - 56) * .6 + (sky ? 0 : 12) + (esd > sd + 6 && !first ? 30 : 0) + (inView > .6 ? 22 : inView < -.2 ? 18 : 0) - Math.min(14, y + 3 - ey) + S.rng() * 6; if (sc < bs) { bs = sc; best = { x, z, en }; } }
+    if (!best) { D.t = 2.5; return; }
+    const f = first ? al.chaser : mkFoe('kei', best.x, best.z, -1, 40 + D.n * 3, D.n <= 1 ? 'stalker' : undefined); f.x = best.x; f.z = best.z; f.heading = Math.atan2(p.x - f.x, -(p.z - f.z)); f.vsc0 = f.vsc; f.vsc *= 1.4;
+    S.watch = { f, q: best, st: 0, t: 0, seen: 0, x0: best.x, z0: best.z, algo: first ? al : null }; D.last = best; D.n++;
+    // whoever is beside you sees it too, and shows you where
+    { let nb = null, nd = 30; for (const g of S.foes) if (g.kind === 'crew' && g.alive !== false && !g.down && g !== al) { const gd = Math.hypot(g.x - p.x, g.z - p.z); if (gd < nd) { nd = gd; nb = g; } }
+      if (nb) { nb.pointYaw = Math.atan2(best.x - nb.x, -(best.z - nb.z)); crewGest(nb, 'point', 4); crewLine(nb.role, D.n === 1 ? 'There. On the ridge. Something is standing on the ridge.' : 'Another one. Up on the ridge.'); } }
+    return; }
+  const f = w.f, dx = f.x - p.x, dz = f.z - p.z, d = Math.hypot(dx, dz) || 1, look = (dx * Math.sin(p.yaw) - dz * Math.cos(p.yaw)) / d * Math.cos(p.pitch); w.t += dt; const ox = f.x, oz = f.z;
+  if (w.st === 0) { f.heading += angd(Math.atan2(-dx, dz), f.heading) * Math.min(1, dt * 2); if (look > .95 && d < 150 && clearView(p.x, groundY(p.x, p.z) + 1.6, p.z, f.x, groundY(f.x, f.z) + 3, f.z)) w.seen += dt;
+    if (w.seen > .75 || w.t > 30 || d < 24) { w.st = 1; w.t = 0; if (w.seen > .75) { S.burst = Math.max(S.burst, .3); if (AU.ctx) sfx.kei(.3, clamp(dx / d, -1, 1)); if (!D.told) { D.told = 1; selfVoice('spot', 25); } } } }
+  else if (w.st === 1) { // seen: it is gone over the back of the ridge before you can be sure of it
+    const e = .5, gx = corridorD(f.x + e, f.z) - corridorD(f.x - e, f.z), gz = corridorD(f.x, f.z + e) - corridorD(f.x, f.z - e), gl = Math.hypot(gx, gz) || 1; f.x += gx / gl * 9 * dt; f.z += gz / gl * 9 * dt; f.heading = Math.atan2(gx, -gz);
+    if (w.t > 1.5) { w.st = 2; w.t = 0; w.delay = 3 + S.rng() * 4; w.hide = 1; } }
+  else if (w.st === 2) { if (w.t > w.delay) { w.st = 3; w.t = 0; w.hide = 0; f.x = w.x0; f.z = w.z0; if (AU.ctx) sfx.legs(.5, clamp(dx / d, -1, 1)); } }
+  else { // and then it comes down the slope at a run
+    const al = w.algo && w.algo.alive !== false ? w.algo : null, gx = al ? al.x : w.q.en[0], gz = al ? al.z : w.q.en[1], ex = gx - f.x, ez = gz - f.z, el = Math.hypot(ex, ez); f.heading += angd(Math.atan2(ex, -ez), f.heading) * Math.min(1, dt * 8);
+    if (al ? el < 5 || w.t > 12 : el < 1 || w.t > 6) { if (f.vsc0) f.vsc = f.vsc0; f.active = true; f.spd = 8; S.foes.push(f); S.watch = null; D.t = 55 + S.rng() * 30;
+      if (al) { f.on = .01; f.kin = true; al.ang = Math.atan2(al.z - ROLE_POS.algo[1], al.x - ROLE_POS.algo[0]); } else { f.x = gx; f.z = gz; } return; }
+    const m = Math.min(el, 9.5 * dt); f.x += ex / el * m; f.z += ez / el * m; if (f.vsc0) f.vsc = lerp(f.vsc, f.vsc0, Math.min(1, dt * 1.5)); }
+  f.spd = lerp(f.spd, Math.hypot(f.x - ox, f.z - oz) / dt, dt * 8);
+}
+function spawnKei(lo, hi, vid, ahead) { const opts = [], pz = P().z; for (let i = 0; i < MW * MH; i++) if (S.flow[i] > lo && S.flow[i] < hi && (!ahead || (((i / MW) | 0) + .5) * CS < pz - 16)) opts.push(i); if (!opts.length) return null; const i = opts[(S.rng() * opts.length) | 0]; const f = mkFoe('kei', (i % MW + .5) * CS, (((i / MW) | 0) + .5) * CS, -1, S.foes.length + 20 + ((S.t * 3) | 0), vid); f.active = !ahead; f.amb = !!ahead; S.foes.push(f); return f; }
 function crewTaken(f, quiet, stunT) {
   const c = CREW[f.crew]; f.alive = false; if (f.chaser) f.chaser.kin = false;
   const i = S.foes.indexOf(f); if (i >= 0) S.foes.splice(i, 1);
@@ -10006,43 +10197,58 @@ function dustStep(dt) { for (let i = S.dust.length - 1; i >= 0; i--) { const g =
 function end(kind) { S.over = kind; S.overT = 0; if (!AU.ctx) return; if (kind === 'dup') { sfx.breach(); sfx.kei(.9, 0); VOICE.utter(S.crew.id, 'death', null); } if (kind === 'crush') sfx.rumble(1.2); }
 
 // ---------------------------------------------------------------- the landing, and what the cameras saw afterwards
-const QTES = [{ t: 6, key: 'Space', label: 'PRESS SPACE', what: 'FIRE RETRO BURN' }, { t: 13.5, key: 'KeyA', label: 'HOLD A', what: 'CORRECT DRIFT', hold: 1.1 }, { t: 21, key: 'KeyE', label: 'PRESS E', what: 'DEPLOY LANDING GEAR' }, { t: 29.5, key: 'Space', label: 'PRESS SPACE', what: 'CUT ENGINES' }];
-const CINE_LINES = [[1.5, 'NICK (CAPCOM)', 'EP-2, Nick. You are separated and go for powered descent.', 'nick'], [9.5, 'PLT F. WALDRON', 'Copy, Nick. Guidance and navigation look solid.', 'waldron'], [17, 'FE D. WATKINS', 'Pod is flying clean. Odyssey is holding station above us.', 'watkins'], [24.5, 'SO J. BARTOLOZZI', 'Noting an unscheduled power draw from Specialist Algo\'s locker.', 'bart'], [27, 'MS M. O. ALGO', 'Ignore the reading, Nick.', 'algo'], [33.5, 'CDR C. BAKER', 'Contact. Everything looks green up here, Houston.', 'baker'], [36.5, 'NICK (CAPCOM)', 'Enjoy the ride out there, buddies. Odyssey 9 is right over your heads.', 'nick']];
+/* The way down. Odyssey 9 is abandoned in orbit and the five of them come down in EP-2, a lifeboat: one retro burn, no
+   landing engine to speak of, legs made to crush once. She runs dry short of the ground and falls the rest of the way. */
+const QTES = [{ t: 6, key: 'Space', label: 'PRESS SPACE', what: 'FIRE RETRO BURN' }, { t: 13.5, key: 'KeyA', label: 'HOLD A', what: 'STOP THE TUMBLE', hold: 1.1 }, { t: 21, key: 'KeyE', label: 'PRESS E', what: 'DEPLOY CRUSH LEGS' }, { t: 28.4, key: 'Space', label: 'PRESS SPACE', what: 'BRACE FOR IMPACT' }];
+const FLAMEOUT = 29.3, CINE_END = 16;
+const CINE_LINES = [[1.2, 'ODYSSEY 9', 'ABANDON SHIP. ESCAPE POD TWO IS AWAY.', 'pa'], [3.6, 'NICK (CAPCOM)', 'EP-2, Houston. You are clear of Odyssey and you are falling. That pod has one burn in her. Light it.', 'nick'],
+  [9.6, 'PLT F. WALDRON', 'Retro is lit. She is a lifeboat, Nick. She was built to fall, not to land.', 'waldron'], [16.8, 'SO J. BARTOLOZZI', 'Noting an unscheduled power draw from Specialist Algo\'s locker.', 'bart'], [19.3, 'MS M. O. ALGO', 'Ignore the reading, Nick.', 'algo'],
+  [24.3, 'FE D. WATKINS', 'Propellant is gone. We are not getting a landing out of this.', 'watkins'], [27.2, 'CDR C. BAKER', 'Brace. Everybody brace.', 'baker']];
+// after the impact, counted from it: nobody answers for a while, and then nobody is quite sure of anything
+const CINE_AFTER = [[4.8, 'SUIT', 'IMPACT. SUIT INTACT.', 'pa'], [6.6, 'NICK (CAPCOM)', 'EP-2, Houston. EP-2, do you read. Sound off, all of you.', 'nick'], [9.3, 'CDR C. BAKER', 'Baker. I am here.', 'baker'],
+  [10.5, 'PLT F. WALDRON', 'Waldron. I cannot see straight.', 'waldron'], [11.9, 'SO J. BARTOLOZZI', 'Bartolozzi. Something is wrong with my suit.', 'bart'], [13.2, 'FE D. WATKINS', 'Watkins. Which way is up.', 'watkins'], [14.3, 'MS M. O. ALGO', 'Algo.', 'algo']];
 function startCine() {
   const shots = W.sentinels.map(s => { let best = null, bd = 1e9; for (const p of PATHS[0].pts) { const d = Math.hypot(p[0] - s.x, p[1] - s.z); if (d < bd) { bd = d; best = p; } } return { s, cam: best, d: bd }; }).filter(o => o.d > 25 && o.d < 90).sort((a, b) => b.d - a.d).slice(0, 3);
-  S.cine = { t: 0, fails: 0, q: QTES.map(q => Object.assign({ done: 0, held: 0 }, q, q.hold ? (S.rng() < .5 ? { key: 'KeyD', label: 'HOLD D' } : {}) : {})), li: 0, shots, phase: 'descent', shotN: -1, skip: 0, h: 1500, vy: 0, eng: 0, dust: 0, seed: S.rng() * 99 };
+  S.cine = { t: 0, fails: 0, q: QTES.map(q => Object.assign({ done: 0, held: 0 }, q, q.hold ? (S.rng() < .5 ? { key: 'KeyD', label: 'HOLD D' } : {}) : {})), li: 0, shots, phase: 'card1', pt: 0, shotN: -1, skip: 0, h: 1500, vy: 0, eng: 0, dust: 0, seed: S.rng() * 99 };
   for (const k in keys) keys[k] = false;
-  if (AU.ctx) NASA.cine = NASA.play('land', 58, 100, { gain: .5, dest: AU.radio, fade: 1 });
 }
 function cineStep(dt) {
-  const c = S.cine; c.t += dt; S.t += dt;
-  if (c.phase === 'descent') {
-    /* The engine lights on the retro burn call (or late and rough on its own if the call is missed), holds her
-       in a hover a man's height off the regolith, and the cut drops her the rest of the way onto her gear. */
-    const q0 = c.q[0], q3 = c.q[3], lit = q0.done !== 0 && !q3.done;
+  const c = S.cine; S.t += dt;
+  if (c.phase === 'descent') { c.t += dt;
+    if (c.t === dt && AU.ctx) { NASA.cine = NASA.play('land', 58, 100, { gain: .4, dest: AU.radio, fade: 1 }); sfx.alarm(); }
+    /* The retro lights on the call (or late and rough on its own if the call is missed) and burns until the tanks are
+       dry, a few metres up. From there she falls. She hits, bounces once on what is left of her legs, and stays. */
+    const q0 = c.q[0], q3 = c.q[3], out = c.t >= FLAMEOUT, lit = q0.done !== 0 && !out;
     if (q0.done && c.ignT === undefined) { c.ignT = c.t; S.shake = Math.max(S.shake, q0.done > 0 ? .8 : 1.2); if (AU.ctx) sfx.ignite(q0.done > 0 ? 1 : 1.4); }
     if (c.q[2].done > 0 && c.gearT === undefined) { c.gearT = c.t; S.shake = Math.max(S.shake, .5); if (AU.ctx) sfx.gear(); }
     c.eng = lerp(c.eng, lit ? 1 : 0, Math.min(1, dt * (lit ? 5 : 14)));
-    if (!q3.done) c.h = cineAlt(c.t) - 9 + 1.7 + (c.t > 28 ? .1 * Math.sin(c.t * 2.3) : 0);
-    else if (!c.td) { if (c.cutT === undefined) c.cutT = c.t; c.vy -= 2.7 * dt; c.h += c.vy * dt;
-      if (c.h <= 0) { c.h = 0; c.td = 1; c.tdT = c.t; c.imp = clamp(-c.vy / 3, .7, 1.2) * (q3.done < 0 ? 1.35 : 1); S.shake = 1.6 * c.imp;
-        if (NASA.cine) NASA.cine.stop(.2); if (AU.ctx) { sfx.touchdown(c.imp); NASA.play('eagle', 0, 5.3, { gain: .9, dest: AU.radio, at: .9 }); } } }
+    if (!out) c.h = cineAlt(c.t) - 9 + 6;
+    else if (!c.td2) { if (c.cutT === undefined) { c.cutT = c.t; if (AU.ctx) { sfx.bad(); sfx.buzz(); } } c.vy -= 2.7 * dt; c.h += c.vy * dt;
+      if (c.h <= 0 && !c.td) { c.h = 0; c.td = 1; c.tdT = c.t; if (!q3.done) { q3.done = -1; c.fails++; } c.imp = clamp(-c.vy / 3, .9, 2) * (q3.done < 0 ? 1.25 : 1); c.vy = 1.9; S.shake = 1.6 * c.imp;
+        if (NASA.cine) NASA.cine.stop(.2); if (AU.ctx) { sfx.touchdown(c.imp); sfx.alarm(); sfx.ring(11); } }
+      else if (c.h <= 0 && c.vy < 0) { c.h = 0; c.vy = 0; c.td2 = c.t; S.shake = Math.max(S.shake, 1.3); if (AU.ctx) sfx.touchdown(.6); } }
     c.dust = lerp(c.dust, c.eng * clamp(1 - c.h / 70, 0, 1), Math.min(1, dt * (lit ? 3 : 9)));
-    while (c.li < CINE_LINES.length) { const l = CINE_LINES[c.li], at = c.li < 5 ? l[0] : c.td ? c.tdT + (c.li === 5 ? 1.3 : 4.3) : 1e9; if (at > c.t) break; c.li++; say(l[1], l[2], { pitch: pitchOf(l[3]), calm: true }); }
+    if (AU.ctx && !c.td) { const pre = c.ignT === undefined ? 1 : 0, q1 = c.q[1], hold = c.t > q1.t && !q1.done && keys[q1.key]; let m = 0;   // each jet is a thump of gas against the hull
+      for (let i = 0; i < 3; i++) { const f = i === 2 ? rcsFire(c.t + .17, 2, c.seed + pre * 3) : (hold && q1.key === (i ? 'KeyD' : 'KeyA')) ? [1, 1] : rcsFire(c.t + i * .31, i, c.seed + pre); if (f && f[0]) m |= 1 << i; }
+      for (let i = 0; i < 3; i++) if ((m >> i & 1) && !((c.rm || 0) >> i & 1)) sfx.puff(.8, [-.6, .6, 0][i]); c.rm = m; }
+    const line = l => { if (l[3] !== S.crew.id) say(l[1], l[2], { pitch: pitchOf(l[3]), calm: true }); };
+    while (c.li < CINE_LINES.length && CINE_LINES[c.li][0] <= c.t) line(CINE_LINES[c.li++]);
+    if (c.td) while ((c.la || 0) < CINE_AFTER.length && CINE_AFTER[c.la || 0][0] <= c.t - c.tdT) { line(CINE_AFTER[c.la || 0]); c.la = (c.la || 0) + 1; }
     for (const q of c.q) { if (q.done || c.t < q.t) continue; const age = c.t - q.t;
       if (q.hold) { if (keys[q.key]) q.held += dt; if (q.held >= q.hold) { q.done = 1; if (AU.ctx) sfx.ok(); } } else if (keys[q.key] && !q.was) { q.done = 1; if (AU.ctx) sfx.ok(); }
       q.was = keys[q.key];
       if (!q.done && age > 3.2) { q.done = -1; c.fails++; S.shake = 1; if (AU.ctx) { sfx.bad(); sfx.rumble(.9); } } }
-    S.shake = Math.max(S.shake - dt * (c.td ? 1.5 : .8), c.td ? 0 : .04 + .2 * c.eng);
+    S.shake = Math.max(S.shake - dt * (c.td ? 1.5 : .8), c.td ? 0 : .04 + .2 * c.eng + (out ? .15 : 0));
     if (AU.ctx) AU.engG.gain.setTargetAtTime(.55 * c.eng, AU.ctx.currentTime, .12);
-    if (c.td && c.t > c.tdT + 7.5) { c.phase = 'card1'; c.pt = 0; }
+    if (c.td && c.t > c.tdT + CINE_END) return endCine(false);
   } else { c.pt += dt;
     if (c.phase === 'card1' && c.pt > 3.6) { c.phase = 'card2'; c.pt = 0; }
     else if (c.phase === 'card2' && c.pt > 2.8) { c.phase = 'photo'; c.pt = 0; c.shotN = 0; if (AU.ctx) sfx.shutter(); }
     else if (c.phase === 'photo' && c.pt > 3.8) { c.pt = 0; c.shotN++; if (c.shotN >= c.shots.length) { c.phase = 'card3'; } else if (AU.ctx) sfx.shutter(); }
-    else if (c.phase === 'card3' && c.pt > 3.2) return endCine(false); }
+    else if (c.phase === 'card3' && c.pt > 3.2) { c.phase = 'card4'; c.pt = 0; }
+    else if (c.phase === 'card4' && c.pt > 3.6) { c.phase = 'descent'; c.pt = 0; c.t = 0; } }
 }
-function endCine(skipped) { const c = S.cine; if (NASA.cine) { NASA.cine.stop(.2); NASA.cine = null; } S.left = 600 - 25 * (skipped ? 0 : c.fails); S.cine = null; S.t = 0; S.lines = []; S.shake = 0; if (AU.ctx) AU.engG.gain.setTargetAtTime(0, AU.ctx.currentTime, .1); screen = 'play'; if (cv.requestPointerLock) { try { const r = cv.requestPointerLock(); if (r && r.catch) r.catch(() => { }); } catch (e) { } } }
+function endCine(skipped) { const c = S.cine; if (NASA.cine) { NASA.cine.stop(.2); NASA.cine = null; } S.left = 600 - 25 * (skipped || !c ? 0 : c.fails); S.cine = null; S.t = 0; S.lines = []; S.shake = 0; S.daze = skipped ? .6 : 1; P().pitch = -.5; if (AU.ctx) AU.engG.gain.setTargetAtTime(0, AU.ctx.currentTime, .1); screen = 'play'; if (cv.requestPointerLock) { try { const r = cv.requestPointerLock(); if (r && r.catch) r.catch(() => { }); } catch (e) { } } }
 
 // ---------------------------------------------------------------- audio frame
 function audioFrame(dt) {
@@ -10051,9 +10257,19 @@ function audioFrame(dt) {
   const up = 1 + (1 - S.left / 600) * .5; AU.dr[0].frequency.setTargetAtTime(37 * up, t, 1); AU.dr[1].frequency.setTargetAtTime(37.6 * up, t, 1); AU.dr[2].frequency.setTargetAtTime(55.4 * up, t, 1);
   if (Math.random() < gz * dt * 7) { const d = .03 + Math.random() * .22; AU.drop.gain.setValueAtTime(0, t); AU.drop.gain.setValueAtTime(1, t + d); VOICE.gate(false); setTimeout(() => VOICE.gate(true), d * 1000); }
   const rate = .28 + (1 - p.stam) * .5 + S.prox * .35; const b0 = S.breath; S.breath = (S.breath + dt * rate) % 1;
-  if (S.breath < b0) { AU.bf.frequency.setValueAtTime(900, t); env(AU.bg, t, .25, .3, .9 / (rate * 2.2)); }
-  if (b0 < .45 && S.breath >= .45) { AU.bf.frequency.setValueAtTime(520, t); env(AU.bg, t, .15, .4, 1.1 / (rate * 2.2)); }
+  // your own breathing, recorded, inside the helmet with you: easy when you are, ragged when you run or it is close
+  const ex = clamp((1 - p.stam) * 1.1 + S.prox * .75 + (S.over === 'dup' ? 1 : 0) + (S.daze || 0) + (S.cine && S.cine.td ? 1 : 0), 0, 1), alive = S.over === 'crush' || S.over === 'taken' ? 0 : 1;
+  const b1 = SND.level('breath', (1 - ex) * alive, AU.master, .5), b2 = SND.level('heavy', ex * alive, AU.master, .5);
+  if (!b1 && !b2) { if (S.breath < b0) { AU.bf.frequency.setValueAtTime(900, t); env(AU.bg, t, .25, .3, .9 / (rate * 2.2)); }
+    if (b0 < .45 && S.breath >= .45) { AU.bf.frequency.setValueAtTime(520, t); env(AU.bg, t, .15, .4, 1.1 / (rate * 2.2)); } }
+  const ship = S.mode === 'ship', X = S.sh, inPod = !!S.cine || S.stage === 3;
+  SND.level('jup', !ship && !S.cine ? .5 + gz * .5 : 0, AU.radio, .6);            // the planet on the loop
+  SND.level('life', inPod ? 1 : ship ? .55 : 0, AU.suit, .6);                    // pumps and fans, through the structure
+  SND.level('mains', ship && X ? X.power : 0, AU.suit, .5);                      // the main bus, once it is closed
+  if (SND.amb) SND.amb.set(.06 + S.prox * .5 + (ship ? .1 : 0), .4);
   if (S.over || S.cine) return;
+  if (!ship && S.stage === 0) { S.beepT = (S.beepT || 3) - dt; if (S.beepT <= 0) { S.beepT = 4.6; sfx.beacon(clamp(1.1 - Math.hypot(SHIP.x - p.x, SHIP.z - p.z) / 420, .15, 1)); } }   // Argus's beacon, louder as you close on her
+  if (!ship && S.stage < 3 && S.left < 60) { S.buzzT = (S.buzzT || 0) - dt; if (S.buzzT <= 0) { S.buzzT = S.left < 20 ? 1 : 2.4; sfx.buzz(); } }
   S.heartT -= dt; if (S.prox > .2 && S.heartT <= 0) { S.heartT = 1.05 - S.prox * .62; sfx.heart(); }
   const pan = f => { const dx = f.x - p.x, dz = f.z - p.z, d = Math.hypot(dx, dz) || 1; return [d, clamp((dx * Math.cos(p.yaw) + dz * Math.sin(p.yaw)) / d, -1, 1)]; };
   S.keiT -= dt; if (S.keiT <= 0) { S.keiT = 1.2 + Math.random() * 5 * (1.2 - S.prox); const k = S.foes.filter(f => f.kind === 'kei' && f.stun <= 0 && f.active); if (k.length) { const f = k[(Math.random() * k.length) | 0], [d, pn] = pan(f); if (d < 50) sfx.kei(clamp(1.1 - d / 44, .05, 1) * .7, pn); } }
@@ -10078,25 +10294,25 @@ function drawMinimap(u, x0, y0, sz, p) {
   if (NASA_IMG.complete && NASA_IMG.naturalWidth) hx.drawImage(NASA_IMG, (x0 + 1.5) * u, (y0 + .9) * u, 9 * u, 7.2 * u);
   hx.font = `500 ${Math.round(5.2 * u)}px ${FONT}`; hx.textAlign = 'left'; hx.fillStyle = '#e8e6de'; hx.fillText('EVA NAV', (x0 + 12.5) * u, (y0 + 6.4) * u); hx.textAlign = 'right'; hx.fillStyle = C_AMB; hx.fillText('ARG-2', (x0 + sz - 2) * u, (y0 + 6.4) * u);
 }
-function garbleText(s, amt) { amt = Math.min(amt, .62); if (amt < .18) return s; let o = ''; for (let i = 0; i < s.length; i++) o += (s[i] !== ' ' && Math.random() < amt * .14) ? '#%/\\=-'[(Math.random() * 6) | 0] : s[i]; return o; }
+function garbleText(s, amt) { amt = Math.min(amt, .5); if (amt < .3) return s; let o = ''; for (let i = 0; i < s.length; i++) o += (s[i] !== ' ' && Math.random() < amt * .09) ? '#%/\\=-'[(Math.random() * 6) | 0] : s[i]; return o; }
 function wrap(s, n) { const rows = ['']; for (const w of s.split(' ')) { if ((rows[rows.length - 1] + ' ' + w).length > n) rows.push(w); else rows[rows.length - 1] += (rows[rows.length - 1] ? ' ' : '') + w; } return rows; }
 function drawHud() {
   const Wd = hud.width, H = hud.height, u = H / 288; hx.clearRect(0, 0, Wd, H); if (!S) return; const p = P(); const gz = S.cine ? 0 : S.glitch, cw = Wd / u, mx = cw * .12, top = 44;
   const txt = (s, x, y, size, al, col) => { hx.font = `500 ${Math.round(size * .66 * u)}px ${FONT}`; hx.textAlign = al || 'left'; hx.fillStyle = 'rgba(0,0,0,.6)'; hx.fillText(s, x * u + u * .7, y * u + u * .7); hx.fillStyle = col || '#ececE6'; hx.fillText(s, x * u, y * u); };
   const radio = y0 => { const l = S.lines[S.lines.length - 1]; if (!l) return; const age = S.t - l.t; if (age > 8 || age < 0) return; const full = (l.who + ': ' + l.text).slice(0, l.who.length + 2 + Math.floor(age * 38)); hx.globalAlpha = clamp(8 - age, 0, 1); wrap(full, 52).forEach((r, i) => txt(garbleText(r, gz * (l.calm ? .25 : .55)), cw / 2, y0 + i * 12, 13, 'center')); hx.globalAlpha = 1; };
   if (S.cine) { const c = S.cine;
-    if (c.phase === 'descent') { const alt = c.h; txt('ALT ' + String(Math.max(0, Math.round(alt))).padStart(5, ' ') + ' M', mx, top, 14); txt('DESCENT', cw - mx, top, 14, 'right', C_AMB); radio(216);
+    if (c.phase === 'descent') { const alt = c.h; txt('ALT ' + String(Math.max(0, Math.round(alt))).padStart(5, ' ') + ' M', mx, top, 14); txt('ESCAPE POD EP-2', cw - mx, top, 14, 'right', C_AMB); crewVitals(txt, mx, top + 14, 0); if (c.t >= FLAMEOUT && !c.td) txt('ENGINE OUT', cw / 2, top, 22, 'center', C_RED); radio(216);
       for (const q of c.q) { if (q.done || c.t < q.t) continue; const k = 1 - (c.t - q.t) / 3.2; txt(q.label, cw / 2, 128, 30, 'center'); txt(q.what, cw / 2, 146, 14, 'center', C_AMB); hx.fillStyle = 'rgba(236,236,230,.25)'; hx.fillRect((cw / 2 - 60) * u, 154 * u, 120 * u, 4 * u); hx.fillStyle = '#fff'; hx.fillRect((cw / 2 - 60) * u, 154 * u, 120 * u * (q.hold ? q.held / q.hold : k), 4 * u); }
       if (c.fails) txt('HULL STRESS ' + c.fails, cw - mx, top + 14, 13, 'right', C_RED);
  }
     else if (c.phase === 'photo') { const sh = c.shots[c.shotN]; if (sh) { txt('EVA CAMERA ' + (c.shotN + 2), mx * .7, 262, 13); txt('DAY ' + [141, 152, 158][c.shotN], cw - mx * .7, 262, 13, 'right'); } }
-    else { const card = { card1: ['CALLISTO', 'MARCH 26, 2011'], card2: ['RECOVERED PHOTOGRAPHS', ''], card3: ['AUGUST 29, 2011', '07:30 UTC'] }[c.phase]; hx.globalAlpha = clamp(Math.min(c.pt * 2, 4 - c.pt * 1.1), 0, 1); txt(card[0], cw / 2, 140, 26, 'center'); txt(card[1], cw / 2, 160, 15, 'center'); hx.globalAlpha = 1; }
+    else { const card = { card1: ['CALLISTO', 'MARCH 26, 2011'], card2: ['RECOVERED PHOTOGRAPHS', ''], card3: ['AUGUST 29, 2011', '07:30 UTC'], card4: ['ODYSSEY 9 ABANDONED IN ORBIT', 'ESCAPE POD EP-2'] }[c.phase]; hx.globalAlpha = clamp(Math.min(c.pt * 2, 4 - c.pt * 1.1), 0, 1); txt(card[0], cw / 2, 140, 26, 'center'); txt(card[1], cw / 2, 160, 15, 'center'); hx.globalAlpha = 1; }
     return; }
   if (S.mode) return p2Hud({ txt, radio, u, cw, mx, top, gz, p, H });
   if (S.over === 'dup') { const k = clamp(S.overT / 1.2, 0, 1); hx.strokeStyle = '#fff'; hx.lineWidth = 2 * u; hx.beginPath(); const cx = cw / 2 * u, cy = H * .36; hx.arc(cx, cy, 26 * u, 0, 6.3 * k); hx.stroke(); hx.beginPath(); hx.moveTo(cx, cy + 26 * u); hx.lineTo(cx, cy + (26 + 130 * k) * u); if (k > .6) { hx.moveTo(cx, cy + 110 * u); hx.lineTo(cx + 22 * u, cy + 110 * u); hx.moveTo(cx, cy + 134 * u); hx.lineTo(cx + 30 * u, cy + 134 * u); } hx.stroke(); txt('SUIT BREACH', cw / 2, 250, 16, 'center'); return; }
   if (S.over) return;
   const m = Math.floor(S.left / 60), s = Math.floor(S.left % 60);
-  txt(garbleText(`T-${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`, gz), cw / 2, top, 22, 'center', S.left < 120 ? C_RED : '#f4f1e8'); txt(garbleText(S.crew.short, gz), mx, top, 13, 'left', C_BLU);
+  txt(garbleText(`T-${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`, gz), cw / 2, top, 22, 'center', S.left < 120 ? C_RED : '#f4f1e8'); txt(garbleText(S.crew.short, gz), mx, top, 13, 'left', C_BLU); crewVitals(txt, mx, top + 13, gz);
   const sig = Math.round(S.signal * 100); txt(garbleText(sig < 25 ? 'LINK LOST' : `LINK ${sig}%`, gz), cw - mx, top, 13, 'right', sig < 50 ? C_RED : C_BLU); if (S.micOn) txt('MIC OPEN', cw - mx, top + 13, 13, 'right');
   const dist = Math.max(0, W.shipDist[Math.floor(p.x / CS) + Math.floor(p.z / CS) * MW]) * CS;
   const obj = S.depart !== undefined ? 'ARGUS A-2 HAS DEPARTED' : S.climb ? `CLIMB  ${(Math.max(0, LADDER_TOP + 1.2 - S.climb.y)).toFixed(1)} M` : [`REACH ARGUS A-2  ${Math.round(dist)} M`, 'RESTART THE REACTOR', 'TAKE THE LADDER', ''][S.stage]; txt(garbleText(obj, gz * .6), cw / 2, top + 15, 13, 'center', C_AMB);
@@ -10147,7 +10363,7 @@ function emitPodInterior(B, cam, t) {
       d[o + 3], d[o + 4], d[o + 5],
       [R[0] * nx + U[0] * ny - F[0] * nz, R[1] * nx + U[1] * ny - F[1] * nz, R[2] * nx + U[2] * ny - F[2] * nz], d[o + 9], d[o + 10]); }
 }
-const TINTS = new Float32Array(60); (() => { const T = (i, r, g, b) => TINTS.set([r, g, b], i * 3); for (let i = 0; i < 20; i++) T(i, 1, 1, 1);
+const TINTS = new Float32Array(72); (() => { const T = (i, r, g, b) => TINTS.set([r, g, b], i * 3); for (let i = 0; i < 24; i++) T(i, 1, 1, 1);
   T(TL.SUIT, 1, .98, .94); T(TL.DARK, .92, .84, .78); T(TL.METAL, .96, .96, .98); T(TL.VISOR, .8, .9, 1.1); for (let i = 0; i < 10; i++) T(TL.FACE + i, 1.08, .86, .74);
   T(WL.REGO, 1.02, .93, .82); T(WL.ROCK, .98, .9, .8); T(WL.HULL, 1, 1, .98); T(WL.CRATE, 1.05, .91, .74); })();   // kept inside the film palette — the old orange was the one thing on screen reading as colour
 const SUN = V3.norm([-.62, .36, .58]), JUP = V3.norm([.1, .5, -.86]);
@@ -10162,23 +10378,27 @@ function render(dt, now) {
   const frozen = inGame && S.freeze > 0 && !S.over && !S.cine; const asp = R.sw / R.sh; let flash = 0, pp = null, haze = .035, sunI = .7, sat = 1;
   if (inGame && S.cine) { const c = S.cine; glitch = .1;
     if (c.phase === 'descent') { const alt = cineAlt(c.t), k = clamp(c.t / 30, 0, 1), q = c.q[1], drift = (c.t > q.t && q.done <= 0) ? Math.min(1, (c.t - q.t) * .6) * (q.key === 'KeyA' ? 1 : -1) : 0; c.drift = lerp(c.drift || 0, drift, dt * 2);
-      // touchdown: the gear strokes and rebounds, the nose pitches down and comes back, and everything loose in the cabin rings
-      const tau = c.td ? c.t - c.tdT : -1, imp = c.td ? c.imp : 0, jy = c.td ? -.34 * imp * Math.exp(-5 * tau) * Math.sin(14 * tau) : 0, jp = c.td ? -.07 * imp * Math.exp(-4 * tau) * Math.sin(10 * tau) : 0;
-      const sh = S.shake * .02 + (c.td ? .07 * imp * Math.exp(-3.2 * tau) : 0) + (c.ignT !== undefined ? .03 * Math.exp(-(c.t - c.ignT) * 3) : 0);
-      cam = mat(Math.PI + .25 * Math.sin(c.t * .11) + c.drift * .5 + (Math.random() - .5) * sh, lerp(-1.25, -.2, k * k) + jp + (Math.random() - .5) * sh, [START.x + c.drift * alt * .1, groundY(START.x, START.z) + 9 + c.h + jy, START.z + 2], asp, 1.15);
-      showShip = false; white = c.dust * .2 + (c.td ? .32 * Math.exp(-tau * 2.4) : 0) + (c.ignT !== undefined ? .22 * Math.exp(-(c.t - c.ignT) * 5) : 0); glitch = .1 + (c.td ? .7 * Math.exp(-tau * 3) : 0); fade = (c.td ? clamp((c.tdT + 7.5 - c.t) / 1.5, 0, 1) : 1) * clamp(c.t, 0, 1); breath = .5 + .5 * Math.sin(S.breath * 6.283); }
+      // impact: the legs crush and she bounces, the head goes down, the picture goes, and it comes back slowly and wrong
+      const tau = c.td ? c.t - c.tdT : -1, imp = c.td ? c.imp : 0, t2 = c.td2 ? c.t - c.td2 : -1, wake = Math.max(0, tau - 4.2);
+      const jy = (c.td ? -.3 * imp * Math.exp(-5 * tau) * Math.sin(14 * tau) : 0) + (c.td2 ? -.22 * Math.exp(-5 * t2) * Math.sin(14 * t2) : 0);
+      const jp = c.td ? -.07 * imp * Math.exp(-4 * tau) * Math.sin(10 * tau) - .5 * (1 - Math.exp(-tau * 1.6)) * Math.exp(-wake * .3) + .06 * Math.sin(tau * .9) * Math.min(1, wake) : 0, jw = c.td ? .13 * Math.sin(tau * .62) * Math.min(1, wake * .5) : 0;
+      const sh = S.shake * .02 + (c.td ? .07 * imp * Math.exp(-3.2 * tau) : 0) + (c.td2 ? .05 * Math.exp(-3.2 * t2) : 0) + (c.ignT !== undefined ? .03 * Math.exp(-(c.t - c.ignT) * 3) : 0);
+      cam = mat(Math.PI + .25 * Math.sin(c.t * .11) + c.drift * .5 + jw + (Math.random() - .5) * sh, lerp(-1.25, -.2, k * k) + jp + (Math.random() - .5) * sh, [START.x + c.drift * alt * .1, groundY(START.x, START.z) + 9 + Math.max(0, c.h) + jy, START.z + 2], asp, 1.15);
+      const black = !c.td ? 1 : tau < 1 ? 1 : tau < 1.8 ? 1 - (tau - 1) / .8 : tau < 4.2 ? 0 : Math.min(.8, wake / 4.5) * (.78 + .22 * Math.sin(tau * 2.3)) * clamp(CINE_END - tau, 0, 1);
+      showShip = false; white = c.dust * .2 + (c.td ? .6 * Math.exp(-tau * 2.2) : 0) + (c.td2 ? .25 * Math.exp(-t2 * 3) : 0) + (c.ignT !== undefined ? .22 * Math.exp(-(c.t - c.ignT) * 5) : 0);
+      glitch = .1 + (c.td ? .8 * Math.exp(-tau * 2.5) + .5 * Math.min(1, wake) * Math.exp(-wake * .16) : 0); fade = black * clamp(c.t, 0, 1); if (c.td && tau > 1.6 && tau < 4.6) hudOn = false; breath = .5 + .5 * Math.sin(S.breath * 6.283); }
     else if (c.phase === 'photo' && c.shots[c.shotN]) { const s = c.shots[c.shotN], e = [s.cam[0], groundY(s.cam[0], s.cam[1]) + 1.5, s.cam[1]], tg = [s.s.x, groundY(s.s.x, s.s.z) + 2.4 * s.s.scale * .6, s.s.z], d = V3.sub(tg, e);
       cam = mat(Math.atan2(d[0], -d[2]) + .02 * Math.sin(c.shotN * 5.), Math.atan2(d[1], Math.hypot(d[0], d[2])) - .03, e, asp, [.42, .3, .17][c.shotN]); visor = 0; grain = .3; glitch = 0; haze = .42; sunI = 1.0; sat = 0; fade = clamp(c.pt * 6, 0, 1) * clamp((3.8 - c.pt) * 4, 0, 1); white = Math.max(0, .5 - c.pt * 3); }
     else { cam = mat(0, 0, [0, 9000, 0], asp, 1); sceneOn = false; visor = 0; grain = 1.6; }
   } else if (inGame) {
-    const p = pp = P(); let yaw = p.yaw + p.kickY, pitch = p.pitch + p.kickP;
+    const p = pp = P(), dz = S.daze || 0; let yaw = p.yaw + p.kickY + .08 * dz * Math.sin(t * 1.1), pitch = p.pitch + p.kickP + .05 * dz * Math.cos(t * .83);   // still ringing from the impact
     if (S.over === 'dup' && S.killer) { const k = S.killer; const ty = Math.atan2(k.x - p.x, -(k.z - p.z)); let d = ty - yaw; d = Math.atan2(Math.sin(d), Math.cos(d)); p.yaw = yaw = yaw + d * Math.min(1, dt * 10); p.pitch = pitch = lerp(pitch, .3, dt * 6); }
     const sh = S.shake * .05, bobY = Math.sin(p.bob * 3.2) * .05, bobX = Math.cos(p.bob * 1.6) * .03;
     const e = [p.x + Math.cos(yaw) * bobX, groundY(p.x, p.z) + (p.lift || 0) + 1.66 + bobY, p.z + Math.sin(yaw) * bobX];
     cam = mat(yaw + (Math.random() - .5) * sh, pitch + (Math.random() - .5) * sh, e, asp, 1.2 + p.fovK * .09);
     const dy = (yaw - lastYaw) / Math.max(dt, .001); lastYaw = yaw; sway[0] = lerp(sway[0], clamp(dy * .012, -.05, .05), .12); sway[1] = lerp(sway[1], bobY * .25, .2);
-    glitch = S.over === 'dup' ? clamp(.5 + S.overT * .6, 0, 1) : S.over === 'crush' ? 1 : S.glitch; breath = .5 + .5 * Math.sin(S.breath * 6.283); white = S.white;
-    nosig = S.over === 'dup' ? clamp((S.overT - 1.6) * 2, 0, 1) : S.over === 'crush' ? clamp(S.overT * 2, 0, 1) : (S.signal < .22 ? .6 : 0); fade = clamp(S.t * .7, 0, 1);
+    glitch = S.over === 'dup' ? clamp(.5 + S.overT * .6, 0, 1) : S.over === 'crush' ? 1 : Math.min(1, S.glitch + .45 * dz); breath = .5 + .5 * Math.sin(S.breath * 6.283); white = S.white;
+    nosig = S.over === 'dup' ? clamp((S.overT - 1.6) * 2, 0, 1) : S.over === 'crush' ? clamp(S.overT * 2, 0, 1) : (S.signal < .22 ? .6 : 0); fade = clamp(S.t * (dz > 0 ? .3 : .7), 0, 1) * (1 - .25 * dz * (.5 + .5 * Math.sin(t * 2.3)));
     flash = p.lamp ? (S.prox > .4 && Math.random() < S.prox * .5 ? .15 : 1) * (S.burst > 0 && Math.random() < .5 ? .3 : 1) * (S.climb || S.stage === 3 ? .07 : 1) : 0;
     // nose against a sunlit white hull clips everything to paper; stop down for the climb so the panels read
     if (S.climb) sunI *= .42;
@@ -10188,10 +10408,11 @@ function render(dt, now) {
   if (!frozen) {
     // characters into the dynamic batch
     const B = R.batch; B.reset(); const smear = [];
-    if (inGame && sceneOn) { const ce = cam.e; for (const f of S.foes) { const d = Math.hypot(f.x - ce[0], f.z - ce[2]); if (d > 150 || S.cine) continue; const st = { x: f.x, z: f.z, heading: f.heading, speed: f.spd, scale: 1.45 * (f.vsc || 1), stun: f.down ? 1 : Math.max(0, f.stun), alert: f.chgS ? 1 : f.alert, active: f.active, open: f.open, dup: f.kind !== 'crew', charge: f.chgS === 1 ? clamp(f.chgT / f.v.chg.wind, 0, 1) : 0 };
-        const n0 = B.n; if (f.kind === 'kei') { if (f.active) st.look = Math.atan2(ce[0] - f.x, -(ce[2] - f.z)); f.rig.fat = (d > 22 ? 1.8 : 1) * (f.vfat || 1); KEI.update(f.rig, st, dt, groundY); KEI.emit(B, f.rig, d > 22 ? 1 : 0); } else { ASTRO.update(f.rig, st, dt, f.cy ? (x, z) => groundY(x, z) + f.cy : groundY); ASTRO.emit(B, f.rig); } smear.push([n0, B.n - n0, f.kind === 'kei' ? (f.stun > 0 ? .45 : .02 + f.alert * .14) : f.kind === 'dup' ? (f.active ? .05 : 0) : 0]); }
+    if (inGame && sceneOn) { const ce = cam.e; for (const f of (S.watch && !S.watch.hide ? S.foes.concat([S.watch.f]) : S.foes)) { const d = Math.hypot(f.x - ce[0], f.z - ce[2]); if (d > 170 || S.cine) continue; const st = { x: f.x, z: f.z, heading: f.heading, speed: f.spd, scale: 1.45 * (f.vsc || 1), stun: f.down ? 1 : Math.max(0, f.stun), alert: f.chgS ? 1 : f.alert, active: f.active, open: f.open, dup: f.kind !== 'crew', charge: f.chgS === 1 ? clamp(f.chgT / f.v.chg.wind, 0, 1) : 0 }; if (f.kind === 'crew') { st.gest = f.gest || null; st.pointYaw = f.pointYaw; st.lookYaw = f.lookYaw; st.fear = f.panic; st.hurt = f.down ? 1 : 0; st.gun = f.ammo > 0; st.aim = f.aimT > 0 ? f.aimAt : undefined; st.fire = f.flash > 0 ? f.flash / .09 : 0; if (f.gest === 'down' && ASTRO.GESTURES) st.stun = 0; }
+        const n0 = B.n; if (f.kind === 'kei') { if (f.active) st.look = Math.atan2(ce[0] - f.x, -(ce[2] - f.z)); f.rig.fat = (d > 22 ? 1.8 : 1) * (f.vfat || 1); KEI.update(f.rig, st, dt, groundY); KEI.emit(B, f.rig, d > 22 ? 1 : 0); } else { ASTRO.update(f.rig, st, dt, f.cy ? (x, z) => groundY(x, z) + f.cy : groundY); ASTRO.emit(B, f.rig); } if (S.watch && f === S.watch.f) { const k = clamp((d - 14) / 20, 0, 1); for (let i = n0; i < B.n; i++) { B.d[i * STRIDE + 9] *= 1 + 1.9 * k; B.d[i * STRIDE + 10] += .09 * k; } }   // far off against a black sky a dark thing is nothing at all: up there it catches the sun
+        smear.push([n0, B.n - n0, f.kind === 'kei' ? (f.stun > 0 ? .45 : .02 + f.alert * .14) : f.kind === 'dup' ? (f.active ? .05 : 0) : 0]); }
       if (!S.cine) { const ce2 = cam.e; const nb0 = B.n;
-        emitBreakup(B, cam); if (S.depart !== undefined) emitDepart(B, cam, S.depart); else if (S.stage === 3 && S.launchT > LAUNCH_HOLD) emitDepart(B, cam, S.launchT - LAUNCH_HOLD);
+        emitTracers(B, cam, dt); emitBreakup(B, cam); if (S.depart !== undefined) emitDepart(B, cam, S.depart); else if (S.stage === 3 && S.launchT > LAUNCH_HOLD) emitDepart(B, cam, S.launchT - LAUNCH_HOLD);
         for (const m of S.prints) { const dx = m.x - ce2[0], dz = m.z - ce2[2]; if (dx * dx + dz * dz > 1600) continue;
           if (GEAR_OK) GEAR.footprint(B, m.x, m.z, m.h, groundY); else { const c = Math.cos(m.h), sn = Math.sin(m.h); B.quad([m.x - c * .13 - sn * .07, m.y + .012, m.z - sn * .13 + c * .07], [m.x + c * .13 - sn * .07, m.y + .012, m.z + sn * .13 + c * .07], [m.x + c * .13 + sn * .07, m.y + .012, m.z + sn * .13 - c * .07], [m.x - c * .13 + sn * .07, m.y + .012, m.z - sn * .13 - c * .07], WL.REGO, .28, 0); } }
         for (const g of S.dust) B.ball([g.x, g.y, g.z], [g.r, 0, 0], [0, g.r, 0], [0, 0, g.r], WL.REGO, .9, 0, 4, 2);
@@ -10213,7 +10434,7 @@ function render(dt, now) {
     R.cam = cam; const svp = shadowMat(cam.e[1] > 500 ? [START.x, 0, START.z] : cam.e);
     const hidePod = !!(inGame && S.cine && S.cine.phase === 'descent');
     const drawAll = (u, lit) => { gl.bindVertexArray(R.terrain.vao); if (lit) gl.uniform1f(u.uTerr, 1); gl.drawArrays(gl.TRIANGLES, 0, R.terrain.n); if (lit) gl.uniform1f(u.uTerr, 0);
-      gl.bindVertexArray(R.props.vao); if (hidePod && W.podRange) { const pr = W.podRange; gl.drawArrays(gl.TRIANGLES, 0, pr[0]); if (R.props.n > pr[1]) gl.drawArrays(gl.TRIANGLES, pr[1], R.props.n - pr[1]); } else gl.drawArrays(gl.TRIANGLES, 0, R.props.n);
+      gl.bindVertexArray(R.props.vao); { const skip = []; if (hidePod && W.podRange) skip.push(W.podRange); if (W.sentRange && !(inGame && S.cine && S.cine.phase === 'photo')) skip.push(W.sentRange); skip.sort((a, b) => a[0] - b[0]); let a0 = 0; for (const r of skip) { if (r[0] > a0) gl.drawArrays(gl.TRIANGLES, a0, r[0] - a0); a0 = Math.max(a0, r[1]); } if (R.props.n > a0) gl.drawArrays(gl.TRIANGLES, a0, R.props.n - a0); }
       if (showShip) { if (shipLift) gl.uniform3f(u.uOfs, 0, shipLift, 0); gl.bindVertexArray(R.ship.vao); gl.drawArrays(gl.TRIANGLES, 0, R.ship.n); if (shipLift) gl.uniform3f(u.uOfs, 0, 0, 0); }
       gl.bindVertexArray(R.dyn.vao); if (lit) { for (const [o, n, s] of smear) { gl.uniform1f(u.uSmear, s); gl.drawArrays(gl.TRIANGLES, o, n); } gl.uniform1f(u.uSmear, 0); } else if (B.n) gl.drawArrays(gl.TRIANGLES, 0, B.n); };
     if (sceneOn) { gl.bindFramebuffer(gl.FRAMEBUFFER, R.shFbo); gl.viewport(0, 0, R.SM, R.SM); gl.enable(gl.DEPTH_TEST); gl.clearDepth(1); gl.clear(gl.DEPTH_BUFFER_BIT); gl.useProgram(R.depthP.p); gl.uniformMatrix4fv(R.depthP.u.uSVP, false, svp); gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2, 4); drawAll(R.depthP.u, false); gl.disable(gl.POLYGON_OFFSET_FILL); }
@@ -10226,7 +10447,7 @@ function render(dt, now) {
       W.lamps.forEach((l, i) => Ls.push([l.x, l.y + 2.3, l.z, 15, 1.5 * (i ? fl(i) : 1)]));
       const sy = groundY(SHIP.x, SHIP.z); Ls.push([SHIP.x, sy + 2.5, SHIP.z + 6.5, 16, S && S.reactor ? 2.2 : .5], [SHIP.x, sy + 23, SHIP.z, 60, Math.sin(t * 2.5) > .7 ? 5 : 0], [SHIP_POINTS.panel.x, sy + 2, SHIP_POINTS.panel.z, 6, S && S.stage === 1 ? .8 + .6 * Math.sin(t * 5) : 0]);
       if (pp && pp.fireT < .07) Ls.push([GUN.mz[0], GUN.mz[1], GUN.mz[2], 30, 3.4]);
-      if (S) for (const f of S.foes) if (f.kind === 'crew' && f.flash > 0) Ls.push([f.x, groundY(f.x, f.z) + 1.5, f.z, 34, 8]);
+      if (S) for (const f of S.foes) if (f.kind === 'crew' && f.flash > 0) Ls.push([f.x + Math.sin(f.aimAt || 0) * .8, groundY(f.x, f.z) + 1.9, f.z - Math.cos(f.aimAt || 0) * .8, 16, 2.2 * f.flash / .09]);
       if (S && S.depart !== undefined) Ls.push([SHIP.x, sy + 1.1 + shipLift, SHIP.z, 170, 7]);
       if (S && S.cine && S.cine.phase === 'descent') { const c = S.cine, k = clamp(1 - c.h / 110, 0, 1); if (k > 0) Ls.push([cam.e[0], cam.e[1] - 1.5, cam.e[2] + 5, 130, k * k * (.55 + 1.15 * c.eng * (.86 + .14 * Math.sin(t * 31)))]); }   // her landing lamps, and the descent engine on the regolith ahead of the nose
       if (S && S.stage === 3 && S.launchT > LAUNCH_HOLD) Ls.push([SHIP.x, sy - 4 + shipLift, SHIP.z, 70 + shipLift * .4, 2.2]);   // the engine, well below the cabin: it lights the ground, not your lap
@@ -10261,12 +10482,16 @@ function frame(now) {
 function show(id) { screen = id === 'end' ? 'ending' : id; for (const s of document.querySelectorAll('.screen')) s.classList.toggle('on', s.id === id); }
 function startRun(i, at) { auInit(); if (typeof homeAudio === 'function') homeAudio(false); newGame(i); show('none'); acc = 0;
   if (at === 'ship') { screen = 'play'; shipBegin(); if (cv.requestPointerLock) { try { const r = cv.requestPointerLock(); if (r && r.catch) r.catch(() => { }); } catch (e) { } } return; }   // a death aboard Ithaca puts you back at her hatch, not back on the moon
+  if (at === 'impact') { flowField(); S.cine = null; endCine(true); say('SUIT', 'IMPACT. SUIT INTACT.'); if (AU.ctx) sfx.ring(6); return; }   // a death on the surface puts you back at the wreck of the pod, just after she hit
   startCine(); screen = 'cine'; flowField(); }
 function showEnd() {
-  if (document.pointerLockElement) document.exitPointerLock(); const c = S.crew, x = $('endPh').getContext('2d'); x.imageSmoothingEnabled = true; x.clearRect(0, 0, 96, 120); x.drawImage(PCAN[c.id], 0, 0, 96, 120);
+  if (document.pointerLockElement) document.exitPointerLock(); const c = S.crew, x = $('endPh').getContext('2d'); x.imageSmoothingEnabled = true; x.clearRect(0, 0, 384, 480); x.drawImage(PCAN[c.id], 0, 0, 384, 480);
   const m = Math.floor(S.left / 60), s = String(Math.floor(S.left % 60)).padStart(2, '0');
-  if (S.over === 'dup') { x.fillStyle = '#000'; x.beginPath(); x.ellipse(48, 84, 21, 32, 0, 0, 7); x.fill(); { const sp = PCAN[c.id], u = sp.width / 48, v = sp.height / 60; x.drawImage(sp, 6 * u, 4 * v, 36 * u, 50 * v, 33, 60, 30, 44); } $('endH').textContent = 'DUPLICATION COMPLETE'; $('endP').textContent = `${c.name} did not reach Argus A-2. The helmet feed is still transmitting.`; }
-  else if (S.over === 'taken') { x.fillStyle = '#000'; x.fillRect(0, 0, 96, 120); $('endH').textContent = 'NO ONE ABOARD'; $('endP').textContent = `ERV Ithaca was found on station round Callisto with her hatches sealed. ${c.name} had docked with her. The deck cameras show something walking the spine with a ring of keys.`; }
+  if (S.over === 'dup') { // one face, exposed twice: the second sits a little off the first, the way a duplicate would
+    const sp = PCAN[c.id]; x.globalAlpha = .46; x.drawImage(sp, 24, -8, 384, 480); x.globalAlpha = 1;
+    const r = mulberry(CREW.indexOf(c) * 31 + 7); for (let i = 0; i < 3; i++) { const y = 30 + ((r() * 400) | 0), h = 6 + ((r() * 14) | 0), o = ((r() * 30) | 0) - 15; x.drawImage(x.canvas, 0, y, 384, h, o, y, 384, h); }
+    $('endH').textContent = 'DUPLICATION COMPLETE'; $('endP').textContent = `${c.name} did not reach Argus A-2. The helmet feed is still transmitting.`; }
+  else if (S.over === 'taken') { x.fillStyle = '#000'; x.fillRect(0, 0, 384, 480); $('endH').textContent = 'NO ONE ABOARD'; $('endP').textContent = `ERV Ithaca was found on station round Callisto with her hatches sealed. ${c.name} had docked with her. The deck cameras show something walking the spine with a ring of keys.`; }
   else if (S.over === 'cut') { $('endH').textContent = 'THE KEY WAS FINISHED'; $('endP').textContent = `Three cuts were taken from ${c.name} aboard ERV Ithaca. A key cut to that pattern opens exactly one thing. The helmet feed ends eleven seconds later.`; }
   else if (S.over === 'home') { const o = CREW[S.home && S.home.ci !== undefined ? S.home.ci : 2]; $('endH').textContent = 'WELCOME HOME'; $('endP').textContent = `${c.name} came home alone on ERV Ithaca and was given a parade on May 17, 2014. Newsreel of the route shows a second EVA suit standing in the crowd. The face in it was identified as ${o.name}, who never left Callisto.`; }
   else if (S.over === 'crush') { $('endH').textContent = 'VEHICLE DEPARTED'; $('endP').textContent = `Argus A-2 lifted on its window at 23:47 UTC with no one aboard. ${c.name} was still on the surface.`; }
@@ -10291,7 +10516,7 @@ function bindUI() {
   $('discBtn').onclick = () => { auInit(); show('menu'); };
   $('mPlay').onclick = () => show('sel'); $('mFile').onclick = () => show('file'); $('mVoice').onclick = () => { auInit(); buildVoiceBank(); show('voice'); }; $('mSet').onclick = () => show('set');
   for (const b of document.querySelectorAll('[data-back]')) b.onclick = () => { S = null; show('menu'); };
-  $('againBtn').onclick = () => { const i = S.crewIdx; startRun(i, S.mode === 'ship' ? 'ship' : undefined); };
+  $('againBtn').onclick = () => { const i = S.crewIdx; startRun(i, S.mode === 'ship' ? 'ship' : S.over === 'home' || S.over === 'escape' ? undefined : 'impact'); };
   $('resumeBtn').onclick = () => { show('none'); screen = 'play'; cv.requestPointerLock && cv.requestPointerLock(); };
   $('vbRefresh').onclick = () => buildVoiceBank();
   const q = $('sQual'), se = $('sSens'), vo = $('sVol'); q.value = SET.quality; se.value = SET.sens; vo.value = SET.vol;
@@ -10309,7 +10534,7 @@ document.addEventListener('pointerlockchange', () => { skipMove = 2; if (documen
 function refreshFace(id) { const i = CREW_IDS.indexOf(id); if (i < 0) return; gl.bindTexture(gl.TEXTURE_2D_ARRAY, R.tex);
   for (const [lay, open] of [[TL.FACE + i, false], [TL.FACE_OPEN + i, true]]) gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, lay, 256, 256, 1, gl.RGBA, gl.UNSIGNED_BYTE, faceLayer(id, open));
   gl.generateMipmap(gl.TEXTURE_2D_ARRAY); const box = $('crew'); if (box) { box.innerHTML = ''; buildSelect(); } }
-try { initGL(); buildMapCanvas(); loadPhotos(refreshFace); NASA_IMG.src = document.querySelector('.brand img').src; if (document.fonts && document.fonts.load) document.fonts.load('500 16px "IBM Plex Mono"').then(() => { hudDirty = true; }).catch(() => { }); buildSelect(); bindUI(); requestAnimationFrame(frame); } catch (e) { document.body.insertAdjacentHTML('beforeend', `<pre style="position:fixed;left:8px;bottom:8px;color:#fff;z-index:9">${String(e.message || e)}</pre>`); throw e; }
+try { initGL(); buildMapCanvas(); loadPhotos(refreshFace); NASA_IMG.onload = () => { try { const c = document.createElement('canvas'); c.width = c.height = TS; const x = c.getContext('2d'); x.fillStyle = '#ecebe6'; x.fillRect(0, 0, TS, TS); const w = NASA_IMG.naturalWidth, h = NASA_IMG.naturalHeight, k = TS * .97 / Math.max(w, h); x.imageSmoothingQuality = 'high'; x.drawImage(NASA_IMG, (TS - w * k) / 2, (TS - h * k) / 2, w * k, h * k); gl.bindTexture(gl.TEXTURE_2D_ARRAY, R.tex); gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, TL.NASA, TS, TS, 1, gl.RGBA, gl.UNSIGNED_BYTE, c); gl.generateMipmap(gl.TEXTURE_2D_ARRAY); } catch (e) { } hudDirty = true; }; NASA_IMG.src = document.querySelector('.brand img').src; if (document.fonts && document.fonts.load) document.fonts.load('500 16px "IBM Plex Mono"').then(() => { hudDirty = true; }).catch(() => { }); buildSelect(); bindUI(); requestAnimationFrame(frame); } catch (e) { document.body.insertAdjacentHTML('beforeend', `<pre style="position:fixed;left:8px;bottom:8px;color:#fff;z-index:9">${String(e.message || e)}</pre>`); throw e; }
 window.__dbg = { R, W, SET, cine(dt) { cineStep(dt); }, get S() { return S; }, startRun, show, step, ship(i) { startRun(i || 0, 'ship'); }, home() { homeBegin(); }, tp(x, z) { P().x = x; P().z = z; }, set screen(v) { screen = v; }, get screen() { return screen; } };
 
 
