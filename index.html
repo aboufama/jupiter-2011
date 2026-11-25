@@ -4134,6 +4134,710 @@ const ASTRO = (() => {
 })();
 
 
+/* rocks.js : the stone of the Callisto surface. Needs prims.js only (the batch layout). Defines one global, ROCKS.
+
+   Nothing on an airless moon is rounded by water or wind. A boulder there is a block of impact breccia that broke
+   along a handful of flat fracture planes, lost its corners to later chips, and has since been sand-blasted by
+   micrometeorites for anything between a week and a billion years. So every rock here starts as a CONVEX SOLID CUT
+   BY PLANES - a real polyhedron with true flat faces and sharp arrises, not a displaced sphere - and the archetypes
+   are different ways of arranging one to five such solids: a block, an old rounded block, a tilted slab, a boulder
+   split in two, a block with its own spalled litter, a stand of upright shards, a stepped outcrop, a rubble pile.
+   Each solid is then triangulated into a welded mesh, subdivided to an even edge length (finer along the arrises),
+   roughened, (for old rock) relaxed so the arrises round over, and lit once: ambient occlusion from the neighbouring
+   solids, the ground and the mesh's own concavity is baked into the shade channel, because under the helmet lamp
+   the game shades without the surface normal and tone is all there is. On the nearest size a few faces carry a
+   remnant plate of older skin, V-grooved cracks and clusters of pits let into the triangles. Regolith is banked
+   against the foot of every rock as a separate apron (the fillet), with the rock's own spalls lying in it, and
+   lies as a cap on faces that look at the sky. Fresh fracture faces keep the normal of their plane; weathered ones
+   are smoothed across the whole solid.
+
+   ROCKS.boulder(B, x, y, z, radius, seed, sy, detail)   one rock, world space, resting on ground height y.
+                                                         detail 2 near, 1 middle, 0 far. Returns the vertices added.
+                                                         An optional ninth argument, a function (x, z) -> ground height,
+                                                         lets the dust apron and the loose fragments follow sloping ground.
+   ROCKS.pebble(B, x, y, z, r, seed)                     one small angular stone, part buried
+   ROCKS.count(radius, detail)                           upper bound on the vertices boulder() emits
+   Deterministic: no clock, no Math.random; the same arguments always give the same triangles. Guarantees for
+   boulder(): nothing solid further than 0.985*radius from the axis (loose fragments under 0.25 m and the dust apron
+   excepted), highest point at y + radius*sy*1.15, base sunk 0.3*radius. World layers WL.ROCK / WL.REGO are looked
+   up at call time; without world.js it falls back to the character page TL.DARK, so it runs in the model viewer.
+   ROCKS._info (what the last boulder was) and ROCKS._force(archetype) are for viewers and tests only. */
+const ROCKS = (() => {
+  const TAU = 6.283185307179586, EPS = 1e-7, ST = 12;
+  const cl = (v, a, b) => v < a ? a : v > b ? b : v;
+  const ss = (a, b, x) => { const t = cl((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+  const mix = (a, b, t) => a + (b - a) * t;
+
+  /* ---------- randomness. One stream, re-seeded per purpose, so a change of detail never changes the form ---------- */
+  let RS = 1;
+  const rnd = () => { RS = RS + 0x6D2B79F5 | 0; let t = Math.imul(RS ^ RS >>> 15, 1 | RS); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  const seedTo = (seed, stream) => { RS = (Math.imul(seed | 0, 0x9E3779B1) ^ Math.imul((stream | 0) + 1, 0x85EBCA6B) ^ 0x1B873593) | 0; rnd(); rnd(); };
+  const rr = (a, b) => a + (b - a) * rnd();
+  const ri = n => (rnd() * n) | 0;
+  const hsh = (a, b) => { let t = Math.imul(a ^ 0x9e3779b9, 0x85ebca6b) ^ Math.imul((b | 0) + 0x7f4a7c15, 0xc2b2ae35); t ^= t >>> 15; t = Math.imul(t, 0x2c1b3c6d); t ^= t >>> 12; t = Math.imul(t, 0x297a2d39); t ^= t >>> 15; return (t >>> 0) / 4294967296; };
+  const ih = (x, y, z) => { let h = Math.imul(x, 374761393) ^ Math.imul(y, 668265263) ^ Math.imul(z, 1440662683); h = Math.imul(h ^ h >>> 13, 1274126177); return ((h ^ h >>> 16) >>> 0) * 2.3283064365386963e-10; };
+  function n3(x, y, z) {
+    const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z); let fx = x - xi, fy = y - yi, fz = z - zi;
+    fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy); fz = fz * fz * (3 - 2 * fz);
+    const a = ih(xi, yi, zi), b = ih(xi + 1, yi, zi), c = ih(xi, yi + 1, zi), d = ih(xi + 1, yi + 1, zi), e = ih(xi, yi, zi + 1), f = ih(xi + 1, yi, zi + 1), g = ih(xi, yi + 1, zi + 1), h = ih(xi + 1, yi + 1, zi + 1);
+    const ab = a + (b - a) * fx, cd = c + (d - c) * fx, ef = e + (f - e) * fx, gh = g + (h - g) * fx, lo = ab + (cd - ab) * fy, hi = ef + (gh - ef) * fy;
+    return lo + (hi - lo) * fz;
+  }
+
+  /* ---------- a convex solid cut by half-spaces ----------
+     Indexed, so two faces that share an edge share the vertex a cut makes on it: the result is watertight. */
+  const K_BOTTOM = 0, K_TOP = 1, K_SIDE = 2, K_SHLD = 3, K_CHIP = 4, K_FRESH = 5, K_CRACK = 6, K_UNDER = 7, K_GROOVE = 8, FINE = 16, COMP = 32;
+  const MAXPV = 2048;
+  const px = new Float64Array(MAXPV), py = new Float64Array(MAXPV), pz = new Float64Array(MAXPV), pd = new Float64Array(MAXPV);
+  const capNext = new Int32Array(MAXPV), pmap = new Int32Array(MAXPV), emap = new Map();
+  let npv = 0, faces = [], clipEmpty = false;
+  function polyBox(S) {
+    npv = 8; for (let i = 0; i < 8; i++) { px[i] = i & 1 ? S : -S; py[i] = i & 2 ? S : -S; pz[i] = i & 4 ? S : -S; }
+    faces = [{ loop: [1, 3, 7, 5], g: -1 }, { loop: [0, 4, 6, 2], g: -1 }, { loop: [2, 6, 7, 3], g: -1 }, { loop: [0, 1, 5, 4], g: -1 }, { loop: [4, 5, 7, 6], g: -1 }, { loop: [0, 2, 3, 1], g: -1 }];
+  }
+  // keep n.p <= d. Returns false (and changes nothing) if the plane misses the solid or the cut is degenerate.
+  // A plane that would leave nothing at all also changes nothing, but raises clipEmpty: the planes have no common solid.
+  function clipPlane(nx, ny, nz, d, g) {
+    if (npv > MAXPV - 96) return false;
+    for (let i = 0; i < npv; i++) pd[i] = px[i] * nx + py[i] * ny + pz[i] * nz - d;
+    const nf = [], npv0 = npv; let start = -1, cut = 0; emap.clear();
+    for (let fi = 0; fi < faces.length; fi++) {
+      const f = faces[fi], L = f.loop, n = L.length; let nin = 0;
+      for (let k = 0; k < n; k++) if (pd[L[k]] <= EPS) nin++;
+      if (nin === n) { nf.push(f); continue; }
+      if (nin === 0) continue;
+      const nl = []; let x1 = -1, x2 = -1, tr = 0;
+      for (let k = 0; k < n; k++) {
+        const a = L[k], b = L[k + 1 === n ? 0 : k + 1], ai = pd[a] <= EPS, bi = pd[b] <= EPS;
+        if (ai) nl.push(a);
+        if (ai !== bi) {
+          tr++; const key = a < b ? a * MAXPV + b : b * MAXPV + a; let x = emap.get(key);
+          if (x === undefined) { const t = pd[a] / (pd[a] - pd[b]); x = npv++; px[x] = px[a] + (px[b] - px[a]) * t; py[x] = py[a] + (py[b] - py[a]) * t; pz[x] = pz[a] + (pz[b] - pz[a]) * t; pd[x] = 0; emap.set(key, x); }
+          nl.push(x); if (ai) x1 = x; else x2 = x;
+        }
+      }
+      if (tr !== 2) { npv = npv0; return false; }
+      nf.push({ loop: nl, g: f.g }); capNext[x2] = x1; start = x2; cut++;
+    }
+    if (start < 0 || cut < 3) { if (!nf.length) clipEmpty = true; npv = npv0; return false; }
+    const cap = []; let v = start, guard = 0;
+    do { cap.push(v); v = capNext[v]; } while (v !== start && ++guard <= cut);
+    if (v !== start || cap.length !== cut) { npv = npv0; return false; }
+    nf.push({ loop: cap, g }); faces = nf; return true;
+  }
+  // plane through point q with normal n (any length), appended to list L as nx ny nz d kind
+  const PL = (L, nx, ny, nz, qx, qy, qz, kind) => { const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l; L.push(nx, ny, nz, nx * qx + ny * qy + nz * qz, kind); };
+  // rigid motion of the planes of L from index i0: turn by ang about the unit axis a through pivot q, then shift by t
+  function xfPlanes(L, i0, ax, ay, az, ang, qx, qy, qz, tx, ty, tz) {
+    const c = Math.cos(ang), s = Math.sin(ang), k = 1 - c;
+    for (let i = i0; i < L.length; i += 5) {
+      const x = L[i], y = L[i + 1], z = L[i + 2], dt = ax * x + ay * y + az * z;
+      const rx = x * c + (ay * z - az * y) * s + ax * dt * k, ry = y * c + (az * x - ax * z) * s + ay * dt * k, rz = z * c + (ax * y - ay * x) * s + az * dt * k;
+      L[i + 3] = L[i + 3] - (x * qx + y * qy + z * qz) + rx * (qx + tx) + ry * (qy + ty) + rz * (qz + tz); L[i] = rx; L[i + 1] = ry; L[i + 2] = rz;
+    }
+  }
+  /* Cut the box by a plane list; crease the large faces (a fracture face is never one true plane: it is two or
+     three that meet at a few degrees); then knock chips off corners and arrises. Crease and chip planes are
+     appended to the list, so it ends up describing the finished solid (occlusion and the fillet read it back). */
+  function carve(L, S, yb, D, nChips, chipSize, cx, cy, cz, yChip, creaseP) {
+    polyBox(S); const n0 = L.length; clipEmpty = false;
+    for (let i = 0; i < n0; i += 5) { if (D === 0 && (L[i + 4] & FINE)) continue; clipPlane(L[i], L[i + 1], L[i + 2], L[i + 3], i / 5); }
+    L.push(0, -1, 0, -yb, K_BOTTOM); clipPlane(0, -1, 0, -yb, n0 / 5);
+    if (clipEmpty) { faces = []; npv = 0; return; }
+    for (let pass = 0; pass < 2 && creaseP > 0; pass++, creaseP *= .55) { const snap = faces.slice();
+      for (let fi = 0; fi < snap.length; fi++) { const f = snap[fi], g = f.g; if (g < 0) continue; const kk = L[g * 5 + 4] & 15, u = rnd(), a = rr(0, TAU), ang = rr(.05, .17), sh = rr(-.15, .4); if (kk === K_BOTTOM || kk === K_UNDER || kk === K_CRACK || u > creaseP) continue;
+        const lp = f.loop, n = lp.length; let mx = 0, my = 0, mz = 0; for (let k = 0; k < n; k++) { mx += px[lp[k]]; my += py[lp[k]]; mz += pz[lp[k]]; } mx /= n; my /= n; mz /= n;
+        let far = 0; for (let k = 0; k < n; k++) far = Math.max(far, Math.hypot(px[lp[k]] - mx, py[lp[k]] - my, pz[lp[k]] - mz)); if (far < chipSize * 2.2 || my < yChip) continue;
+        const nx = L[g * 5], ny = L[g * 5 + 1], nz = L[g * 5 + 2];
+        // an in-plane direction t, then tip the normal toward it
+        let tx = Math.cos(a), ty = Math.sin(a) * .7, tz = Math.sin(a * 1.7 + 1), dt = tx * nx + ty * ny + tz * nz; tx -= nx * dt; ty -= ny * dt; tz -= nz * dt; let l = Math.hypot(tx, ty, tz); if (l < .05) continue; tx /= l; ty /= l; tz /= l;
+        const tn = Math.tan(ang); let ex = nx + tx * tn, ey = ny + ty * tn, ez = nz + tz * tn; l = Math.hypot(ex, ey, ez); ex /= l; ey /= l; ez /= l;
+        const qx = mx + tx * far * sh, qy = my + ty * far * sh, qz = mz + tz * far * sh, d = ex * qx + ey * qy + ez * qz;
+        if (clipPlane(ex, ey, ez, d, L.length / 5)) L.push(ex, ey, ez, d, kk | COMP | (((L[g * 5 + 4] & COMP) ? L[g * 5 + 4] >> 6 : g) << 6)); } }
+    for (let c = 0; c < nChips && faces.length; c++) {
+      const f = faces[ri(faces.length)], lp = f.loop, k = ri(lp.length), a = lp[k], b = lp[(k + 1) % lp.length], edge = rnd() < .45, t = edge ? rr(.25, .75) : 0;
+      const qx = px[a] + (px[b] - px[a]) * t, qy = py[a] + (py[b] - py[a]) * t, qz = pz[a] + (pz[b] - pz[a]) * t;
+      let nx = qx - cx, ny = qy - cy, nz = qz - cz, l = Math.hypot(nx, ny, nz) || 1;
+      nx = nx / l + rr(-.5, .5); ny = ny / l + rr(-.5, .5); nz = nz / l + rr(-.5, .5); l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
+      const u = rnd(), dep = chipSize * (.3 + 1.5 * u * u) * (edge ? .6 : 1);
+      if (qy < yChip) continue;
+      const d = nx * qx + ny * qy + nz * qz - dep;
+      if (clipPlane(nx, ny, nz, d, L.length / 5)) L.push(nx, ny, nz, d, K_CHIP);
+    }
+  }
+
+  /* ---------- the welded triangle mesh of the rock under construction ---------- */
+  const MV = 8192, MT = 8192, MG = 2048;
+  const vx = new Float32Array(MV), vy = new Float32Array(MV), vz = new Float32Array(MV);
+  const sx = new Float32Array(MV), sy_ = new Float32Array(MV), sz = new Float32Array(MV);          // chunk-smooth normal
+  const lx = new Float32Array(MV), ly = new Float32Array(MV), lz = new Float32Array(MV), lc = new Float32Array(MV);
+  const ax = new Float32Array(MV), ay = new Float32Array(MV), az = new Float32Array(MV), stamp = new Int32Array(MV);
+  const vsh = new Float32Array(MV), vpin = new Float32Array(MV), vdu = new Float32Array(MV), vch = new Uint8Array(MV), varr = new Uint8Array(MV), vin = new Uint8Array(MV);
+  const ti = new Int32Array(MT * 3), tg = new Int16Array(MT), tfl = new Uint8Array(MT), order = new Int32Array(MT);
+  const gnx = new Float32Array(MG), gny = new Float32Array(MG), gnz = new Float32Array(MG), gtone = new Float32Array(MG), guo = new Float32Array(MG), gvo = new Float32Array(MG), gur = new Float32Array(MG);
+  const gk = new Uint8Array(MG), gch = new Uint8Array(MG), gcnt = new Int32Array(MG + 1);
+  let nv = 0, nt = 0, ng = 0, stampN = 0;
+  const mid = new Map(), arr = new Set(), wl = [];
+  const addTri = (a, b, c, g) => { const o = nt * 3; ti[o] = a; ti[o + 1] = b; ti[o + 2] = c; tg[nt] = g; tfl[nt] = 0; nt++; };
+  const d2 = (a, b) => { const dx = vx[a] - vx[b], dy = vy[a] - vy[b], dz = vz[a] - vz[b]; return dx * dx + dy * dy + dz * dz; };
+
+  // index+1 of a neighbouring solid that holds the point at least `margin` deep, or 0
+  function buried(ci, x, y, z, margin, D) {
+    for (let cj = 0; cj < chunks.length; cj++) { const c = chunks[cj]; if (cj === ci || !c.on || c.plate) continue; const L = c.L; let inside = true;
+      for (let i = 0; i < L.length; i += 5) { if (D === 0 && (L[i + 4] & FINE)) continue; if (L[i] * x + L[i + 1] * y + L[i + 2] * z - L[i + 3] > -margin) { inside = false; break; } }
+      if (inside) return cj + 1; }
+    return 0;
+  }
+  // the solid in the clipper becomes triangles. Returns their area.
+  function meshChunk(ci, L, gBase, fanLen, margin, D) {
+    const v0 = nv, tStart = nt, tol = 1e-5;
+    for (let i = 0; i < npv; i++) pmap[i] = -1;
+    let area = 0;
+    for (let fi = 0; fi < faces.length; fi++) {
+      const f = faces[fi]; if (f.g < 0 || (L[f.g * 5 + 4] & 15) === K_BOTTOM) continue;
+      const lp = f.loop; wl.length = 0;
+      for (let k = 0; k < lp.length; k++) {
+        const i = lp[k]; let m = pmap[i];
+        if (m < 0) { const x = px[i], y = py[i], z = pz[i]; for (let j = v0; j < nv; j++) if (Math.abs(vx[j] - x) < tol && Math.abs(vy[j] - y) < tol && Math.abs(vz[j] - z) < tol) { m = j; break; }
+          if (m < 0) { if (nv >= MV - 4) return area; m = nv++; vx[m] = x; vy[m] = y; vz[m] = z; vch[m] = ci; vin[m] = margin > 0 ? buried(ci, x, y, z, margin, D) : 0; } pmap[i] = m; }
+        if (!wl.length || (wl[wl.length - 1] !== m && wl[0] !== m)) wl.push(m);
+      }
+      const n = wl.length; if (n < 3 || nt + n + 2 >= MT) continue;
+      { let hid = vin[wl[0]]; for (let k = 1; k < n && hid; k++) if (vin[wl[k]] !== hid) hid = 0; if (hid) continue; }      // wholly inside a neighbour
+      const g = gBase + f.g; let cx = 0, cy = 0, cz = 0;
+      for (let k = 0; k < n; k++) { cx += vx[wl[k]]; cy += vy[wl[k]]; cz += vz[wl[k]]; } cx /= n; cy /= n; cz /= n;
+      let far = 0; for (let k = 0; k < n; k++) { const dx = vx[wl[k]] - cx, dy = vy[wl[k]] - cy, dz = vz[wl[k]] - cz; far = Math.max(far, dx * dx + dy * dy + dz * dz); }
+      const t0 = nt;
+      if (n === 3) addTri(wl[0], wl[1], wl[2], g);
+      else if (n === 4) { if (d2(wl[0], wl[2]) <= d2(wl[1], wl[3])) { addTri(wl[0], wl[1], wl[2], g); addTri(wl[0], wl[2], wl[3], g); } else { addTri(wl[0], wl[1], wl[3], g); addTri(wl[1], wl[2], wl[3], g); } }
+      else if (far > fanLen * fanLen) { const c = nv++; vx[c] = cx; vy[c] = cy; vz[c] = cz; vch[c] = ci; vin[c] = 0; for (let k = 0; k < n; k++) addTri(c, wl[k], wl[(k + 1) % n], g); }
+      else for (let k = 1; k + 1 < n; k++) addTri(wl[0], wl[k], wl[k + 1], g);
+      for (let t = t0; t < nt; t++) { const a = ti[t * 3], b = ti[t * 3 + 1], c = ti[t * 3 + 2], ux = vx[b] - vx[a], uy = vy[b] - vy[a], uz = vz[b] - vz[a], wx = vx[c] - vx[a], wy = vy[c] - vy[a], wz = vz[c] - vz[a];
+        if (vy[a] > 0 || vy[b] > 0 || vy[c] > 0) area += .5 * Math.hypot(uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx); }
+    }
+    // the arrises: edges whose two triangles lie in different fracture faces
+    arr.clear(); emap.clear(); for (let v = v0; v < nv; v++) varr[v] = 0;
+    for (let t = tStart; t < nt; t++) { const o = t * 3, g = tg[t]; for (let e = 0; e < 3; e++) { const a = ti[o + e], b = ti[o + (e + 1) % 3], key = a < b ? a * MV + b : b * MV + a, pg = emap.get(key); if (pg === undefined) emap.set(key, g); else if (pg !== g) { arr.add(key); varr[a] = 1; varr[b] = 1; } } }
+    return area;
+  }
+  /* Split every edge longer than L, sharing midpoints, until none is left or the triangle allowance runs out.
+     The rule is per edge, so neighbours always agree and the mesh stays conforming. */
+  let sL2 = 0, sA2 = 0, sY = 0;
+  const mark = (a, b) => { if ((vy[a] < sY && vy[b] < sY) || (vin[a] && vin[a] === vin[b])) return 0; const dx = vx[a] - vx[b], dy = vy[a] - vy[b], dz = vz[a] - vz[b], l = dx * dx + dy * dy + dz * dz; return l > sL2 ? 1 : l > sA2 && varr[a] && varr[b] && arr.has(a < b ? a * MV + b : b * MV + a) ? 1 : 0; };
+  const midpoint = (a, b) => { const key = a < b ? a * MV + b : b * MV + a; let m = mid.get(key);
+    if (m === undefined) { m = nv++; vx[m] = (vx[a] + vx[b]) * .5; vy[m] = (vy[a] + vy[b]) * .5; vz[m] = (vz[a] + vz[b]) * .5; vch[m] = vch[a]; varr[m] = 0; vin[m] = vin[a] === vin[b] ? vin[a] : 0; mid.set(key, m);
+      if (varr[a] && varr[b] && arr.has(key)) { varr[m] = 1; arr.add(a < m ? a * MV + m : m * MV + a); arr.add(b < m ? b * MV + m : m * MV + b); } }
+    return m; };
+  function subdivide(t0, L, La, capT, yCut) {
+    sL2 = L * L; sA2 = La * La; sY = yCut;
+    for (let pass = 0; pass < 8; pass++) {
+      let add = 0;
+      for (let tries = 0; tries < 12; tries++) {
+        add = 0; for (let t = t0; t < nt; t++) { const o = t * 3; add += mark(ti[o], ti[o + 1]) + mark(ti[o + 1], ti[o + 2]) + mark(ti[o + 2], ti[o]); }
+        if (nt - t0 + add <= capT) break; sL2 *= 1.3; sA2 *= 1.3;
+      }
+      if (add === 0 || nt - t0 + add > capT || nt + add > MT - 8 || nv + add > MV - 8) break;
+      mid.clear(); const end = nt;
+      for (let t = t0; t < end; t++) {
+        const o = t * 3, g = tg[t]; let a = ti[o], b = ti[o + 1], c = ti[o + 2]; const m0 = mark(a, b), m1 = mark(b, c), m2 = mark(c, a), k = m0 + m1 + m2;
+        if (!k) continue;
+        if (k === 3) { const ab = midpoint(a, b), bc = midpoint(b, c), ca = midpoint(c, a); ti[o + 1] = ab; ti[o + 2] = ca; addTri(ab, b, bc, g); addTri(ca, bc, c, g); addTri(ab, bc, ca, g); continue; }
+        if (k === 1) { if (m1) { const q = a; a = b; b = c; c = q; } else if (m2) { const q = c; c = b; b = a; a = q; }
+          const ab = midpoint(a, b); ti[o] = a; ti[o + 1] = ab; ti[o + 2] = c; addTri(ab, b, c, g); continue; }
+        if (!m0) { const q = a; a = b; b = c; c = q; } else if (!m1) { const q = c; c = b; b = a; a = q; }
+        const ab = midpoint(a, b), bc = midpoint(b, c); ti[o] = ab; ti[o + 1] = b; ti[o + 2] = bc;
+        if (d2(a, bc) < d2(ab, c)) { addTri(a, ab, bc, g); addTri(a, bc, c, g); } else { addTri(a, ab, c, g); addTri(ab, bc, c, g); }
+      }
+    }
+  }
+  // area-weighted vertex normals (sx,sy_,sz) and neighbour sums (lx,ly,lz,lc) for vertices v0..nv from triangles t0..nt
+  function gather(v0, t0) {
+    for (let v = v0; v < nv; v++) { sx[v] = sy_[v] = sz[v] = 0; lx[v] = ly[v] = lz[v] = lc[v] = 0; }
+    for (let t = t0; t < nt; t++) {
+      const o = t * 3, a = ti[o], b = ti[o + 1], c = ti[o + 2], ux = vx[b] - vx[a], uy = vy[b] - vy[a], uz = vz[b] - vz[a], wx = vx[c] - vx[a], wy = vy[c] - vy[a], wz = vz[c] - vz[a];
+      const nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+      sx[a] += nx; sy_[a] += ny; sz[a] += nz; sx[b] += nx; sy_[b] += ny; sz[b] += nz; sx[c] += nx; sy_[c] += ny; sz[c] += nz;
+      lx[a] += vx[b] + vx[c]; ly[a] += vy[b] + vy[c]; lz[a] += vz[b] + vz[c]; lc[a] += 2;
+      lx[b] += vx[a] + vx[c]; ly[b] += vy[a] + vy[c]; lz[b] += vz[a] + vz[c]; lc[b] += 2;
+      lx[c] += vx[a] + vx[b]; ly[c] += vy[a] + vy[b]; lz[c] += vz[a] + vz[b]; lc[c] += 2;
+    }
+    for (let v = v0; v < nv; v++) { const l = Math.hypot(sx[v], sy_[v], sz[v]) || 1; sx[v] /= l; sy_[v] /= l; sz[v] /= l; }
+  }
+
+  /* ---------- the archetypes: each one only lays out plane lists (chunks) ---------- */
+  const chunks = [];
+  const CH = (L, cx, cy, cz, rad, w, share, chip) => { chunks.push({ L, cx, cy, cz, rad, w, share, chip: chip === undefined ? 1 : chip, v0: 0, v1: 0, t0: 0, t1: 0, g0: 0, top: -1, on: true, plate: false, tone: 1, so: 0, el: 1, par: 0, parG: 0, faces: null, P: null, npv: 0, raw: 0 }); };
+  /* A joint-bounded block: a top, four to six sides that lean in or overhang a little, and two to four oblique
+     shoulders that take the top edges off. o: tilt, e0,e1 (side lean, radians), d0,d1 (side distance / rad),
+     k (sides), sh (shoulders), s0,s1 (how far in from the axis a shoulder starts), fine (kind flag for shoulders) */
+  function blockPlanes(L, cx, cz, rad, top, o) {
+    const tt = o.tilt * rr(.3, 1), ta = rr(0, TAU), a0 = rr(0, TAU), k = o.k;
+    PL(L, Math.sin(tt) * Math.cos(ta), Math.cos(tt), Math.sin(tt) * Math.sin(ta), cx, top, cz, K_TOP);
+    for (let i = 0; i < k; i++) { const a = a0 + TAU * (i + rr(-.3, .3)) / k, e = rr(o.e0, o.e1), ce = Math.cos(e), dd = rad * rr(o.d0, o.d1);
+      PL(L, ce * Math.cos(a), Math.sin(e), ce * Math.sin(a), cx + Math.cos(a) * dd, top * .45, cz + Math.sin(a) * dd, K_SIDE); }
+    for (let i = 0; i < o.sh; i++) { const a = rr(0, TAU), e = rr(.45, 1.15), ce = Math.cos(e), dd = rad * rr(o.s0, o.s1);
+      PL(L, ce * Math.cos(a), Math.sin(e), ce * Math.sin(a), cx + Math.cos(a) * dd, top, cz + Math.sin(a) * dd, K_SHLD | (o.fine || 0)); }
+    // the foot is cut back in places, so the block overhangs its own shadow; and a corner or two is gone altogether
+    for (let i = 0; i < (o.un || 0); i++) { const a = rr(0, TAU), e = rr(-.8, -.3), ce = Math.cos(e), dd = rad * rr(.5, .85), hh = top * rr(.04, .3);
+      PL(L, ce * Math.cos(a), Math.sin(e), ce * Math.sin(a), cx + Math.cos(a) * dd, hh, cz + Math.sin(a) * dd, K_SIDE | FINE); }
+    for (let i = 0; i < (o.cc || 0); i++) { const a = rr(0, TAU), e = rr(-.25, .35), ce = Math.cos(e), dd = rad * rr(.62, .86);
+      PL(L, ce * Math.cos(a), Math.sin(e), ce * Math.sin(a), cx + Math.cos(a) * dd, top * .5, cz + Math.sin(a) * dd, K_SIDE | FINE); }
+  }
+  // 0  angular block, usually with a lesser block broken off against it
+  function archBlock(R, H, W, tilt, spallA) {
+    const ox = rr(-.07, .07) * R, oz = rr(-.07, .07) * R, L = [];
+    blockPlanes(L, ox, oz, R * .92, H, { tilt, e0: -.25, e1: .5, d0: .7, d1: .98, k: 4 + ri(3), sh: 2 + ri(3), s0: .44, s1: .78, un: 1 + ri(3), cc: ri(3) });
+    const lesser = rnd() < .7, se = rr(-.18, .3), sd = rr(.46, .66) * R;
+    if (spallA !== undefined) PL(L, Math.cos(se) * Math.cos(spallA), Math.sin(se), Math.cos(se) * Math.sin(spallA), ox + Math.cos(spallA) * sd, H * .5, oz + Math.sin(spallA) * sd, K_FRESH);
+    CH(L, ox, H * .4, oz, R * .9, W, 1);
+    if (lesser && spallA === undefined) { const a = rr(0, TAU), dd = R * rr(.5, .7), r2 = R * rr(.36, .52), h2 = H * rr(.38, .8), bx = Math.cos(a) * dd, bz = Math.sin(a) * dd, L2 = [];
+      blockPlanes(L2, bx, bz, r2, h2, { tilt: tilt * 2, e0: -.25, e1: .45, d0: .7, d1: 1, k: 4 + ri(2), sh: 1 + ri(3), s0: .3, s1: .7, fine: FINE, un: ri(2), cc: ri(2) });
+      const ta = rr(0, TAU); xfPlanes(L2, 0, Math.cos(ta), 0, Math.sin(ta), rr(-.3, .3), bx, 0, bz, 0, 0, 0);
+      PL(L2, rr(-.2, .2), 1, rr(-.2, .2), bx, H * .88, bz, K_SHLD);
+      CH(L2, bx, h2 * .4, bz, r2, W, .4); }
+  }
+  // 1  old block: many tangent planes round an ellipsoid, later relaxed; sometimes one newer, sharp spall face
+  function archRound(R, H, W, tilt) {
+    const a0 = rr(0, TAU), ea = R * rr(.84, .98), ec = R * rr(.68, .92), cy = H * rr(-.1, .3), eb = H - cy, ca = Math.cos(a0), sa = Math.sin(a0), L = [], N = 16, ph = rr(0, TAU);
+    const tt = tilt * rr(.2, .8), ta = rr(0, TAU);
+    PL(L, Math.sin(tt) * Math.cos(ta), Math.cos(tt), Math.sin(tt) * Math.sin(ta), 0, H, 0, K_TOP);
+    for (let i = 0; i < N; i++) { const yy = cl(.93 - (i + .5) / N * 1.25 + rr(-.04, .04), -.4, .95), r = Math.sqrt(1 - yy * yy), p = i * 2.39996 + ph + rr(-.25, .25), nx = r * Math.cos(p), nz = r * Math.sin(p);
+      const u = nx * ca + nz * sa, w = -nx * sa + nz * ca, sup = Math.sqrt(ea * ea * u * u + eb * eb * yy * yy + ec * ec * w * w) * rr(.8, 1.07);
+      L.push(nx, yy, nz, yy * cy + sup, K_SIDE | (i & 1 ? FINE : 0)); }
+    const ns = rnd() < .75 ? 1 + ri(2) : 0;
+    for (let i = 0; i < ns; i++) { const p = rr(0, TAU), e = rr(-.15, .36), nx = Math.cos(e) * Math.cos(p), yy = Math.sin(e), nz = Math.cos(e) * Math.sin(p), u = nx * ca + nz * sa, w = -nx * sa + nz * ca;
+      L.push(nx, yy, nz, yy * cy + Math.sqrt(ea * ea * u * u + eb * eb * yy * yy + ec * ec * w * w) * rr(.58, .82), K_FRESH); }
+    CH(L, 0, Math.max(cy, H * .2), 0, R * .9, Math.max(W, .62), 1, .5);
+  }
+  // 2  slab lying tilted, its high end propped clear of the ground, often with the low end broken off and lying flatter
+  function archSlab(R, H, W) {
+    const ph = rr(0, TAU), ux = Math.cos(ph), uz = Math.sin(ph), tn = rr(.55, 1) * .21 * H / R, al = Math.atan(tn), sa = Math.sin(al), ca = Math.cos(al), th = H * rr(.34, .5);
+    const L = [], top = (x, z) => H - tn * (x * ux + z * uz + .8 * R);
+    PL(L, sa * ux, ca, sa * uz, -ux * .8 * R, H, -uz * .8 * R, K_TOP);
+    PL(L, -sa * ux, -ca, -sa * uz, -ux * .8 * R, H - th / ca, -uz * .8 * R, K_UNDER);
+    const k = 5 + ri(2), a0 = rr(0, TAU);
+    for (let i = 0; i < k; i++) { const a = a0 + TAU * (i + rr(-.25, .25)) / k, e = rr(-.35, .35), dd = R * rr(.74, .97), hx = Math.cos(a), hz = Math.sin(a), hy = -tn * (hx * ux + hz * uz), hl = Math.hypot(hx, hy, hz), ce = Math.cos(e) / hl, se = Math.sin(e);
+      PL(L, hx * ce + sa * ux * se, hy * ce + ca * se, hz * ce + sa * uz * se, hx * dd, top(hx * dd, hz * dd) - th * .5, hz * dd, K_SIDE); }
+    const brk = rnd() < .6, s0 = R * rr(.1, .42), j = rr(-.35, .35), bx = Math.cos(ph + j), bz = Math.sin(ph + j), by = rr(-.25, .25), gap = R * rr(.04, .1);
+    if (brk) { const LB = L.slice();
+      PL(L, bx, by, bz, ux * s0, top(ux * s0, uz * s0), uz * s0, K_CRACK);
+      PL(LB, -bx, -by, -bz, ux * (s0 + gap), top(ux * s0, uz * s0), uz * (s0 + gap), K_CRACK);
+      xfPlanes(LB, 0, -uz, 0, ux, al * rr(.5, 1.15), ux * s0, top(ux * s0, uz * s0) - th * .5, uz * s0, ux * gap * .5, -H * rr(.02, .12), uz * gap * .5);
+      CH(L, -ux * .2 * R, top(-ux * .2 * R, -uz * .2 * R) - th * .5, -uz * .2 * R, R * .85, W, 1);
+      CH(LB, ux * (s0 + .3 * R), Math.max(.05 * H, top(ux * .6 * R, uz * .6 * R) - th * .5), uz * (s0 + .3 * R), R * .5, W, .45);
+    } else CH(L, 0, top(0, 0) - th * .5, 0, R * .9, W, 1);
+    // the stone it came to rest on
+    { const s = -R * rr(.28, .46), q = rr(-.25, .25) * R, cx = ux * s - uz * q, cz = uz * s + ux * q, r2 = R * rr(.34, .46), h2 = top(cx, cz) - th / ca + H * rr(.03, .1), L2 = [];
+      blockPlanes(L2, cx, cz, r2, Math.max(h2, H * .2), { tilt: .3, e0: -.1, e1: .5, d0: .7, d1: 1, k: 4 + ri(2), sh: 1 + ri(2), s0: .4, s1: .8, fine: FINE });
+      CH(L2, cx, h2 * .4, cz, r2, W, .32); }
+  }
+  // 3  boulder split through: the two halves stand a little apart, one leaning away
+  function archSplit(R, H, W, tilt, seed, D) {
+    const P = [];
+    blockPlanes(P, 0, 0, R * .94, H, { tilt, e0: -.2, e1: .45, d0: .74, d1: .98, k: 4 + ri(3), sh: 2 + ri(3), s0: .4, s1: .76, un: ri(3), cc: ri(2) });
+    const az = rr(0, TAU), el = rr(-.22, .22), off = rr(-.18, .18) * R, nx = Math.cos(el) * Math.cos(az), nyy = Math.sin(el), nz = Math.cos(el) * Math.sin(az), gap = R * rr(.05, .11);
+    const qx = Math.cos(az) * off, qz = Math.sin(az) * off, lean = rr(.03, .15), drop = H * rr(0, .07), slide = rr(-.06, .06) * R, third = rnd() < .4, a3 = az + rr(1.1, 2.0), o3 = rr(-.2, .3) * R, e3 = rr(-.2, .2);
+    // the parent takes its chips before it breaks, so the two outsides still match across the gap
+    const rs = RS; seedTo(seed, 40); carve(P, R * 4, -.32 * R, D, D === 2 ? 12 : D === 1 ? 4 : 0, R * .1, 0, H * .4, 0, .08 * H, D === 2 ? .5 : 0); { let ib = 0; while ((P[ib * 5 + 4] & 15) !== K_BOTTOM) ib++; P.splice(ib * 5, 5); for (let i = 4; i < P.length; i += 5) if (P[i] & COMP) { const par = P[i] >> 6; P[i] = (P[i] & 63) | ((par > ib ? par - 1 : par) << 6); } } RS = rs;
+    const A = P.slice(), Bb = P.slice();
+    PL(A, nx, nyy, nz, qx - nx * gap * .5, H * .5, qz - nz * gap * .5, K_CRACK);
+    PL(Bb, -nx, -nyy, -nz, qx + nx * gap * .5, H * .5, qz + nz * gap * .5, K_CRACK);
+    const sxx = -Math.sin(az), szz = Math.cos(az);
+    xfPlanes(Bb, 0, sxx, 0, szz, -lean, qx, 0, qz, sxx * slide, -drop, szz * slide);
+    if (third) { const A2 = A.slice(), tx = Math.cos(e3) * Math.cos(a3), ty = Math.sin(e3), tz = Math.cos(e3) * Math.sin(a3), g3 = gap * .7, px3 = Math.cos(a3) * o3 - nx * R * .3, pz3 = Math.sin(a3) * o3 - nz * R * .3;
+      PL(A, tx, ty, tz, px3 - tx * g3 * .5, H * .5, pz3 - tz * g3 * .5, K_CRACK); PL(A2, -tx, -ty, -tz, px3 + tx * g3 * .5, H * .5, pz3 + tz * g3 * .5, K_CRACK);
+      xfPlanes(A2, 0, -tz, 0, tx, -rr(.02, .1), px3, 0, pz3, 0, -H * rr(0, .05), 0);
+      CH(A, qx - nx * R * .4 - tx * R * .3, H * .4, qz - nz * R * .4 - tz * R * .3, R * .6, W, .6, .4); CH(A2, qx - nx * R * .4 + tx * R * .3, H * .4, qz - nz * R * .4 + tz * R * .3, R * .6, W, .5, .4);
+    } else CH(A, qx - nx * R * .45, H * .4, qz - nz * R * .45, R * .7, W, 1, .4);
+    CH(Bb, qx + nx * R * .45, H * .4, qz + nz * R * .45, R * .7, W, 1, .4);
+  }
+  // 5  a stand of upright plates and wedges, all leaning much the same way
+  function archShards(R, H, W, tilt) {
+    const ps = rr(0, TAU), ux = Math.cos(ps), uz = Math.sin(ps), wx = -uz, wz = ux, n = 3 + ri(3), lean0 = rr(-.28, .28), main = rr(-.12, .12) * R;
+    let curL = 0, curR = 0, side = rnd() < .5 ? 1 : -1;
+    for (let i = 0; i < n; i++) {
+      const isMain = i === 0, th = isMain ? R * rr(.52, .68) : R * rr(.22, .42); let pos = main;
+      if (isMain) { curL = main - th * .5; curR = main + th * .5; } else { const ov = rr(.25, .5); if (side > 0) { pos = curR + th * ov; curR = pos + th * .5; } else { pos = curL - th * ov; curL = pos - th * .5; } side = -side; }
+      const ln = lean0 + rr(-.12, .12), cs = Math.cos(ln), sn = Math.sin(ln), lat = isMain ? rr(-.1, .1) * R : rr(-.3, .3) * R, cx = ux * pos + wx * lat, cz = uz * pos + wz * lat;
+      const hw = Math.min(R * rr(.42, .8), Math.sqrt(Math.max(.05, R * R - pos * pos)) * .95), ht = isMain ? H : H * rr(.55, .92), L = [];
+      const j1 = rr(-.14, .14), j2 = rr(-.14, .14), j3 = rr(-.1, .1), j4 = rr(-.1, .1);
+      PL(L, cs * ux + j1 * wx, -sn + j3, cs * uz + j1 * wz, cx + ux * th * .5, ht * .4, cz + uz * th * .5, K_SIDE);
+      PL(L, -cs * ux + j2 * wx, sn + j4, -cs * uz + j2 * wz, cx - ux * th * .5, ht * .4, cz - uz * th * .5, K_SIDE);
+      for (let q = 0; q < 2; q++) { const sg = q ? -1 : 1, ja = rr(-.4, .4), je = rr(-.2, .35); PL(L, sg * wx + ja * ux, je, sg * wz + ja * uz, cx + sg * wx * hw, ht * .4, cz + sg * wz * hw, K_SIDE); }
+      if (isMain) { const tt = tilt * rr(.2, .8), ta = rr(0, TAU); PL(L, Math.sin(tt) * Math.cos(ta), Math.cos(tt), Math.sin(tt) * Math.sin(ta), cx, ht, cz, K_TOP);
+        const sg = rnd() < .5 ? 1 : -1, e = rr(.5, .95), q = hw * rr(.25, .6); PL(L, sg * wx * Math.cos(e), Math.sin(e), sg * wz * Math.cos(e), cx + sg * wx * q, ht, cz + sg * wz * q, K_SHLD);
+      } else { const sg = rnd() < .5 ? 1 : -1, e = rr(.75, 1.25), q = rr(-.3, .3); PL(L, sg * wx * Math.cos(e) + q * ux, Math.sin(e), sg * wz * Math.cos(e) + q * uz, cx - sg * wx * hw * .7, ht, cz - sg * wz * hw * .7, K_TOP);
+        const e2 = rr(.4, .9), q2 = hw * rr(.1, .5), h2 = ht * rr(.8, 1); if (rnd() < .6) PL(L, -sg * wx * Math.cos(e2), Math.sin(e2), -sg * wz * Math.cos(e2), cx - sg * wx * q2, h2, cz - sg * wz * q2, K_SHLD | FINE); }
+      CH(L, cx, ht * .35, cz, Math.max(th, hw) * .8, W, isMain ? 1 : .55, .7);
+    }
+  }
+  // 6  bedrock ledges breaking surface: stepped slabs with one steep broken front and a back that runs under the dust
+  function archOutcrop(R, H, W) {
+    const fr = rr(0, TAU), ux = Math.cos(fr), uz = Math.sin(fr), wx = -uz, wz = ux, bt = rr(.05, .15), ba = fr + Math.PI + rr(-.8, .8), bnx = Math.sin(bt) * Math.cos(ba), bny = Math.cos(bt), bnz = Math.sin(bt) * Math.sin(ba);
+    const n = 3 + ri(2);
+    for (let i = 0; i < n; i++) {
+      const f = i / (n - 1), ht = H * (1 - f * rr(.5, .64)) * (i ? rr(.92, 1.04) : 1), pos = (-.16 + f * .58) * R + (i ? rr(-.08, .08) * R : 0), lat = i ? rr(-.3, .3) * R : rr(-.08, .08) * R, cx = ux * pos + wx * lat, cz = uz * pos + wz * lat, rad = R * (i ? rr(.5, .66) : rr(.64, .76)), L = [];
+      PL(L, bnx + rr(-.04, .04), bny, bnz + rr(-.04, .04), cx, ht, cz, K_TOP);
+      { const a = fr + rr(-.35, .35), e = rr(-.12, .2); PL(L, Math.cos(e) * Math.cos(a), Math.sin(e), Math.cos(e) * Math.sin(a), cx + Math.cos(a) * rad * rr(.5, .8), ht * .5, cz + Math.sin(a) * rad * rr(.5, .8), K_FRESH); }
+      const k = 4 + ri(2);
+      for (let q = 0; q < k; q++) { const a = fr + TAU * (q + 1 + rr(-.25, .25)) / (k + 1), back = -Math.cos(a - fr), dT = rad * rr(.5, .78), dO = rad * rr(1.05, 1.35), e = back > 0 ? Math.atan2(dO - dT, ht * rr(.8, 1.15)) : rr(0, .4), dd = back > 0 ? dT : rad * rr(.7, 1);
+        PL(L, Math.cos(e) * Math.cos(a), Math.sin(e), Math.cos(e) * Math.sin(a), cx + Math.cos(a) * dd, ht * (back > 0 ? 1 : .4), cz + Math.sin(a) * dd, K_SIDE | (q & 1 && i ? FINE : 0)); }
+      CH(L, cx, ht * .3, cz, rad, Math.max(W, .5), i ? .6 : 1, .6);
+    }
+  }
+  // 7  rubble: one block with three or four lesser ones tumbled against it
+  function archRubble(R, H, W, tilt) {
+    const ox = rr(-.12, .12) * R, oz = rr(-.12, .12) * R, L = [];
+    blockPlanes(L, ox, oz, R * rr(.62, .74), H, { tilt, e0: -.25, e1: .4, d0: .74, d1: 1, k: 4 + ri(3), sh: 2 + ri(2), s0: .46, s1: .84, un: 1 + ri(2), cc: ri(2) });
+    CH(L, ox, H * .4, oz, R * .6, W, 1);
+    const n = 3 + ri(2), a0 = rr(0, TAU);
+    for (let i = 0; i < n; i++) { const a = a0 + TAU * (i + rr(-.3, .3)) / n, dd = R * rr(.54, .68), r2 = R * rr(.28, .42), h2 = H * rr(.34, .76), bx = Math.cos(a) * dd, bz = Math.sin(a) * dd, L2 = [];
+      blockPlanes(L2, bx, bz, r2, h2, { tilt: .25, e0: -.25, e1: .4, d0: .7, d1: 1, k: 4 + ri(2), sh: 1 + ri(2), s0: .3, s1: .75, fine: FINE, un: ri(2), cc: ri(2) });
+      const ta = rr(0, TAU); xfPlanes(L2, 0, Math.cos(ta), 0, Math.sin(ta), rr(-.45, .45), bx, h2 * .3, bz, 0, 0, 0);
+      PL(L2, rr(-.2, .2), 1, rr(-.2, .2), bx, H * .86, bz, K_SHLD);
+      CH(L2, bx, h2 * .4, bz, r2, W, .42); }
+  }
+  const ARCH_W = [.2, .15, .11, .12, .12, .09, .09, .12];
+
+  /* ---------- pebbles and spalled fragments: a small library of chipped solids, instanced ---------- */
+  let TLO = null, THI = null;
+  function buildTemplates() {
+    TLO = []; THI = [];
+    for (let s = 0; s < 600 && (TLO.length < 20 || THI.length < 20); s++) {
+      seedTo(9000 + s, 0); const hi = s & 1, L = [], k = hi ? 5 : 4, a0 = rr(0, TAU);
+      const tt = rr(.05, .5), ta = rr(0, TAU); PL(L, Math.sin(tt) * Math.cos(ta), Math.cos(tt), Math.sin(tt) * Math.sin(ta), 0, rr(.45, .8), 0, K_TOP);
+      for (let i = 0; i < k; i++) { const a = a0 + TAU * (i + rr(-.3, .3)) / k, e = rr(-.25, .55), dd = rr(.55, 1); PL(L, Math.cos(e) * Math.cos(a), Math.sin(e), Math.cos(e) * Math.sin(a), Math.cos(a) * dd, .2, Math.sin(a) * dd, K_SIDE); }
+      for (let i = 0; i < (hi ? 3 : 1); i++) { const a = rr(0, TAU), e = rr(.4, 1.1), dd = rr(.2, .7); PL(L, Math.cos(e) * Math.cos(a), Math.sin(e), Math.cos(e) * Math.sin(a), Math.cos(a) * dd, .6, Math.sin(a) * dd, K_SHLD); }
+      carve(L, 3, -.4, 2, 0, 0, 0, 0, 0, 0, 0);
+      const tr = []; let mr = 0, my = 0;
+      for (const f of faces) { if (f.g < 0 || (L[f.g * 5 + 4] & 15) === K_BOTTOM) continue; const lp = f.loop; for (let q = 1; q + 1 < lp.length; q++) tr.push(lp[0], lp[q], lp[q + 1], f.g); for (const i of lp) { mr = Math.max(mr, Math.hypot(px[i], pz[i])); my = Math.max(my, py[i]); } }
+      const nT = tr.length / 4; if (nT < 6 || nT > (hi ? 20 : 12) || mr > 2 || my < .2) continue;
+      const d = new Float32Array(nT * 13), sc = 1 / mr;
+      for (let t = 0; t < nT; t++) { const o = t * 13, g = tr[t * 4 + 3]; for (let c = 0; c < 3; c++) { const i = tr[t * 4 + c]; d[o + c * 3] = px[i] * sc; d[o + c * 3 + 1] = py[i] * sc; d[o + c * 3 + 2] = pz[i] * sc; }
+        d[o + 9] = L[g * 5]; d[o + 10] = L[g * 5 + 1]; d[o + 11] = L[g * 5 + 2]; d[o + 12] = hsh(s, g); }
+      (hi ? THI : TLO).push({ n: nT, d });
+    }
+  }
+  // [rock page, its gain, dust page, its gain, how much brighter the dust page is than the rock page]
+  const pages = () => (typeof WL !== 'undefined' && WL && WL.ROCK !== undefined) ? [WL.ROCK, 1, WL.REGO, 1, 1.17] : [TL.DARK, 2.8, TL.DARK, 3.3, 1];
+  const KUV = 1.15;
+  // one instanced stone. tone multiplies its shade; lean (radians) tips it over; big picks the richer template
+  function stone(B, x, y, z, r, seed, tone, lean, sink, PG) {
+    if (!TLO) buildTemplates();
+    const s = seed | 0, set = r > .17 ? THI : TLO, T = set[(hsh(s, 11) * set.length) | 0], n = T.n, td = T.d, d = B.d, max = B.max || d.length / ST;
+    if (B.n + n * 3 > max) return 0;
+    const a = hsh(s, 12) * TAU, ca = Math.cos(a), sa = Math.sin(a), ex = r * (.8 + .2 * hsh(s, 13)), ez = r * (.6 + .34 * hsh(s, 14)), ey = r * (.7 + .55 * hsh(s, 15));
+    const tl = (hsh(s, 16) - .5) * 2 * lean, ct = Math.cos(tl), sn = Math.sin(tl), u0 = hsh(s, 17) * 7, v0 = hsh(s, 18) * 7, lay = PG[0], g = PG[1] * tone * (.82 + .3 * hsh(s, 19)), yb = y - sink * ey;
+    let o = B.n * ST;
+    for (let t = 0; t < n; t++) {
+      const q = t * 13;
+      // normal: inverse scale, tip about x, turn about y
+      let nx = td[q + 9] / ex, ny = td[q + 10] / ey, nz = td[q + 11] / ez; { const y2 = ny * ct - nz * sn, z2 = ny * sn + nz * ct; ny = y2; nz = z2; const x3 = nx * ca - nz * sa, z3 = nx * sa + nz * ca; nx = x3; nz = z3; const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l; }
+      const tn = g * (.74 + .5 * td[q + 12]) * (.9 + .14 * ny), axx = Math.abs(nx), ayy = Math.abs(ny), azz = Math.abs(nz);
+      for (let c = 0; c < 3; c++) {
+        const lx0 = td[q + c * 3] * ex, ly0 = td[q + c * 3 + 1], lz0 = td[q + c * 3 + 2] * ez, ly1 = ly0 * ey;
+        const y2 = ly1 * ct - lz0 * sn, z2 = ly1 * sn + lz0 * ct, X = lx0 * ca - z2 * sa, Z = lx0 * sa + z2 * ca;
+        const u = ayy >= axx && ayy >= azz ? X : axx >= azz ? Z : X, v = ayy >= axx && ayy >= azz ? Z : y2;
+        d[o] = x + X; d[o + 1] = yb + y2; d[o + 2] = z + Z; d[o + 3] = u * KUV + u0; d[o + 4] = v * KUV + v0; d[o + 5] = lay; d[o + 6] = nx; d[o + 7] = ny; d[o + 8] = nz;
+        d[o + 9] = tn * (.58 + .42 * ss(-.05, .3, ly0 - sink)); d[o + 10] = 0; d[o + 11] = 0; o += ST;
+      }
+    }
+    B.n += n * 3; return n * 3;
+  }
+  function pebble(B, x, y, z, r, seed) { stone(B, x, y, z, cl(+r || .1, .01, 3), (seed | 0) + 77, 1, .22, .27, pages()); }
+
+  /* ---------- boulder ---------- */
+  const count = (radius, detail) => detail <= 0 ? 198 : detail === 1 ? 696 : 3 * Math.floor((2100 + 300 * cl(+radius || 1, .3, 4)) / 3);
+  const NB_MAX = 24, fe = new Float32Array(NB_MAX), fb = new Float32Array(NB_MAX), fr = new Float32Array(NB_MAX), fc = new Float32Array(NB_MAX), fs_ = new Float32Array(NB_MAX), fu = new Float32Array(NB_MAX * 3), fx = new Float32Array(NB_MAX * 3), fy = new Float32Array(NB_MAX * 3), fz = new Float32Array(NB_MAX * 3), fnx = new Float32Array(NB_MAX * 3), fny = new Float32Array(NB_MAX * 3), fnz = new Float32Array(NB_MAX * 3);
+  const pitH = new Float32Array(18);
+  const INFO = { arch: 0, rock: [0, 0], fillet: [0, 0], frags: [], weather: 0 };
+  let FORCE = -1;
+
+  /* A crack is a chain of mesh edges opened into a V. Every vertex inside the chain is split in two - the triangles
+     on its left keep it, those on its right get the copy - the two are drawn apart, and a third vertex is sunk
+     between them for the floor. The ends are left whole, so the groove tapers shut. */
+  const adjS = new Int32Array(MV + 1), adjT = new Int32Array(MT * 3), vcr = new Uint8Array(MV), cpath = new Int32Array(40), cR = new Int32Array(40), cM = new Int32Array(40);
+  function buildAdj() { for (let v = 0; v <= nv; v++) adjS[v] = 0; for (let i = 0; i < nt * 3; i++) adjS[ti[i]]++; for (let v = 1; v < nv; v++) adjS[v] += adjS[v - 1];
+    for (let t = nt - 1; t >= 0; t--) for (let e = 0; e < 3; e++) adjT[--adjS[ti[t * 3 + e]]] = t;
+    adjS[nv] = nt * 3; }
+  function crack(gC, nv0, H, w, dep, maxSeg, sd) {
+    let v0 = -1; for (let tr = 0; tr < 30 && v0 < 0; tr++) { const v = ri(nv0); if (vy[v] > .3 * H && !vcr[v] && !chunks[vch[v]].plate && adjS[v + 1] - adjS[v] > 2) v0 = v; }
+    let dx = rr(-1, 1), dy = rr(-1.8, .3), dz = rr(-1, 1), n = 0; const want = 5 + ri(Math.max(1, maxSeg - 5));
+    if (v0 < 0 || nv + want * 2 + 4 > MV || nt + want * 4 + 4 > MT) return;
+    { const l = Math.hypot(dx, dy, dz) || 1; dx /= l; dy /= l; dz /= l; } cpath[n++] = v0; vcr[v0] = 1;
+    while (n <= want) { const cur = cpath[n - 1]; let best = -1, bs = .15, bx = 0, by = 0, bz = 0;
+      for (let q = adjS[cur]; q < adjS[cur + 1] && best > -2; q++) { const t = adjT[q], o = t * 3, k = gk[tg[t]]; if (k === K_UNDER || k === K_CRACK || k === K_GROOVE) { best = -2; break; }
+        for (let e = 0; e < 3; e++) { const u = ti[o + e]; if (u === cur || vcr[u] || vy[u] < .07 * H || chunks[vch[u]].plate) continue; let ex = vx[u] - vx[cur], ey = vy[u] - vy[cur], ez = vz[u] - vz[cur]; const l = Math.hypot(ex, ey, ez) || 1; ex /= l; ey /= l; ez /= l;
+          const sc = ex * dx + ey * dy + ez * dz + (hsh(u, sd + n) - .5) * .8; if (sc > bs) { bs = sc; best = u; bx = ex; by = ey; bz = ez; } } }
+      if (best < 0) break; cpath[n++] = best; vcr[best] = 1; dx = dx * .5 + bx * .5; dy = dy * .5 + by * .5 - .06; dz = dz * .5 + bz * .5; const l = Math.hypot(dx, dy, dz) || 1; dx /= l; dy /= l; dz /= l; }
+    if (n < 4) { for (let i = 0; i < n; i++) vcr[cpath[i]] = 0; return; }
+    for (let i = 0; i < n; i++) { cR[i] = cM[i] = cpath[i]; }
+    for (let i = 1; i < n - 1; i++) { const v = cpath[i], pv = cpath[i - 1], nx_ = cpath[i + 1], Nx = sx[v], Ny = sy_[v], Nz = sz[v], X = vx[v], Y = vy[v], Z = vz[v];
+      let e1x = vx[nx_] - X, e1y = vy[nx_] - Y, e1z = vz[nx_] - Z, dt = e1x * Nx + e1y * Ny + e1z * Nz; e1x -= Nx * dt; e1y -= Ny * dt; e1z -= Nz * dt; let l = Math.hypot(e1x, e1y, e1z) || 1; e1x /= l; e1y /= l; e1z /= l;
+      const e2x = Ny * e1z - Nz * e1y, e2y = Nz * e1x - Nx * e1z, e2z = Nx * e1y - Ny * e1x, qx = vx[pv] - X, qy = vy[pv] - Y, qz = vz[pv] - Z;
+      let php = Math.atan2(qx * e2x + qy * e2y + qz * e2z, qx * e1x + qy * e1y + qz * e1z); if (php < 0) php += TAU;
+      const vr = nv++, vm = nv++; cR[i] = vr; cM[i] = vm;
+      for (let q = adjS[v]; q < adjS[v + 1]; q++) { const t = adjT[q], o = t * 3, a = ti[o], b = ti[o + 1], c = ti[o + 2], mx = (vx[a] + vx[b] + vx[c]) / 3 - X, my = (vy[a] + vy[b] + vy[c]) / 3 - Y, mz = (vz[a] + vz[b] + vz[c]) / 3 - Z;
+        let ph = Math.atan2(mx * e2x + my * e2y + mz * e2z, mx * e1x + my * e1y + mz * e1z); if (ph < 0) ph += TAU; if (ph > php) { if (a === v) ti[o] = vr; else if (b === v) ti[o + 1] = vr; else if (c === v) ti[o + 2] = vr; } }
+      let tx = vx[nx_] - vx[pv], ty = vy[nx_] - vy[pv], tz = vz[nx_] - vz[pv], lx_ = Ny * tz - Nz * ty, ly_ = Nz * tx - Nx * tz, lz_ = Nx * ty - Ny * tx; l = Math.hypot(lx_, ly_, lz_) || 1; const wi = w * (i === 1 || i === n - 2 ? .55 : 1) / l, di = dep * (i === 1 || i === n - 2 ? .6 : 1);
+      vx[vr] = X - lx_ * wi; vy[vr] = Y - ly_ * wi; vz[vr] = Z - lz_ * wi; vx[vm] = X - Nx * di; vy[vm] = Y - Ny * di; vz[vm] = Z - Nz * di; vx[v] = X + lx_ * wi; vy[v] = Y + ly_ * wi; vz[v] = Z + lz_ * wi;
+      sx[vr] = sx[vm] = Nx; sy_[vr] = sy_[vm] = Ny; sz[vr] = sz[vm] = Nz; vsh[vr] = vsh[v]; vsh[vm] = vsh[v] * .3; vdu[vr] = vdu[v] = vdu[v] * .5; vdu[vm] = 0; vch[vr] = vch[vm] = vch[v]; vin[vr] = vin[vm] = 0; varr[vr] = varr[vm] = 0; vcr[vr] = vcr[vm] = 1; lc[vr] = lc[vm] = 1; }
+    for (let i = 0; i + 1 < n; i++) { const a = cpath[i], b = cpath[i + 1]; addTri(a, cM[i], cM[i + 1], gC); addTri(a, cM[i + 1], b, gC); addTri(cM[i], cR[i], cR[i + 1], gC); addTri(cM[i], cR[i + 1], cM[i + 1], gC); }
+  }
+  // farthest point of the rock along a horizontal ray from the axis at height y0, read off the plane lists
+  function outline(th, y0, D) {
+    const dx = Math.cos(th), dz = Math.sin(th); let best = 0;
+    for (let c = 0; c < chunks.length; c++) { if (!chunks[c].on || chunks[c].plate) continue; const L = chunks[c].L; let t0 = -1e9, t1 = 1e9;
+      for (let i = 0; i < L.length; i += 5) { if (D === 0 && (L[i + 4] & FINE)) continue; const dn = L[i] * dx + L[i + 2] * dz, q = L[i + 3] - L[i + 1] * y0;
+        if (dn > 1e-9) { const t = q / dn; if (t < t1) t1 = t; } else if (dn < -1e-9) { const t = q / dn; if (t > t0) t0 = t; } else if (q < 0) { t1 = -1e9; break; } }
+      if (t1 > t0 && t1 > best) best = t1; }
+    return best;
+  }
+
+  /* three scales: a slow warp so no face is a true plane and no outline a ruled line; fracture steps on the
+     faces (terraces a centimetre or two high - fresh rock breaks in steps, it does not ripple); and bites out
+     of the arrises, most of them small and a few deep, which is what a chipped edge is. */
+  function roughen(v0, so, f1, f2, fa, aw, at, as, ab, al) {
+    for (let v = v0; v < nv; v++) { const p = vpin[v]; if (!p) continue; const X = vx[v], Y = vy[v], Z = vz[v];
+      let dsp = (n3(X * f2, Y * f2 + so, Z * f2) - .5) * 2 * aw + (n3(X * f1 * 2.3 + 7, Y * f1 * 2.3, Z * f1 * 2.3 + so) - .5) * 2 * as;
+      if (varr[v]) { dsp -= ss(.46, .82, n3(X * fa + so, Y * fa + 3, Z * fa)) * ab; const q = al * p; vx[v] += (n3(X * fa + 11, Y * fa + so, Z * fa) - .5) * 2 * q; vy[v] += (n3(X * fa, Y * fa + 17, Z * fa + so) - .5) * 2 * q; vz[v] += (n3(X * fa + so, Y * fa, Z * fa + 23) - .5) * 2 * q; }
+      else { const q = n3(X * f1 + so, Y * f1, Z * f1); dsp += (q < .36 ? -1 : q > .64 ? 1 : 0) * at; }
+      dsp *= p; vx[v] += sx[v] * dsp; vy[v] += sy_[v] * dsp; vz[v] += sz[v] * dsp; }
+  }
+  // occlusion from the other solids, in the space the planes were written in: dark where one stands close
+  // beside another and below its top (the gap of a split, the joint between two blocks), not on the lips above
+  function occlude(D, R) {
+    const prox = .24 * R;
+    for (let v = 0; v < nv; v++) vsh[v] = 1;
+    if (chunks.length > 1) for (let ci = 0; ci < chunks.length; ci++) { const c = chunks[ci]; if (!c.on || c.plate) continue;
+      for (let cj = 0; cj < chunks.length; cj++) { if (cj === ci || !chunks[cj].on || chunks[cj].plate) continue; const L = chunks[cj].L, nL = L.length, tp = chunks[cj].top;
+        for (let v = c.v0; v < c.v1; v++) { const X = vx[v], Y = vy[v], Z = vz[v]; let s = -1e9;
+          for (let i = 0; i < nL; i += 5) { if (D === 0 && (L[i + 4] & FINE)) continue; const q = L[i] * X + L[i + 1] * Y + L[i + 2] * Z - L[i + 3]; if (q > s) { s = q; if (s > prox) break; } }
+          if (s < prox) { const below = tp < 0 ? 1 : ss(-.02 * R, .2 * R, L[tp + 3] - (L[tp] * X + L[tp + 1] * Y + L[tp + 2] * Z)); vsh[v] *= 1 - (1 - ss(-.03 * R, prox, s)) * .76 * Math.max(.3, below); } } } }
+  }
+  // shade: concavity, undercut, contact with the ground, mottling; and where the dust lies
+  function shadeDust(sd, R, dlo) {
+    gather(0, 0);
+    { const fq = 2.6 / R + .9, fd = 1.6 / R + .5, so = sd * .61;
+      for (let v = 0; v < nv; v++) { if (!lc[v]) { vdu[v] = 0; continue; } const X = vx[v], Y = vy[v], Z = vz[v], ex = lx[v] / lc[v] - X, ey = ly[v] / lc[v] - Y, ez = lz[v] / lc[v] - Z, el = Math.hypot(ex, ey, ez) + 1e-6;
+        const conc = (ex * sx[v] + ey * sy_[v] + ez * sz[v]) / (el + .04 * R);          // +1 pit floor, -1 spike
+        let s = 1 + cl(conc * -.8, -.5, .3);
+        const ny = sy_[v]; s *= ny < 0 ? .86 + .5 * ny : .86 + .22 * ny;
+        s *= mix(.5, 1, ss(-.03 * R, .22 * R, Y));
+        s *= (.76 + .48 * n3(X * fq + so, Y * fq, Z * fq)) * (.86 + .28 * hsh(sd + 11, v));
+        vsh[v] *= s;
+        vdu[v] = ss(dlo, dlo + .16, ny + conc * .35 + (n3(X * fd + so, Y * fd + 9, Z * fd) - .5) * .5) * (varr[v] ? .55 : 1); } }
+  }
+  // emit the solids, one fracture face at a time. Returns the batch's new vertex count.
+  function emitSolids(d, x, y, z, n0, max, sd, R, PG, rg, dtone, smoothK, flatK) {
+    let o = n0 * ST, nOut = n0, i0 = 0, axis = 0, cr = 0, sr = 0, uo = 0, vo = 0, lay = 0, dusty = false;
+    const put = (X, Y, Z, nx, ny, nz, s) => { const p = axis === 0 ? Z : X, r = axis === 1 ? Z : Y; d[o] = x + X; d[o + 1] = y + Y; d[o + 2] = z + Z;
+      if (dusty) { d[o + 3] = X * KUV + uo; d[o + 4] = Z * KUV + vo; } else { d[o + 3] = p * cr - r * sr + uo; d[o + 4] = p * sr + r * cr + vo; }
+      d[o + 5] = lay; d[o + 6] = nx; d[o + 7] = ny; d[o + 8] = nz; d[o + 9] = s; d[o + 10] = 0; d[o + 11] = 0; o += ST; nOut++; };
+    const flatTri = (ax_, ay_, az_, bx, by, bz, cx, cy, cz, s0, s1, s2) => { let nx = (by - ay_) * (cz - az_) - (bz - az_) * (cy - ay_), ny = (bz - az_) * (cx - ax_) - (bx - ax_) * (cz - az_), nz = (bx - ax_) * (cy - ay_) - (by - ay_) * (cx - ax_); const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
+      put(ax_, ay_, az_, nx, ny, nz, s0); put(bx, by, bz, nx, ny, nz, s1); put(cx, cy, cz, nx, ny, nz, s2); };
+    for (let g = 0; g < ng; g++) {
+      const i1 = gcnt[g]; if (i1 === i0) continue;
+      const k = gk[g], st = ++stampN, fk = k === K_GROOVE ? 1 : 0, pk = k === K_GROOVE ? 0 : k === K_CHIP ? Math.max(.8, flatK) : flatK, pnx = gnx[g], pny = gny[g], pnz = gnz[g], tone = gtone[g] * rg, noDust = k === K_UNDER || k === K_CRACK || k === K_GROOVE;
+      const anx = Math.abs(gnx[g]), any = Math.abs(gny[g]), anz = Math.abs(gnz[g]); axis = any >= anx && any >= anz ? 1 : anx >= anz ? 0 : 2; cr = Math.cos(gur[g]) * KUV; sr = Math.sin(gur[g]) * KUV; uo = guo[g]; vo = gvo[g];
+      for (let i = i0; i < i1; i++) { const t = order[i], q = t * 3, a = ti[q], b = ti[q + 1], c = ti[q + 2], ux = vx[b] - vx[a], uy = vy[b] - vy[a], uz = vz[b] - vz[a], wx = vx[c] - vx[a], wy = vy[c] - vy[a], wz = vz[c] - vz[a];
+        const nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+        if (stamp[a] !== st) { stamp[a] = st; ax[a] = ay[a] = az[a] = 0; } if (stamp[b] !== st) { stamp[b] = st; ax[b] = ay[b] = az[b] = 0; } if (stamp[c] !== st) { stamp[c] = st; ax[c] = ay[c] = az[c] = 0; }
+        ax[a] += nx; ay[a] += ny; az[a] += nz; ax[b] += nx; ay[b] += ny; az[b] += nz; ax[c] += nx; ay[c] += ny; az[c] += nz; }
+      for (let i = i0; i < i1; i++) {
+        const t = order[i], q = t * 3, pitted = tfl[t] === 1; if (nOut + (pitted ? 45 : 3) > max) { if (pitted) continue; break; }
+        const a = ti[q], b = ti[q + 1], c = ti[q + 2];
+        if ((vy[a] < -.3 * R && vy[b] < -.3 * R && vy[c] < -.3 * R) || (vin[a] && vin[a] === vin[b] && vin[b] === vin[c])) continue;
+        const Ax = vx[a], Ay = vy[a], Az = vz[a], Bx = vx[b], By = vy[b], Bz = vz[b], Cx = vx[c], Cy = vy[c], Cz = vz[c];
+        let fx_ = (By - Ay) * (Cz - Az) - (Bz - Az) * (Cy - Ay), fy_ = (Bz - Az) * (Cx - Ax) - (Bx - Ax) * (Cz - Az), fz_ = (Bx - Ax) * (Cy - Ay) - (By - Ay) * (Cx - Ax); const fl = Math.hypot(fx_, fy_, fz_); if (fl < 1e-9) continue; fx_ /= fl; fy_ /= fl; fz_ /= fl;
+        dusty = !noDust && !pitted && vdu[a] + vdu[b] + vdu[c] > 1.5 && fy_ > .52; lay = dusty ? PG[2] : PG[0];
+        const tj = tone * (.95 + .1 * hsh(sd + 5, t)), dk = dusty ? 1 / PG[4] : 1;
+        let n0x, n0y, n0z, n1x, n1y, n1z, n2x, n2y, n2z, s0, s1, s2;
+        for (let cI = 0; cI < 3; cI++) { const v = cI === 0 ? a : cI === 1 ? b : c; let l = Math.hypot(ax[v], ay[v], az[v]) || 1, nx = ax[v] / l, ny = ay[v] / l, nz = az[v] / l;
+          if (smoothK > 0) { const sk = smoothK * ss(.6, .9, nx * sx[v] + ny * sy_[v] + nz * sz[v]); nx += (sx[v] - nx) * sk; ny += (sy_[v] - ny) * sk; nz += (sz[v] - nz) * sk; }
+          if (fk > 0) { nx += (fx_ - nx) * fk; ny += (fy_ - ny) * fk; nz += (fz_ - nz) * fk; }
+          else if (pk > 0 && nx * pnx + ny * pny + nz * pnz > .5) { nx += (pnx - nx) * pk; ny += (pny - ny) * pk; nz += (pnz - nz) * pk; }
+          l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
+          const s = vsh[v] * mix(tj, dtone, noDust ? 0 : vdu[v]) * dk;
+          if (cI === 0) { n0x = nx; n0y = ny; n0z = nz; s0 = s; } else if (cI === 1) { n1x = nx; n1y = ny; n1z = nz; s1 = s; } else { n2x = nx; n2y = ny; n2z = nz; s2 = s; } }
+        if (!pitted) { put(Ax, Ay, Az, n0x, n0y, n0z, s0); put(Bx, By, Bz, n1x, n1y, n1z, s1); put(Cx, Cy, Cz, n2x, n2y, n2z, s2); continue; }
+        // a zap pit: a six-sided cone let into the triangle about its incentre
+        { const ea = Math.hypot(Cx - Bx, Cy - By, Cz - Bz), eb = Math.hypot(Ax - Cx, Ay - Cy, Az - Cz), ec = Math.hypot(Bx - Ax, By - Ay, Bz - Az), pe = ea + eb + ec, Ix = (ea * Ax + eb * Bx + ec * Cx) / pe, Iy = (ea * Ay + eb * By + ec * Cy) / pe, Iz = (ea * Az + eb * Bz + ec * Cz) / pe;
+          const h1 = hsh(sd + 3, t), h2 = hsh(sd + 4, t), rho = Math.min(fl / pe * .72, .03 + .07 * h1 * h1) * (.7 + .3 * h2), dep = rho * (.6 + .5 * h2), sm = (s0 + s1 + s2) / 3;
+          let dAx = Ax - Ix, dAy = Ay - Iy, dAz = Az - Iz, dBx = Bx - Ix, dBy = By - Iy, dBz = Bz - Iz, dCx = Cx - Ix, dCy = Cy - Iy, dCz = Cz - Iz, l = rho / (Math.hypot(dAx, dAy, dAz) || 1); dAx *= l; dAy *= l; dAz *= l; l = rho / (Math.hypot(dBx, dBy, dBz) || 1); dBx *= l; dBy *= l; dBz *= l; l = rho / (Math.hypot(dCx, dCy, dCz) || 1); dCx *= l; dCy *= l; dCz *= l;
+          const H6 = pitH; H6[0] = Ix + dAx; H6[1] = Iy + dAy; H6[2] = Iz + dAz; H6[6] = Ix + dBx; H6[7] = Iy + dBy; H6[8] = Iz + dBz; H6[12] = Ix + dCx; H6[13] = Iy + dCy; H6[14] = Iz + dCz;
+          for (let e = 0; e < 3; e++) { const p = e * 6, q2 = ((e + 1) % 3) * 6; let mx2 = H6[p] + H6[q2] - 2 * Ix, my3 = H6[p + 1] + H6[q2 + 1] - 2 * Iy, mz2 = H6[p + 2] + H6[q2 + 2] - 2 * Iz; const l2 = rho / (Math.hypot(mx2, my3, mz2) || 1); H6[p + 3] = Ix + mx2 * l2; H6[p + 4] = Iy + my3 * l2; H6[p + 5] = Iz + mz2 * l2; }
+          const Fx = Ix - fx_ * dep, Fy = Iy - fy_ * dep, Fz = Iz - fz_ * dep, sR = sm * 1.1, sW = sm * .68, sF = sm * .4;
+          const PX = [Ax, Bx, Cx], PY = [Ay, By, Cy], PZ = [Az, Bz, Cz], NX = [n0x, n1x, n2x], NY = [n0y, n1y, n2y], NZ = [n0z, n1z, n2z], SS = [s0, s1, s2];
+          for (let e = 0; e < 3; e++) { const f = (e + 1) % 3, hp = e * 6, hm = hp + 3, hq = f * 6;
+            put(PX[e], PY[e], PZ[e], NX[e], NY[e], NZ[e], SS[e]); put(PX[f], PY[f], PZ[f], NX[f], NY[f], NZ[f], SS[f]); put(H6[hm], H6[hm + 1], H6[hm + 2], fx_, fy_, fz_, sR);
+            put(PX[e], PY[e], PZ[e], NX[e], NY[e], NZ[e], SS[e]); put(H6[hm], H6[hm + 1], H6[hm + 2], fx_, fy_, fz_, sR); put(H6[hp], H6[hp + 1], H6[hp + 2], fx_, fy_, fz_, sR);
+            put(PX[f], PY[f], PZ[f], NX[f], NY[f], NZ[f], SS[f]); put(H6[hq], H6[hq + 1], H6[hq + 2], fx_, fy_, fz_, sR); put(H6[hm], H6[hm + 1], H6[hm + 2], fx_, fy_, fz_, sR); }
+          for (let e = 0; e < 6; e++) { const p = e * 3, q2 = ((e + 1) % 6) * 3; flatTri(H6[p], H6[p + 1], H6[p + 2], H6[q2], H6[q2 + 1], H6[q2 + 2], Fx, Fy, Fz, sW, sW, sF); } }
+      }
+      i0 = i1;
+    }
+    return nOut;
+  }
+
+  function boulder(B, x, y, z, radius, seed, sy, detail, ground) {
+    const R = cl(+radius || 1, .05, 50), D = detail === undefined ? 2 : cl(detail | 0, 0, 2), SY = cl(+sy || .8, .3, 1.6), H = R * SY * 1.15;
+    const sd = seed | 0, PG = pages(), d = B.d, max = Math.min(B.max || d.length / ST, B.n + count(R, D)), nStart = B.n;
+    // --- what kind of rock
+    seedTo(sd, 1);
+    let ar = 0; { let q = rnd(); for (ar = 0; ar < 7; ar++) { q -= ARCH_W[ar]; if (q < 0) break; } } if (FORCE >= 0) ar = FORCE;
+    let W = rnd(); W = W * W * .9; const rockTone = rr(.86, 1.14), tilt = rr(.4, 1) * Math.atan(.16 * H / (.6 * R));
+    const fil = rr(.6, 1.25), bankA = rr(0, TAU), nFragR = rnd(), pitR = rnd(), dustR = rnd(), spallA = rr(0, TAU), plR = rnd(), crR = rnd();
+    chunks.length = 0; seedTo(sd, 2);
+    if (ar === 1) archRound(R, H, W, tilt); else if (ar === 2) archSlab(R, H, W); else if (ar === 3) archSplit(R, H, W, tilt, sd, D);
+    else if (ar === 5) archShards(R, H, W, tilt); else if (ar === 6) archOutcrop(R, H, W); else if (ar === 7) archRubble(R, H, W, tilt); else archBlock(R, H, W, tilt, ar === 4 ? spallA : undefined);
+    if (ar === 1 || ar === 6) W = Math.max(W, .55);
+    const litter = ar === 4;
+    // --- allowances (triangles)
+    const capT = Math.floor(count(R, D) / 3), NB = D === 2 ? 16 : D === 1 ? 10 : 0, filT = NB * 4;
+    const nFrag = D === 2 ? (litter ? 8 + ((nFragR * 7) | 0) : (nFragR * 5.5) | 0) : D === 1 ? (litter ? 4 : (nFragR * 2.6) | 0) : 0;
+    const fragT = nFrag * (D === 2 ? 15 : 12), nPit = D === 2 ? Math.min((.13 * capT / 14) | 0, Math.round((3 + pitR * 6) * (.6 + W))) : 0;
+    const nPlate = W > .7 ? 0 : D === 2 ? 1 + ((plR * 2.6) | 0) : D === 1 ? (plR < .6 ? 1 : 0) : 0, nCrack = D === 2 ? Math.min((.11 * capT / 40) | 0, 1 + ((crR * 2.6) | 0)) : 0, PLT = 26, CRT = 40;
+    const chT = capT - filT - fragT - nPit * 14 - nPlate * PLT - nCrack * CRT;
+    // --- carve every solid first, so that when they are meshed each knows what the others hide
+    nv = 0; nt = 0; ng = 0;
+    let shareSum = 0, plLeft = nPlate; for (let ci = 0; ci < chunks.length; ci++) shareSum += chunks[ci].share;
+    for (let ci = 0; ci < chunks.length; ci++) {
+      const c = chunks[ci], L = c.L, w = c.w, plate = c.plate; seedTo(sd, 100 + ci);
+      const chips = plate ? 0 : D === 2 ? Math.round((8 + 10 * rnd()) * c.chip * (.6 + c.share * .4)) : D === 1 ? Math.round((3 + 4 * rnd()) * c.chip * c.share) : 0;
+      carve(L, R * 4, -.32 * R, D, chips, c.rad * .14, c.cx, c.cy, c.cz, .06 * H, plate ? 0 : D === 2 ? .6 : D === 1 ? .25 : 0);
+      c.faces = faces; c.npv = npv; c.P = new Float64Array(npv * 3); for (let i = 0; i < npv; i++) { c.P[i * 3] = px[i]; c.P[i * 3 + 1] = py[i]; c.P[i * 3 + 2] = pz[i]; }
+      if (!faces.length) c.on = false;
+      c.raw = 0; for (let fi = 0; fi < faces.length; fi++) { const f = faces[fi], n = f.loop.length; if (f.g >= 0 && (L[f.g * 5 + 4] & 15) !== K_BOTTOM) c.raw += n < 5 || D === 0 ? n - 2 : n; }
+      /* plates: a remnant of an older skin standing a few centimetres proud of a face, with a stepped edge. Each is
+         its own thin solid - the face moved out, its neighbours moved in - laid over the block. */
+      if (!plate && plLeft > 0 && c.share >= .4 && w < .7) {
+        const want = Math.min(plLeft, Math.max(1, Math.round(nPlate * c.share / shareSum + .3)));
+        for (let made = 0, tries = 0; made < want && tries < 12; tries++) {
+          const f = faces[ri(faces.length)], g = f.g, dlr = rr(.07, .12), tk = rnd() < .6 ? rr(.84, .95) : rr(1.05, 1.14); if (g < 0) continue; const k = L[g * 5 + 4] & 15; if (k !== K_SIDE && k !== K_SHLD && k !== K_FRESH) continue;
+          const lp = f.loop, n = lp.length; let mx = 0, my = 0, mz = 0; for (let q = 0; q < n; q++) { mx += px[lp[q]]; my += py[lp[q]]; mz += pz[lp[q]]; } mx /= n; my /= n; mz /= n;
+          let far = 0; for (let q = 0; q < n; q++) far = Math.max(far, Math.hypot(px[lp[q]] - mx, py[lp[q]] - my, pz[lp[q]] - mz)); if (far < c.rad * .32 || my < .14 * H) continue;
+          const gi = g * 5, nx = L[gi], ny = L[gi + 1], nz = L[gi + 2], dd = L[gi + 3], dl = far * dlr + .02 * R, Lp = [nx, ny, nz, dd + dl, K_SIDE, -nx, -ny, -nz, -(dd - dl * 1.2 - .03 * R), K_BOTTOM];
+          for (let j = 0; j < L.length; j += 5) { if (j === gi) continue; const kj = L[j + 4] & 15, u = rnd(); if (kj === K_BOTTOM || kj === K_CHIP) continue; const dt = L[j] * nx + L[j + 1] * ny + L[j + 2] * nz;
+            if (dt > .86) Lp.push(L[j], L[j + 1], L[j + 2], L[j + 3] + dl, K_SIDE); else if (dt > -.5) Lp.push(L[j], L[j + 1], L[j + 2], L[j + 3] - far * (.16 + .34 * u), K_CHIP); else Lp.push(L[j], L[j + 1], L[j + 2], L[j + 3], K_CHIP); }
+          chunks.push({ L: Lp, cx: mx, cy: my, cz: mz, rad: c.rad, w, share: 0, chip: 0, v0: 0, v1: 0, t0: 0, t1: 0, g0: 0, top: -1, on: true, plate: true, tone: tk, so: sd * .37 + ci * 5.1, el: 1, par: ci, parG: g, faces: null, P: null, npv: 0, raw: 0 });
+          made++; plLeft--; }
+      }
+    }
+    /* the allowance. A solid cannot be drawn with fewer triangles than its faces need, so if the solids together
+       need more than there is, the least of them goes (never the first); what is left over is shared out. */
+    let rawSum = 0; for (let ci = 0; ci < chunks.length; ci++) if (chunks[ci].on && !chunks[ci].plate) rawSum += chunks[ci].raw;
+    for (let guard = 0; rawSum > chT && guard < 8; guard++) { let w = -1; for (let ci = 1; ci < chunks.length; ci++) { const c = chunks[ci]; if (c.on && !c.plate && (w < 0 || c.share <= chunks[w].share)) w = ci; }
+      if (w < 0) break; chunks[w].on = false; rawSum -= chunks[w].raw; for (let ci = 0; ci < chunks.length; ci++) if (chunks[ci].plate && chunks[ci].par === w) chunks[ci].on = false; }
+    shareSum = 0; for (let ci = 0; ci < chunks.length; ci++) if (chunks[ci].on && !chunks[ci].plate) shareSum += chunks[ci].share;
+    const spare = Math.max(0, chT - rawSum);
+    // --- mesh each
+    for (let ci = 0; ci < chunks.length; ci++) {
+      const c = chunks[ci], L = c.L, w = c.w, plate = c.plate;
+      c.v0 = c.v1 = nv; c.t0 = c.t1 = nt; c.g0 = ng; c.top = -1; if (!c.on) continue;
+      const capC = plate ? PLT : c.raw + Math.floor(spare * c.share / (shareSum || 1)), nG = L.length / 5; if (ng + nG >= MG - 2) { c.on = false; continue; }
+      const ptone = plate ? gtone[chunks[c.par].g0 + c.parG] * c.tone : 1;
+      for (let i = 0; i < nG; i++) { const g = ng + i, kk = L[i * 5 + 4], k = kk & 15; gnx[g] = L[i * 5]; gny[g] = L[i * 5 + 1]; gnz[g] = L[i * 5 + 2]; gk[g] = k; gch[g] = ci; if (k === K_TOP && c.top < 0) c.top = i * 5;
+        const h = hsh(sd * 131 + ci, i), base = k === K_TOP ? 1.06 : k === K_SIDE ? 1 : k === K_SHLD ? 1.08 : k === K_CHIP ? 1.3 : k === K_FRESH ? 1.4 : k === K_CRACK ? 1.1 : .75;
+        gtone[g] = plate ? ptone * (k === K_CHIP ? .72 : .96 + .08 * h) : (kk & COMP) ? gtone[ng + (kk >> 6)] * (.9 + .2 * h) : rockTone * mix(base, .88 + (base - 1) * .35, w) * (1 + (h - .5) * mix(.56, .3, w));
+        guo[g] = hsh(sd + 7, g) * 9; gvo[g] = hsh(sd + 8, g) * 9; gur[g] = hsh(sd + 9, g) * TAU; }
+      ng += nG;
+      faces = c.faces; npv = c.npv; for (let i = 0; i < npv; i++) { px[i] = c.P[i * 3]; py[i] = c.P[i * 3 + 1]; pz[i] = c.P[i * 3 + 2]; }
+      const area = meshChunk(ci, L, c.g0, D === 0 ? 1e9 : R * .3, plate ? 0 : .08 * R, D);
+      let el = R;
+      if (D === 0) { /* far rocks are drawn as carved, face for face */ }
+      else if (plate) { el = chunks[c.par].el; if (nt - c.t0 > capC) { nv = c.v0; nt = c.t0; c.on = false; } else subdivide(c.t0, el * 1.25, el * .8, capC, -.03 * R); }
+      else { const Lm = Math.max(D === 2 ? .06 : .12, Math.sqrt(area / (.17 * Math.max(8, capC)))); subdivide(c.t0, Lm, Lm * .52, capC, -.03 * R); el = Math.min(Math.sqrt(sL2), 1.5 * Math.sqrt(area / Math.max(1, nt - c.t0)), c.rad * .3); }
+      c.v1 = nv; c.t1 = nt; c.el = el; if (!c.on || D === 0) continue;
+      // --- roughen. Old rock relaxes first, so its arrises round over.
+      for (let v = c.v0; v < nv; v++) vpin[v] = vy[v] < -.04 * R ? 0 : 1;
+      for (let t = c.t0; t < nt; t++) { const k = gk[tg[t]]; if (k === K_CRACK || k === K_UNDER) { const o = t * 3; vpin[ti[o]] = Math.min(vpin[ti[o]], .25); vpin[ti[o + 1]] = Math.min(vpin[ti[o + 1]], .25); vpin[ti[o + 2]] = Math.min(vpin[ti[o + 2]], .25); } }
+      const its = plate ? 0 : w > .3 ? (D === 2 ? 1 + (w > .55 ? 1 : 0) + (w > .8 ? 1 : 0) : 1) : 0, lam = mix(.3, .62, w);
+      for (let it = 0; it < its; it++) { gather(c.v0, c.t0); for (let v = c.v0; v < nv; v++) { if (!lc[v]) continue; const k = lam * vpin[v]; vx[v] += (lx[v] / lc[v] - vx[v]) * k; vy[v] += (ly[v] / lc[v] - vy[v]) * k; vz[v] += (lz[v] / lc[v] - vz[v]) * k; } }
+      gather(c.v0, c.t0);
+      const so = plate ? c.so : sd * .37 + ci * 5.1, f1 = .5 / el, f2 = 1.5 / c.rad, fa = .5 / el, aw = c.rad * mix(.022, .04, w), at = plate ? 0 : el * mix(.07, .03, w), as = el * mix(.075, .13, w), ab = el * mix(.3, .14, w), al = el * mix(.14, .08, w) * (plate ? .7 : 1);
+      roughen(c.v0, so, f1, f2, fa, aw, at, as, ab, al);
+    }
+    occlude(D, R);
+    // --- fit: fill the footprint, top at H
+    let mr = 1e-6, my = 1e-6;
+    for (let v = 0; v < nv; v++) { if (vy[v] > -.12 * R) { const r2 = vx[v] * vx[v] + vz[v] * vz[v]; if (r2 > mr) mr = r2; } if (vy[v] > my) my = vy[v]; }
+    const sh = .985 * R / Math.sqrt(mr), sv = H / my, rlim = .985 * R;
+    for (let g = 0; g < ng; g++) { const nx = gnx[g] / sh, ny = gny[g] / sv, nz = gnz[g] / sh, l = Math.hypot(nx, ny, nz) || 1; gnx[g] = nx / l; gny[g] = ny / l; gnz[g] = nz / l; }
+    for (let v = 0; v < nv; v++) { vx[v] *= sh; vz[v] *= sh; if (vy[v] > 0) vy[v] *= sv; const r = Math.hypot(vx[v], vz[v]); if (r > rlim) { vx[v] *= rlim / r; vz[v] *= rlim / r; } }
+    const dustAmt = cl(.14 + W * .7 + (dustR - .5) * .3 + (ar === 6 ? .25 : 0), .05, 1), dlo = mix(.97, .5, dustAmt);
+    shadeDust(sd, R, dlo);
+    // --- cracks: V-grooves cut along a wandering chain of mesh edges
+    if (nCrack && ng < MG - 1) { const nv0 = nv, gC = ng++; gk[gC] = K_GROOVE; gnx[gC] = 0; gny[gC] = 1; gnz[gC] = 0; gch[gC] = 0; gtone[gC] = rockTone * .55; guo[gC] = gvo[gC] = gur[gC] = 0;
+      buildAdj(); for (let v = 0; v < nv; v++) vcr[v] = 0;
+      for (let i = 0; i < nCrack; i++) { seedTo(sd, 500 + i); crack(gC, nv0, H, cl(.007 + .005 * R, .009, .02) * rr(.7, 1.3), cl(.03 + .012 * R, .035, .075), CRT >> 2, sd); } 
+      for (let v = 0; v < nv; v++) { const r = Math.hypot(vx[v], vz[v]); if (r > rlim) { vx[v] *= rlim / r; vz[v] *= rlim / r; } if (vy[v] > H) vy[v] = H; } }
+    // --- zap pits on the nearest size
+    if (nPit) { const step = 7 + (hsh(sd, 51) * 23 | 0), rc = .42 * R; let c0 = -1, c1 = -1;
+      for (let q = 0, v = (hsh(sd, 53) * nv) | 0; q < 40 && c1 < 0; q++, v = (v + 37) % nv) if (vy[v] > .25 * H && !vin[v] && sy_[v] > -.3) { if (c0 < 0) c0 = v; else if (d2(c0, v) > rc * rc * 2.2) c1 = v; }
+      for (let pass = 0, left = nPit; pass < 2 && left > 0; pass++) { if (pass) left = Math.min(left, 1 + (nPit >> 2));
+        for (let q = 0, t = (hsh(sd, 52) * nt) | 0; q < nt && left > 0; q++, t = (t + step) % nt) { const k = gk[tg[t]]; if (tfl[t] || k === K_UNDER || k === K_CRACK || k === K_CHIP || k === K_GROOVE) continue; const o = t * 3, a = ti[o], b = ti[o + 1], c = ti[o + 2];
+          if (vy[a] < .12 * H || vy[b] < .12 * H || vy[c] < .12 * H || (vin[a] && vin[b] && vin[c])) continue;
+          if (!pass && !(c0 >= 0 && d2(c0, a) < rc * rc) && !(c1 >= 0 && d2(c1, a) < rc * rc * .6)) continue;
+          const e0 = Math.sqrt(d2(a, b)), e1 = Math.sqrt(d2(b, c)), e2 = Math.sqrt(d2(c, a)), s = (e0 + e1 + e2) * .5, ar2 = Math.sqrt(Math.max(0, s * (s - e0) * (s - e1) * (s - e2)));
+          if (ar2 / s < .03 || sy_[a] + sy_[b] + sy_[c] < -1) continue; tfl[t] = 1; left--; } } }
+
+    // --- emit the solids, one fracture face at a time
+    const dtone = PG[3] * rr(.9, 1.0) * PG[4], rg = PG[1], smoothK = .85 * ss(.55, .85, W), flatK = .62 * (1 - ss(.15, .55, W));
+    INFO.arch = ar; INFO.weather = W; INFO.rock[0] = B.n; INFO.frags.length = 0;
+    for (let g = 0; g <= ng; g++) gcnt[g] = 0;
+    for (let t = 0; t < nt; t++) gcnt[tg[t] + 1]++;
+    for (let g = 0; g < ng; g++) gcnt[g + 1] += gcnt[g];
+    for (let t = 0; t < nt; t++) order[gcnt[tg[t]]++] = t;
+    let nOut = emitSolids(d, x, y, z, B.n, max, sd, R, PG, rg, dtone, smoothK, flatK), o = nOut * ST;
+    INFO.rock[1] = nOut;
+
+    /* --- the fillet: regolith banked against the foot. A cone, not a shelf: the ground under a rock is seldom
+       level and the rock is only told the height at its centre, so the apron falls away at about the angle of
+       repose and is simply swallowed by whatever ground rises above it. On level ground its outer ring is under
+       the surface and only the ramp against the stone shows. */
+    INFO.fillet[0] = INFO.fillet[1] = nOut;
+    if (NB && nOut + NB * 12 <= max) {
+      const dg = PG[3], y1 = -.1 * R, y2 = -.5 * R, gf = typeof ground === 'function' ? (px_, pz_) => { const g = +ground(px_, pz_) - y; return g === g ? cl(g, -R, R) : 0; } : null;
+      for (let k = 0; k < NB; k++) fe[k] = Math.min(outline(k / NB * TAU, .04 * R, D) * sh, rlim);
+      for (let k = 0; k < NB; k++) if (fe[k] < .2 * R) fe[k] = Math.max(.2 * R, .6 * Math.min(fe[(k + 1) % NB], fe[(k + NB - 1) % NB]));
+      for (let k = 0; k < NB; k++) { const th = k / NB * TAU, c = Math.cos(th), s = Math.sin(th), bk = .5 + .5 * Math.cos(th - bankA), nz = n3(c * 1.4 + sd * .13, s * 1.4, 4.2), e = fe[k];
+        const hb = Math.min(.4 * H, R * fil * (.025 + .09 * bk * bk + .07 * nz) * (ar === 6 ? 1.6 : 1) * (W > .5 ? 1.25 : 1)), r1 = e + hb * (1.7 + 1.1 * nz) + .07 * R + (litter ? .14 * R * (.5 + .5 * Math.cos(th - spallA)) : 0), r0 = Math.max(.3 * e, e - .8 * (r1 - e)), t = (e - r0) / (r1 - r0), r2 = r1 + .22 * R;
+        // told the ground, the apron follows it: banked hb high against the stone, dipping just under the surface a little way out
+        const ge = gf ? gf(x + c * e, z + s * e) : 0, g1 = gf ? gf(x + c * r1, z + s * r1) - .03 * R : y1, g2 = gf ? gf(x + c * r2, z + s * r2) - .22 * R : y2;
+        fb[k] = hb; fr[k] = r1; fx[k] = c * r0; fz[k] = s * r0; fy[k] = Math.min(.7 * H, (ge + hb - g1 * t) / (1 - t));
+        fx[NB + k] = c * r1; fz[NB + k] = s * r1; fy[NB + k] = g1; fu[NB + k] = r1; fu[k] = r1 - Math.hypot(r1 - r0, fy[k] - g1); fu[2 * NB + k] = r1 + Math.hypot(r2 - r1, g1 - g2); fc[k] = c; fs_[k] = s;
+        fx[2 * NB + k] = c * r2; fz[2 * NB + k] = s * r2; fy[2 * NB + k] = g2; }
+      for (let j = 0; j < 3; j++) for (let k = 0; k < NB; k++) { const i = j * NB + k, kp = j * NB + (k + 1) % NB, km = j * NB + (k + NB - 1) % NB, ju = Math.max(0, j - 1) * NB + k, jd = Math.min(2, j + 1) * NB + k;
+        const tx = fx[kp] - fx[km], ty = fy[kp] - fy[km], tz = fz[kp] - fz[km], px_ = fx[jd] - fx[ju], py_ = fy[jd] - fy[ju], pz_ = fz[jd] - fz[ju];
+        let nx = ty * pz_ - tz * py_, ny = tz * px_ - tx * pz_, nz = tx * py_ - ty * px_; if (ny < 0) { nx = -nx; ny = -ny; nz = -nz; } let l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l; const up = j === 0 ? .35 : j === 1 ? .8 : 1; nx *= 1 - up; nz *= 1 - up; ny += (1 - ny) * up; l = Math.hypot(nx, ny, nz) || 1; fnx[i] = nx / l; fny[i] = ny / l; fnz[i] = nz / l; }
+      const fv = (i, s) => { const wx = x + fx[i], wz = z + fz[i], k = i % NB; d[o] = wx; d[o + 1] = y + fy[i]; d[o + 2] = wz; d[o + 3] = (x + fc[k] * fu[i]) / 3.2; d[o + 4] = (z + fs_[k] * fu[i]) / 3.2; d[o + 5] = PG[2]; d[o + 6] = fnx[i]; d[o + 7] = fny[i]; d[o + 8] = fnz[i]; d[o + 9] = s * dg * (.9 + .2 * n3(wx * .9, 1.7, wz * .9)); d[o + 10] = 0; d[o + 11] = 0; o += ST; nOut++; };
+      for (let j = 0; j < 2; j++) { const sa = j ? .9 : .6, sb = j ? .93 : .9;
+        for (let k = 0; k < NB; k++) { const a = j * NB + k, b = j * NB + (k + 1) % NB, c = a + NB, e = b + NB; fv(a, sa); fv(b, sa); fv(e, sb); fv(a, sa); fv(e, sb); fv(c, sb); } }
+      INFO.fillet[1] = nOut;
+      // fragments: the block's own spalls, lying in the fillet
+      B.n = nOut;
+      for (let i = 0; i < nFrag; i++) {
+        seedTo(sd, 300 + i);
+        const th = litter ? spallA + (rnd() + rnd() + rnd() - 1.5) * 1.5 : rr(0, TAU), tk = ((th / TAU % 1) + 1) % 1 * NB, k0 = Math.floor(tk) % NB, k1 = (k0 + 1) % NB, ft = tk - Math.floor(tk);
+        const e = Math.max(fe[k0], fe[k1]), hb = mix(fb[k0], fb[k1], ft), r1 = Math.max(e + .02, mix(fr[k0], fr[k1], ft));
+        let fs = R * (litter ? .24 : .15) * Math.pow(rnd(), 1.7) + .03 + .02 * R;
+        if (2 * fs >= .245) { fs = Math.min(fs, (rlim - e) / 1.25); if (fs < .06) fs = .06 + .05 * rnd(); }      // anything of size stays inside the footprint
+        const big = 2 * fs >= .245, rho = big ? e + fs * .25 + rnd() * Math.max(0, rlim - e - fs * 1.25) : e + fs * .3 + rnd() * (r1 - e + (litter ? .3 * R : .1 * R));
+        const yf = gf ? gf(x + Math.cos(th) * rho, z + Math.sin(th) * rho) + (rho < r1 ? hb * (1 - (rho - e) / (r1 - e)) : 0) - .01 * R : Math.max(-.012 * R, rho < r1 ? mix(hb, y1, (rho - e) / (r1 - e)) : y1);
+        const n0 = B.n; if (B.n + 60 > max) break;
+        stone(B, x + Math.cos(th) * rho, y + yf, z + Math.sin(th) * rho, fs, sd * 31 + i, rockTone * rr(.95, 1.35), .5, rho < r1 ? .3 : .12, PG);
+        INFO.frags.push([n0, B.n, 2 * fs]);
+      }
+      nOut = B.n;
+    }
+    B.n = nOut;
+    return B.n - nStart;
+  }
+  return { boulder, pebble, count, _info: INFO, _force: v => { FORCE = v === undefined ? -1 : v | 0; } };
+})();
+
+
 /* The Callisto surface: one winding valley from the pod's landing site to ARGUS A-2, built as a heightfield.
    Needs prims.js and chartex.js. Everything here is deterministic. */
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
@@ -4244,12 +4948,14 @@ function buildTerrainMesh() {
   ring(64, 3000, { x0: r2.x0 + 64, x1: r2.x1 - 64, z0: r2.z0 + 64, z1: r2.z1 - 64 });
   return B.d.slice(0, B.n * STRIDE);
 }
-const GK = typeof GEAR !== 'undefined' && !!GEAR.boulder;
+const GK = typeof GEAR !== 'undefined' && !!GEAR.boulder, RK = typeof ROCKS !== 'undefined' && !!ROCKS.boulder;
 function buildPropsMesh(withSentinels) {
   const B = makeBatch(700000);
   { const pr = mulberry(4242); for (let n = 0; n < 1700; n++) { const x = 6 + pr() * (WX - 12), z = 6 + pr() * (WZ - 12), q = pr(), a = pr() * 6.28, j = pr(); if (corridorD(x, z) > 6) continue; const r = .06 + q * q * q * .4, y = groundY(x, z), c = Math.cos(a), sn = Math.sin(a);
+      if (RK) { ROCKS.pebble(B, x, y, z, r, n); continue; }
       B.ball([x, y + r * .25, z], [c * r, r * .2 * (j - .5), sn * r], [0, r * (.5 + j * .5), 0], [-sn * r * (.6 + j * .5), 0, c * r * (.6 + j * .5)], WL.ROCK, .7 + j * .5, 0, 5, 3); } }
   for (const k of W.rocks) { const y = groundY(k.x, k.z), r = k.rad, j = hash2(k.seed, 3);
+    if (RK) { const d = corridorD(k.x, k.z); ROCKS.boulder(B, k.x, y, k.z, r, k.seed, k.sy, d < 1.5 ? 2 : d < 5.5 ? 1 : 0, groundY); continue; }
     if (GK) { GEAR.boulder(B, k.x, y, k.z, r, k.seed, r < 1.1 ? 1 : 0); continue; }
     const c = Math.cos(k.rot), s = Math.sin(k.rot); B.ball([k.x, y + r * k.sy * .35, k.z], [c * r, r * .15 * (j - .5), s * r], [0, r * k.sy, 0], [-s * r * (.7 + j * .4), 0, c * r * (.7 + j * .4)], WL.ROCK, .75 + j * .5, 0, 7, 5); }
   // EVA site
