@@ -140,8 +140,11 @@ button:hover,button:focus-visible{border-color:var(--amber);color:var(--amber)}
 .rsign{display:grid;grid-template-columns:1fr 1fr;gap:6px 26px;margin:10px 0 6px;font-size:11.5px}
 .rsign svg{display:block;height:30px;width:170px;margin:-4px 0 -9px 8px;overflow:visible}
 .rsign .ln{border-top:1px solid #161616;padding-top:1px;width:92%}
-.rrecv{position:relative}.sigbox{position:relative;height:26px;width:92%}
-#sig{position:absolute;left:0;bottom:-10px;width:100%;height:75px;cursor:crosshair;touch-action:none}
+.sigbox{position:relative;height:26px;width:92%;cursor:pointer}
+.sigbox svg{position:absolute;left:18px;bottom:-2px;width:230px;height:44px;overflow:visible;pointer-events:none}
+#sigInk{stroke-dasharray:1;stroke-dashoffset:1}
+.sigbox.signed #sigInk{stroke-dashoffset:0;transition:stroke-dashoffset 1.05s cubic-bezier(.45,.05,.4,1)}
+.sigbox:hover~.ln,.sigbox:focus-visible~.ln{border-top-width:2px}
 .sigx{position:absolute;left:2px;bottom:1px;font-size:12px;pointer-events:none}
 #sigHint{letter-spacing:.1em}
 .rleg{font-size:8.6px;line-height:1.4;letter-spacing:.04em;margin:8px 34px 8px;text-align:justify}
@@ -186,7 +189,7 @@ button:hover,button:focus-visible{border-color:var(--amber);color:var(--amber)}
     <p>Some audio could not be restored. Portions of this supplement remain withheld: <span class="rd" style="width:11em"></span></p>
     <div class="rsign">
       <div>Approved by:<svg viewBox='0 0 170 30'><path d='M4 21 C9 6 15 4 16 14 S10 27 20 15 S27 9 28 17 S34 12 37 15 S44 7 46 16 S55 18 60 11 C64 4 67 22 73 14 S84 9 88 15 S99 16 106 12 S126 17 164 9' fill='none' stroke='#161616' stroke-width='1.5' stroke-linecap='round'/></svg><div class="ln"><span class="rd" style="width:11em"></span><br>Manager, Odyssey Program</div></div>
-      <div class="rrecv">Received by:<div class="sigbox"><canvas id="sig" width="640" height="150" aria-label="Sign here to continue"></canvas><span class="sigx">X</span></div><div class="ln" id="sigHint">Sign above to continue</div></div>
+      <div class="rrecv">Received by:<div class="sigbox" id="sig" role="button" tabindex="0" aria-label="Sign to continue"><svg viewBox='0 0 230 44'><path id="sigInk" pathLength="1" d='M10 34 C12 14 20 4 24 12 S16 40 26 30 C32 24 36 14 40 22 S36 36 44 28 S50 16 54 24 S60 30 64 22 C68 12 72 8 74 18 S70 38 80 26 S92 14 96 24 S104 30 110 22 S118 18 124 25 C140 32 170 20 216 23 M58 10 C74 6 98 7 118 11' fill='none' stroke='#14141a' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/></svg><span class="sigx">X</span></div><div class="ln" id="sigHint">Sign above to continue</div></div>
     </div>
     <div class="rleg">CLASSIFIED DOCUMENT - This material contains information affecting the National Defense of the United States within the meaning of the espionage laws, Title 18, U.S.C., Secs. 793 and 794, the transmission or revelation of which in any manner to an unauthorized person is prohibited by law.</div>
     <div class="rfoot"><span>JSC Form 2011-A</span><div class="cls"><span class="struck">SECRET<svg viewBox='0 0 100 30' preserveAspectRatio='none'><path d='M1 13 C12 9 22 17 34 12 S58 9 70 14 S90 10 99 13 M2 18 C16 21 30 14 46 18 S76 21 98 17 M3 9 C24 6 44 11 62 8 S86 7 97 9 M4 22 C28 24 52 20 96 22' fill='none' stroke='#060606' stroke-width='5.4' stroke-linecap='round' vector-effect='non-scaling-stroke'/></svg></span></div><span>Page 1 of 14</span></div>
@@ -210,7 +213,6 @@ button:hover,button:focus-visible{border-color:var(--amber);color:var(--amber)}
   <div class="menu">
     <button id="mPlay">BEGIN MISSION</button>
     <button id="mFile">MISSION FILE</button>
-    <button id="mVoice">VOICE BANK</button>
     <button id="mSet">SETTINGS</button>
   </div>
 </div>
@@ -11952,20 +11954,14 @@ function buildVoiceBank() {
       box.appendChild(row); } }
 }
 function bindUI() {
-  {   // the sheet is signed for, not clicked through: ink on the recipient line, pen lifted, then the file is yours
-    const c = $('sig'), x = c.getContext('2d'); let down = false, lx = 0, ly = 0, lw = 3, ink = 0, done = false, lt = 0;
-    const at = e => { const r = c.getBoundingClientRect(); return [(e.clientX - r.left) / r.width * c.width, (e.clientY - r.top) / r.height * c.height]; };
-    x.lineCap = x.lineJoin = 'round'; x.strokeStyle = '#14141a';
-    c.addEventListener('pointerdown', e => { if (done) return; down = true; [lx, ly] = at(e); lt = e.timeStamp; lw = 3.4; try { c.setPointerCapture(e.pointerId); } catch (_) {} x.beginPath(); x.arc(lx, ly, 1.5, 0, 7); x.fillStyle = '#14141a'; x.fill(); e.preventDefault(); });
-    c.addEventListener('pointermove', e => { if (!down) return; const [px, py] = at(e), d = Math.hypot(px - lx, py - ly); if (d < 1.2) return;
-      const v = d / Math.max(1, e.timeStamp - lt); lw += (Math.max(1.5, 4.2 - v * 1.5) - lw) * .35;       // a pen thins as it speeds up
-      x.lineWidth = lw; x.beginPath(); x.moveTo(lx, ly); x.lineTo(px, py); x.stroke(); ink += d; lx = px; ly = py; lt = e.timeStamp; });
-    const up = () => { if (!down) return; down = false; if (done || ink < 170) return; done = true; auInit(); $('sigHint').textContent = 'Received ' + new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); setTimeout(() => show('menu'), 850); };
-    c.addEventListener('pointerup', up); c.addEventListener('pointercancel', up);
+  {   // the sheet is signed for, not clicked through: one press on the recipient line and the pen runs
+    const c = $('sig'); let done = false;
+    const sign = () => { if (done) return; done = true; auInit(); c.classList.add('signed'); $('sigHint').textContent = 'Received ' + new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); setTimeout(() => show('menu'), 1700); };
+    c.onclick = sign; c.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') sign(); };
   }
   $('fcover').onclick = () => $('folder').classList.add('open');
   { const fitDoc = () => { const r = document.querySelector('.folder'); if (!r) return; r.style.zoom = 1; r.style.zoom = Math.min(1.3, (innerHeight - 76) / r.offsetHeight, (innerWidth - 30) / r.offsetWidth); }; fitDoc(); addEventListener('resize', fitDoc); }   // the whole sheet stays in view, like a page on a copy stand
-  $('mPlay').onclick = () => show('sel'); $('mFile').onclick = () => show('file'); $('mVoice').onclick = () => { auInit(); buildVoiceBank(); show('voice'); }; $('mSet').onclick = () => show('set');
+  $('mPlay').onclick = () => show('sel'); $('mFile').onclick = () => show('file'); $('mSet').onclick = () => show('set');
   for (const b of document.querySelectorAll('[data-back]')) b.onclick = () => { S = null; show('menu'); };
   $('againBtn').onclick = () => { const i = S.crewIdx; startRun(i, S.mode === 'ship' ? 'ship' : S.over === 'home' || S.over === 'escape' ? undefined : 'impact'); };
   $('resumeBtn').onclick = () => { show('none'); screen = 'play'; cv.requestPointerLock && cv.requestPointerLock(); };
