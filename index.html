@@ -13048,7 +13048,21 @@ function fx(name, o) { if (!AU.ctx) return null; let c = CUT[name]; if (!c) retu
 const panTo = (pan, dest) => { const pn = AU.ctx.createStereoPanner(); pn.pan.value = pan || 0; pn.connect(dest); return pn; };
 { const S0 = Object.assign({}, sfx), jit = a => 1 + (Math.random() - .5) * a;
   // through the boot and up the leg
-  sfx.step = run => { if (!AU.ctx) return; fx('thud', { dest: AU.suit, gain: run ? 1 : .62, rate: (run ? 1.05 : .9) * jit(.16) }) || S0.step(run); };
+  /* A footfall, as it reaches you: nothing through the vacuum, everything up the leg. The heel goes in and the regolith
+     packs under it, which is a short run of separate small crushes and not one hiss; the sole rolls forward onto the toe
+     a moment later; the ankle bearing and the convolute of the boot give; and on a hard landing the pack shifts on its
+     frame. Left and right are not the same foot. On deck plate the heel rings the plate under it instead.
+     o: { foot: -1|1, surf: 'rego'|'deck', land: metres per second coming down, push: true for a take-off } */
+  sfx.step = (run, o) => { if (!AU.ctx) return; o = o || {}; const t = now(), ft = o.foot || 1, land = clamp((o.land || 0) / 3.2, 0, 1.6), g = (run ? 1 : .62) * (1 + land * .7), deck = o.surf === 'deck';
+    const dst = panTo(ft * .14, AU.suit), r0 = (run ? 1.05 : .9) * (ft > 0 ? 1 : .94) * jit(.14) * (1 - land * .12);
+    if (!fx('thud', { dest: dst, gain: g, rate: r0 })) S0.step(run);
+    if (deck) { fx('rung', { dest: dst, gain: g * .34, rate: .5 * jit(.2) }) || tone(dst, t, .09, 'triangle', 230, 180, g * .08); tone(dst, t + .004, .22, 'sine', 96 * jit(.1), 88, g * .12); }
+    else { const n = 4 + ((Math.random() * 4) | 0) + (run ? 2 : 0), span = run ? .07 : .11; for (let i = 0; i < n; i++) { const tt = t + .008 + Math.random() * span; noise(dst, tt, .008 + Math.random() * .016, 'bandpass', 240 + Math.random() * 380, 2.2, g * (.1 + Math.random() * .22)); } }   // the packing of the grains
+    if (!o.push) { const dly = run ? .085 : .16 + Math.random() * .03; fx('thud', { dest: dst, gain: g * .34, rate: r0 * 1.32, at: dly }) || noise(dst, t + dly, .05, 'lowpass', 210, 1, g * .16);   // onto the toe
+      if (!deck) for (let i = 0; i < 3; i++) noise(dst, t + dly + Math.random() * .05, .01 + Math.random() * .012, 'bandpass', 300 + Math.random() * 300, 2.2, g * (.05 + Math.random() * .1)); }
+    if (Math.random() < (run ? .55 : .3) || land > .3) { const f0 = 330 + Math.random() * 260; tone(AU.suit, t + .03 + Math.random() * .08, .05 + Math.random() * .05, 'triangle', f0, f0 * (Math.random() < .5 ? 1.25 : .8), .022 + land * .02); }   // the boot bearing
+    if (land > .25 || (run && Math.random() < .3)) { noise(AU.suit, t + .05, .09, 'lowpass', 130, 1, .22 * (land + .3)); tone(AU.suit, t + .06, .08, 'sine', 84, 60, .14 * (land + .3)); }   // the pack coming down on its frame
+  };
   // no report in vacuum: the slide and the frame through the glove, the recoil up the arm, and the loop clipping
   /* Each sidearm through the glove. tp82: the heavy slam. makarov: lighter and sharper. gyrojet: nothing slams at all,
      the hammer snaps and the rocket's burn is a hiss in the frame that is gone as soon as it leaves. laser: a switch, the
@@ -13269,7 +13283,7 @@ function shipStep(dt, cmd) {
     let lowAhead = p.low; if (!lowAhead) for (const [ax, az] of N4) if (SH.at(Math.floor(p.x + ax * .55), Math.floor(p.z + az * .55)) === ',') lowAhead = true;
     p.eye = lerp(p.eye, lowAhead ? .58 : p.crouch ? 1.02 : 1.66, 1 - Math.exp(-dt * 9));
     const v = Math.hypot(p.vx, p.vz); p.bob += v * dt; p.stepD += v * dt;
-    if (p.stepD > (run ? 2.1 : p.crouch ? 1.2 : 1.5)) { p.stepD = 0; if (p.low) shThud(.25, 300); else if (!p.crouch) { if (AU.ctx) sfx.step(run); shNoise(p.x, p.z, run ? 13 : 5.5); } }
+    if (p.stepD > (run ? 2.1 : p.crouch ? 1.2 : 1.5)) { p.stepD = 0; if (p.low) shThud(.25, 300); else if (!p.crouch) { p.foot = -(p.foot || 1); if (AU.ctx) sfx.step(run, { surf: 'deck', foot: p.foot }); shNoise(p.x, p.z, run ? 13 : 5.5); } }
     p.stam = clamp(p.stam + (run ? -(S.crew.id === 'waldron' ? .09 : .15) : .12) * dt, 0, 1);
     if (cmd.lamp) { p.lamp = !p.lamp; if (AU.ctx) sfx.click(); }
     // what is in reach
@@ -13816,9 +13830,13 @@ const KEI_VARI = [
   { id: 'lancer', w: .14, sc: 1.00, fat: 1.00, hp: 2, spd: 1.05, lit: .85, build: 'lancer', chg: { v: 9, wind: .9, len: 2.6 } },   // on four legs, key couched like a lance
   { id: 'runner', w: .13, sc: .92, fat: 1.00, hp: 2, spd: 1.10, lit: .75, build: 'runner', chg: { v: 7.5, wind: .7, len: 3.2 } },  // upright on two, and it runs like a man
 ];
+/* The burrower takes the place of the two sprinters where its model is present. */
+const BUR_OK = typeof BURROW !== 'undefined' && !!BURROW.create;
+if (BUR_OK) KEI_VARI.splice(KEI_VARI.findIndex(v => v.id === 'lancer'), 2, { id: 'burrower', w: .27, sc: 1, fat: 1, hp: 3, spd: 1, lit: 1, bur: 1 });
 function pickVari(r) { let t = r() * KEI_VARI.reduce((s, v) => s + v.w, 0); for (const v of KEI_VARI) { t -= v.w; if (t <= 0) return v; } return KEI_VARI[0]; }
 function mkFoe(kind, x, z, crew, seed, vid) { const f = { kind, x, z, crew, stun: 0, active: false, hp: 2, lit: 0, heading: Math.PI, spd: 0, seed: seed * 7 + (kind === 'kei' ? 11 : 3), alert: 0, open: 0, vsc: 1, vfat: 1 };
   if (kind === 'kei') { const v = (vid && KEI_VARI.find(q => q.id === vid)) || pickVari(mulberry(f.seed * 17 + 3)); f.v = v; f.hp = v.hp; f.vsc = v.sc; f.vfat = v.fat;
+    if (v.bur) { f.bur = 1; f.rig = BURROW.create(f.seed); f.bs = 'cruise'; f.dep = 1; f.br = 0; f.bt = 0; f.cd = 2.5; f.side = (f.seed & 1) ? 1 : -1; return f; }
     f.rig = KEI.create(f.seed, v.build && KEI.BUILDS && KEI.BUILDS[v.build] ? { build: v.build } : undefined);
     if (v.legs && KEI.sever) { const rr = mulberry(f.seed * 7 + 5); const used = {}; for (let i = 0; i < v.legs; i++) { let g; do { g = (rr() * 6) | 0; } while (used[g]); used[g] = 1; KEI.sever(f.rig, g); } } }
   else { f.rig = ASTRO.create(crew, f.seed); if (kind === 'crew') { f.hp = 3; f.panic = 0; } }
@@ -13962,12 +13980,12 @@ function crewRole(f, dt, p, d) {
   f.panic = lerp(f.panic, clamp(1 - kd / 22, 0, 1), dt * 2); f.open = lerp(f.open, f.panic > .6 ? 1 : 0, dt * 3);
   // where he is looking: at what is coming if anything is, otherwise at you when you are near, otherwise where he is going
   f.lookYaw = kn && kd < 30 && kn.active ? Math.atan2(kn.x - f.x, -(kn.z - f.z)) : d < 14 && see ? Math.atan2(p.x - f.x, -(p.z - f.z)) : undefined;
-  if (f.bait && kd < 1.25) { crewTaken(f); return true; }
+  if (f.bait && (kn && kn.bur ? kn.bs === 'breach' && kn.br >= BURROW.BREACH_HIT && kd < 2.2 : kd < 1.25)) { crewTaken(f); return true; }
   /* Everyone carries the sidearm and everyone uses it. None of them is Baker: they wait until it is close, they miss
      some, and a hit buys five seconds, not eight. They shoot first at whatever is nearest YOU. It never stops the one
      that has come for them. The pistol comes up a moment before the shot, so you can see who is about to fire. */
   if (id !== 'baker' && f.ammo > 0 && !f.cy) { f.shotT = (f.shotT || 0) - dt;
-    if (f.shotT <= .55 && !f.tgt) { let b = null, bd = 1e9; for (const g of S.foes) if (g.kind === 'kei' && g.stun <= 0 && g.active && !g.kin) { const gd = Math.hypot(g.x - f.x, g.z - f.z); if ((gd > 11 && Math.hypot(g.x - p.x, g.z - p.z) > 8) || !los(f.x, f.z, g.x, g.z)) continue; const sc = Math.min(gd, Math.hypot(g.x - p.x, g.z - p.z)); if (sc < bd) { bd = sc; b = g; } } if (b) { f.tgt = b; f.shotT = 1.3 + S.rng() * 1.5; } else f.shotT = .8; }
+    if (f.shotT <= .55 && !f.tgt) { let b = null, bd = 1e9; for (const g of S.foes) if (g.kind === 'kei' && g.stun <= 0 && g.active && !g.kin && !(g.bur && g.dep > .5)) { const gd = Math.hypot(g.x - f.x, g.z - f.z); if ((gd > 11 && Math.hypot(g.x - p.x, g.z - p.z) > 8) || !los(f.x, f.z, g.x, g.z)) continue; const sc = Math.min(gd, Math.hypot(g.x - p.x, g.z - p.z)); if (sc < bd) { bd = sc; b = g; } } if (b) { f.tgt = b; f.shotT = 1.3 + S.rng() * 1.5; } else f.shotT = .8; }
     if (f.tgt) { const b = f.tgt; if (b.stun > 0 || S.foes.indexOf(b) < 0 || !los(f.x, f.z, b.x, b.z)) { f.tgt = null; f.shotT = .7; }
       else { f.aimAt = Math.atan2(b.x - f.x, -(b.z - f.z)); f.aimT = .9; if (f.shotT <= 0) { f.tgt = null; f.ammo--; f.flash = .09; f.fired = S.t; f.shotT = 2.6 + S.rng() * 2.6; if (AU.ctx) sfx.tick();
           const hit = S.rng() < (Math.hypot(b.x - f.x, b.z - f.z) < 6 ? .55 : .34); crewTracer(f, b, hit); if (hit && !b.lock) { b.stun = Math.max(b.stun, 3.2); b.wary = 2; } if (f.ammo === 0) crewLine(id, 'I AM OUT. I AM OUT.'); } } } }
@@ -13990,7 +14008,7 @@ function crewRole(f, dt, p, d) {
         if (k.stun > 0 || Math.hypot(k.x - p.x, k.z - p.z) < 7.5) { k.kin = false; k.stun = Math.max(k.stun, 1.6); f.rs = 2; f.rt = 0; crewLine('algo', 'IT IS OFF ME. IT IS OFF ME. STAY THERE.'); }
         else if (f.rt >= 16) { k.kin = false; crewTaken(f); return true; } } }
     else if (f.rs === 2) { crewGo(f, p.x, p.z, 5, dt, S.flow); if (d < 3.6) { f.rs = 3; f.rt = 0; p.pulses += 2; hudDirty = true; if (AU.ctx) sfx.ok(); crewLine('algo', 'Take these. Pulse charges, out of my locker. Q sets one off. They do not like it.', null, { calm: true }); } else if (f.rt > 25) { f.rs = 3; f.rt = 0; } }
-    else { crewFollow(f, p, dt, -1); if (!f.fol) crewFace(f, f.lookYaw !== undefined ? f.lookYaw : p.yaw, dt); f.bait = f.rt > 20; if (f.rs === 3 && f.rt > 85) { f.rs = 4; crewTaker(f, 'runner', 61); } } }
+    else { crewFollow(f, p, dt, -1); if (!f.fol) crewFace(f, f.lookYaw !== undefined ? f.lookYaw : p.yaw, dt); f.bait = f.rt > 20; if (f.rs === 3 && f.rt > 85) { f.rs = 4; crewTaker(f, BUR_OK ? 'burrower' : 'runner', 61); } } }
   else if (id === 'bart') { f.active = false;
     if (f.rs === 0 && !f.called && S.t > 62) { f.called = 1; crewLine('bart', 'This is Bartolozzi. I am down at the third light mast with a suit breach. I have the reactor start code.'); }
     if (f.rs === 0 && d < 44 && see) { f.rs = 1; crewLine('bart', 'Over here, at the light mast. My suit is breached and I cannot stand.'); crewGest(f, 'wave', 3.2); }
@@ -14133,14 +14151,14 @@ function step(dt, cmd) {
   const gnd = Math.max(groundY(p.x, p.z), rockTop(p.x, p.z, p.y === undefined ? -1e9 : p.y + .05));
   const moved = p.px === undefined ? 9 : Math.hypot(p.x - p.px, p.z - p.pz); p.px = p.x; p.pz = p.z;
   if (p.air <= 0) { if (moved < 1 && gnd < p.y - .45) { p.air = 1; p.vy = 0; p.coyote = .14; }   // walked off an edge: fall, do not snap
-    else { p.y = gnd; p.coyote = .14; if (p.jbuf > 0) { p.jbuf = 0; p.vy = 2.75 + (run ? .55 : 0); p.air = 1; if (AU.ctx) sfx.step(true); } } }
-  else { p.vy -= G * dt; if (!cmd.jump && p.vy > 1.1) p.vy -= 5 * dt; p.y += p.vy * dt; if (p.y <= gnd && p.vy <= 0) { const vi = -p.vy; p.y = gnd; p.vy = 0; p.air = 0; if (AU.ctx) sfx.step(true); S.shake = Math.max(S.shake, .08 + vi * .04); mark(p.x, p.z, p.yaw, 10 + vi * 5 | 0, 1.1 + vi * .5); } p.coyote -= dt; if (p.coyote > 0 && p.jbuf > 0 && p.vy <= 0) { p.jbuf = 0; p.vy = 2.75; } }
+    else { p.y = gnd; p.coyote = .14; if (p.jbuf > 0) { p.jbuf = 0; p.vy = 2.75 + (run ? .55 : 0); p.air = 1; if (AU.ctx) sfx.step(true, { push: true, foot: p.foot || 1 }); } } }
+  else { p.vy -= G * dt; if (!cmd.jump && p.vy > 1.1) p.vy -= 5 * dt; p.y += p.vy * dt; if (p.y <= gnd && p.vy <= 0) { const vi = -p.vy; p.y = gnd; p.vy = 0; p.air = 0; if (AU.ctx) sfx.step(true, { land: vi, foot: p.foot || 1 }); S.shake = Math.max(S.shake, .08 + vi * .04); mark(p.x, p.z, p.yaw, 10 + vi * 5 | 0, 1.1 + vi * .5); } p.coyote -= dt; if (p.coyote > 0 && p.jbuf > 0 && p.vy <= 0) { p.jbuf = 0; p.vy = 2.75; } }
   p.lift = p.y - groundY(p.x, p.z);
-  const v = Math.hypot(p.vx, p.vz); if (p.air <= 0) { p.bob += v * dt; p.stepD += v * dt; if (p.stepD > (run ? 2.3 : 1.7)) { p.stepD = 0; sfx.step(run); p.foot = -(p.foot || 1); mark(p.x + Math.cos(p.yaw) * .17 * p.foot, p.z + Math.sin(p.yaw) * .17 * p.foot, p.yaw, run ? 5 : 3, run ? 1.1 : .7); } }
+  const v = Math.hypot(p.vx, p.vz); if (p.air <= 0) { p.bob += v * dt; p.stepD += v * dt; if (p.stepD > (run ? 2.3 : 1.7)) { p.stepD = 0; p.foot = -(p.foot || 1); sfx.step(run, { foot: p.foot }); mark(p.x + Math.cos(p.yaw) * .17 * p.foot, p.z + Math.sin(p.yaw) * .17 * p.foot, p.yaw, run ? 5 : 3, run ? 1.1 : .7); } }
   p.stam = clamp(p.stam + (run ? -(S.crew.id === 'waldron' ? .09 : .15) : .12) * dt, 0, 1);
   if (cmd.lamp) { p.lamp = !p.lamp; if (AU.ctx) sfx.sw(); }
   const dShip = Math.hypot(p.x - SHIP.x, p.z - SHIP.z);
-  if (S.stage === 0 && dShip < 17) { S.stage = 1; say('NICK (CAPCOM)', 'You are at the pad. The reactor is cold. Restart it from the service panel on the leg.'); spawnKei(15, 24, 'lancer'); spawnKei(18, 28); }
+  if (S.stage === 0 && dShip < 17) { S.stage = 1; say('NICK (CAPCOM)', 'You are at the pad. The reactor is cold. Restart it from the service panel on the leg.'); spawnKei(15, 24, BUR_OK ? 'burrower' : 'lancer'); spawnKei(18, 28); }
   let near = null; for (const it of interacts()) if (it.on && Math.hypot(it.x - p.x, it.z - p.z) < 2.6) near = it; S.near = near;
   if (near && cmd.use) { if (p.holdId !== near.id) { p.holdId = near.id; p.hold = 0; } const k = S.crew.id === near.fast ? (near.id === 'launch' ? 3 : 2) : 1; const prev = p.hold; p.hold += dt * k / near.dur;
     if (Math.floor(prev * 8) !== Math.floor(p.hold * 8) && AU.ctx) sfx.tick();
@@ -14170,7 +14188,7 @@ function step(dt, cmd) {
         else { const along = dx * dir[0] + dz * dir[2]; if (along <= 0 || along >= bt) continue; const px = dx - dir[0] * along, pz = dz - dir[2] * along, hy = o[1] + dir[1] * along - groundY(f.x, f.z); if (Math.hypot(px, pz) < (f.kind === 'kei' ? .7 : .38) * wide && hy > 0 && hy < (f.kind === 'kei' ? 4.6 : 1.95)) { best = f; bt = along; leg = -1; } } }
       { const cy = Math.cos(yw), sy = Math.sin(yw), m = [o[0] + dir[0] * .55 + cy * .2, o[1] + dir[1] * .55 - .16, o[2] + dir[2] * .55 + sy * .2], L = best ? bt : 70; (S.tracers || (S.tracers = [])).push({ a: m, b: [o[0] + dir[0] * L, o[1] + dir[1] * L, o[2] + dir[2] * L], t0: S.t, kind: A.beam ? 'beam' : A.rocket ? 'rocket' : null }); if (S.tracers.length > 12) S.tracers.shift(); }
       if (best) { const hk = armHit(arm, bt); p.hitT = 0; hudDirty = true; best.active = true; if (AU.ctx) sfx.tick();
-        if (best.kind === 'kei' && best.bur) burHit(best, hk);
+        if (best.kind === 'kei' && best.bur) burHit(best, hk, !!A.beam);
         else if (best.kind === 'kei') { if (leg >= 0 && KEI.sever && !A.beam && hk > .6) { KEI.sever(best.rig, leg); best.stun = Math.max(best.stun, 1.1); if (AU.ctx) sfx.kei(.7, 0); } else { best.stun = Math.max(best.stun, 8 * hk); best.wary = 4.5 * Math.max(1, hk); best.side = -(best.side || 1); best.hits = (best.hits || 0) + (hk > 1.2 ? 2 : hk < .6 ? 0 : 1); if (best.hits >= 2 && !best.lock && !best.kin && S.stage < 1) { best.flee = true; best.wary = 99; } } }
         else if (best.kind === 'crew') { const c = CREW[best.crew]; if (A.beam) say(c.short, 'I CANNOT SEE! POINT THAT THING AWAY!', { voice: [c.id, 'hurt'], pitch: c.pitch });
           else if (--best.hp <= 0) { best.alive = false; best.dead = 1; say(c.short, '[NO SIGNAL]', { voice: [c.id, 'death'], pitch: c.pitch }); S.foes.splice(S.foes.indexOf(best), 1); } else say(c.short, 'THAT IS ME! CHECK YOUR TARGET!', { voice: [c.id, 'hurt'], pitch: c.pitch }); }
@@ -14186,7 +14204,7 @@ function step(dt, cmd) {
   const touch = (f, dx, dz, d) => { if (p.breach === 0) { p.breach = 1; f.stun = 3.5; S.shake = 1; S.burst = 1.2; if (AU.ctx) sfx.breach(); say('SUIT', 'SUIT BREACH. ONE LAYER LEFT.'); selfVoice('hurt', 1); p.vx += dx / (d || 1) * 9; p.vz += dz / (d || 1) * 9; return false; } S.killer = f; end('dup'); return true; };
   /* The pack. There are few of them, so each one counts. The nearest holds your eye; the rest work round to the sides and
      behind. None of them will walk down the barrel while you are looking at it, and they all come in together when one gets close. */
-  let commit = false; { const pk = []; for (const f of S.foes) if (f.kind === 'kei' && f.active && !f.kin && !f.lock && f.stun <= 0) { f.pd2 = (f.x - p.x) ** 2 + (f.z - p.z) ** 2; pk.push(f); }
+  let commit = false; { const pk = []; for (const f of S.foes) if (f.kind === 'kei' && f.active && !f.kin && !f.lock && !f.bur && f.stun <= 0) { f.pd2 = (f.x - p.x) ** 2 + (f.z - p.z) ** 2; pk.push(f); }
     pk.sort((a, b) => a.pd2 - b.pd2); pk.forEach((f, i) => { f.rank = i; if (!f.side) f.side = S.sideN = -(S.sideN || 1); if (i === 1 && pk[0].side === f.side && !f.sideT) { f.side = -f.side; f.sideT = 1; } if (f.pd2 < 49 || f.chgS === 2) commit = true; }); }
   for (const f of S.foes) {
     const dx = p.x - f.x, dz = p.z - f.z, d = Math.hypot(dx, dz); const cx = Math.floor(f.x / CS), cz = Math.floor(f.z / CS), fd = S.flow[cx + cz * MW]; const ox = f.x, oz = f.z;
@@ -14196,6 +14214,7 @@ function step(dt, cmd) {
       f.spd = lerp(f.spd, Math.hypot(f.x - ox, f.z - oz) / dt, dt * 8); if (d < nearest && f.kin) nearest = d;
       if (f.kind === 'crew' && f.spd > .5) { f.pd = (f.pd || 0) + f.spd * dt; if (f.pd > 2) { f.pd = 0; if (d < 60) mark(f.x, f.z, f.heading, 2, .5); } }
       continue; }
+    if (f.bur) { if (burStep(f, dt, p, fd, touch)) return; if (f.active && f.deadT === undefined && f.bs !== 'away' && d < nearest) nearest = d; continue; }
     if (f.stun > 0) f.stun -= dt;
     else if (fd >= 0) {
       const see = d < 46 && los(f.x, f.z, p.x, p.z);
@@ -14423,6 +14442,70 @@ function watchStep(dt, p) {
     const m = Math.min(el, 9.5 * dt); f.x += ex / el * m; f.z += ez / el * m; if (f.vsc0) f.vsc = lerp(f.vsc, f.vsc0, Math.min(1, dt * 1.5)); }
   f.spd = lerp(f.spd, Math.hypot(f.x - ox, f.z - oz) / dt, dt * 8);
 }
+/* THE BURROWER. It goes through the regolith the way a shark goes through water, with its key standing out of the ground.
+   While you watch it it circles wide; turn your back and it comes straight. When it is near enough it goes under: the
+   key slides out of sight, the ground carries the sound of it up through your boots, and it comes up out of the ground
+   where it last knew you to be. Keep moving and it misses, and for a second or two all of it is above ground and can
+   be shot. Three hits and the key lies down for good. */
+const BUR = { cruise: 4.3, prowl: 2.7, under: 6.9, orbit: 12, reach: 1.35 };
+function burTurn(f, want, rate, dt) { if (f.av > 0) { want = f.avH; rate = 3.4; } f.heading += clamp(angd(want, f.heading), -rate * dt, rate * dt); }
+function burStep(f, dt, p, fd, touch) {
+  const rig = f.rig, tg = f.lock && f.lock.alive !== false ? f.lock : p, dx = tg.x - f.x, dz = tg.z - f.z, d = Math.hypot(dx, dz) || 1e-3, ox = f.x, oz = f.z;
+  const toT = Math.atan2(dx, -dz), see = d < 60 && los(f.x, f.z, tg.x, tg.z); let spd = 0, depT = 0;
+  if (rig.events && rig.events.length) { for (const e of rig.events) burEvent(f, e, p); rig.events.length = 0; }
+  if (f.deadT !== undefined) { f.deadT += dt; f.spd = lerp(f.spd, 0, dt * 6); return false; }
+  if (f.lock && f.lock.alive === false) { f.lock = null; f.bs = 'away'; f.bt = 0; }
+  if (!f.active) { if (f.lock || fd >= 0 && fd < 44 || see && d < 50) { f.active = true; f.bs = 'cruise'; f.cd = 4 + S.rng() * 3; } f.dep = 1; f.spd = 0; return false; }
+  f.alert = lerp(f.alert, clamp(1 - d / 14, 0, 1), dt * 3); f.bt += dt;
+  if (f.stun > 0) { f.stun -= dt; depT = .32; if (f.bs === 'breach') { f.bs = 'spent'; f.bt = 0; } if (f.stun <= 0) { f.bs = f.hits >= 2 ? 'away' : 'cruise'; f.bt = 0; f.cd = 2.5 + S.rng() * 2; f.br = 0; } }
+  else if (f.bs === 'cruise') {
+    /* Looked at, it holds its distance and goes round; not looked at, it closes. Either way the ring tightens as its patience runs out. */
+    f.cd -= dt; const fx = Math.sin(p.yaw), fz = -Math.cos(p.yaw), look = tg === p ? (-dx * fx - dz * fz) / d : 0, R = f.lock ? 0 : lerp(7.5, BUR.orbit, clamp(f.cd / 5, 0, 1)) * (look > .8 ? 1 : .6);
+    if (!see && fd >= 0 && !f.lock) { let bi = -1, bv = fd; const cx = Math.floor(f.x / CS), cz = Math.floor(f.z / CS); for (const [ax, az] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]]) { if (ax && az && (solid(cx + ax, cz) || solid(cx, cz + az))) continue; const j = cx + ax + (cz + az) * MW, vv = S.flow[j]; if (vv >= 0 && vv < bv) { bv = vv; bi = j; } }
+      if (bi >= 0) burTurn(f, Math.atan2((bi % MW + .5) * CS - f.x, -((((bi / MW) | 0) + .5) * CS - f.z)), 2.4, dt); spd = BUR.cruise; }
+    else { const off = clamp((d - R) / 5, -1, 1), want = toT + f.side * (Math.PI / 2) * (1 - Math.max(0, off)) + (off < 0 ? f.side * -off * .6 : 0); burTurn(f, want, 1.7, dt); spd = d > 30 ? BUR.cruise * 1.25 : look > .8 && d < R + 3 ? BUR.prowl : BUR.cruise; }
+    if (f.cd <= 0 && see && d < (f.lock ? 26 : 15)) { f.bs = 'dive'; f.bt = 0; }
+  }
+  else if (f.bs === 'dive') { depT = 1; const lead = (BURROW.BREACH_T || 1.6) * (BURROW.BREACH_HIT === undefined ? .5 : BURROW.BREACH_HIT) * (tg !== p ? .3 : S.burN ? .5 : 0), ax = tg.x + (tg.vx || 0) * lead - f.x, az = tg.z + (tg.vz || 0) * lead - f.z, ad = Math.hypot(ax, az);
+    burTurn(f, Math.atan2(ax, -az), f.dep > .7 ? 3.2 : 1.6, dt); spd = f.dep > .55 ? BUR.under : BUR.cruise;
+    if (f.dep > .9 && ad < 1.7) { f.bs = 'breach'; f.bt = 0; f.br = 0; f.struck = 0; if (ad > .3) f.heading = Math.atan2(ax, -az); if (tg === p) S.burN = (S.burN || 0) + 1; }   // it leads you by half the time the blow takes: standing or walking it has you, running or in the air it does not. The first one of a run is aimed at where you are, so anyone moving sees what it does before it costs anything
+    else if (f.bt > 5) { f.bs = 'cruise'; f.bt = 0; f.cd = 2 + S.rng() * 2; f.side = -f.side; } }
+  else if (f.bs === 'breach') { depT = 0; const T = BURROW.BREACH_T || 1.6, H = BURROW.BREACH_HIT === undefined ? .5 : BURROW.BREACH_HIT, b0 = f.br; f.br = Math.min(1, f.br + dt / T);
+    if (b0 < H && f.br >= H) { const sp = rig.strike || [f.x + Math.sin(f.heading) * 1.4, 0, f.z - Math.cos(f.heading) * 1.4], sx = p.x - sp[0], sz = p.z - sp[2], sd = Math.hypot(sx, sz); f.struck = 1;
+      S.shake = Math.max(S.shake, clamp(1.1 - sd * .12, 0, 1));
+      if (tg === p && sd < BUR.reach && (p.lift || 0) < 1.5) { if (touch(f, -sx || dx, -sz || dz, sd)) return true; f.stun = 0; } }
+    if (f.br >= 1) { f.bs = 'spent'; f.bt = 0; } }
+  else if (f.bs === 'spent') { depT = .12; f.br = 0; if (f.bt > 1.7) { f.bs = 'cruise'; f.bt = 0; f.cd = 5 + S.rng() * 3.5; f.side = -f.side; } }
+  else if (f.bs === 'away') { depT = 1; burTurn(f, toT + Math.PI + f.side * .4, 2.2, dt); spd = BUR.under * .8; if (f.bt > 11 || d > 55) { f.bs = 'cruise'; f.bt = 0; f.hits = 0; f.cd = 3; if (!f.lock && d > 70) f.active = false; } }
+  f.dep = clamp(f.dep + clamp(depT - f.dep, -dt / .75, dt / .6), 0, 1);
+  if (spd > 0) { const st = spd * dt; moveCircle(f, Math.sin(f.heading) * st, -Math.cos(f.heading) * st, .4);
+    if (f.av > 0) f.av -= dt;
+    if (Math.hypot(f.x - ox, f.z - oz) < st * .45) { f.blk = (f.blk || 0) + dt; if (f.blk > .25) { f.blk = 0; f.avN = (f.avN || 0) + 1; if (f.avN % 3 === 0) f.side = -f.side; f.av = .9 + .3 * (f.avN % 3); f.avH = f.heading + f.side * (1.1 + .5 * (f.avN % 3)); } } else { f.blk = 0; if (!(f.av > 0)) f.avN = 0; } }   // something solid in the way: it swings wide round it and comes back on
+  f.spd = lerp(f.spd, Math.hypot(f.x - ox, f.z - oz) / dt, dt * 8);
+  if (f.spd > 1.5 && f.dep < .9) { f.pd = (f.pd || 0) + f.spd * dt; }
+  return false; }
+/* A hit on the key or on what is out of the ground. */
+function burHit(f, hk, beam) { if (f.deadT !== undefined) return; f.hits = (f.hits || 0) + 1; f.stun = Math.max(f.stun, beam ? 6 : 3 * Math.max(.6, hk)); if (AU.ctx) sfx.kei(.7, 0);
+  if (!beam) { f.hp -= hk > 1.2 ? 2 : hk < .6 ? 0 : 1; if (f.hp <= 0) { f.deadT = 0; f.stun = 1e9; f.bs = 'dead'; f.br = 0; if (AU.ctx) { sfx.legs(.9, 0); noise(AU.suit, now(), 1.4, 'lowpass', 240, .8, .5, 50); } } } }
+/* What it sounds like. There is no air: everything arrives through the ground, up the boots and into the suit, so it is
+   low, close and without much direction. A bed of grinding that follows how hard it is working (rig.grind) and how
+   near it is; stones cracking in it; and the events. After a breach the regolith it threw comes down for a long time in
+   this gravity, and what lands on the helmet is the one thing you hear directly. */
+function burSound(dt, p) {
+  if (!AU.ctx || !BUR_OK) return; const C = AU.ctx, t = now(); let g = 0, pan = 0, hard = 0;
+  if (S.mode !== 'ship' && !S.over && !S.cine) for (const f of S.foes) if (f.bur && f.active && f.deadT === undefined) { const dx = f.x - p.x, dz = f.z - p.z, d = Math.hypot(dx, dz) || 1, gr = clamp(f.rig.grind === undefined ? (f.spd / 7) * (.5 + .5 * f.dep) : f.rig.grind, 0, 1), k = gr * Math.pow(clamp(1 - d / 38, 0, 1), 1.7); if (k > g) { g = k; pan = clamp((dx * Math.cos(p.yaw) + dz * Math.sin(p.yaw)) / d, -1, 1) * .35; hard = gr; } }
+  let B = AU.bur; if (!B) { if (g < .003) return; B = AU.bur = {}; const mk = (type, f, q) => { const s = C.createBufferSource(); s.buffer = AU.nb; s.loop = true; const fl = C.createBiquadFilter(); fl.type = type; fl.frequency.value = f; fl.Q.value = q; const gn = C.createGain(); gn.gain.value = 0; s.connect(fl); fl.connect(gn); s.start(t, Math.random()); return { s, fl, gn }; };
+    B.pan = C.createStereoPanner(); B.pan.connect(AU.suit); B.lo = mk('lowpass', 90, .9); B.mid = mk('bandpass', 330, 1.6); B.lo.gn.connect(B.pan); B.mid.gn.connect(B.pan); B.tick = 0; }
+  B.lo.gn.gain.setTargetAtTime(g * 2.6, t, .08); B.lo.fl.frequency.setTargetAtTime(70 + 130 * hard, t, .1); B.mid.gn.gain.setTargetAtTime(g * g * 1.5, t, .06); B.mid.fl.frequency.setTargetAtTime(240 + 260 * hard, t, .12); B.pan.pan.setTargetAtTime(pan, t, .15);
+  B.tick -= dt * (2 + 26 * g); if (B.tick <= 0 && g > .02) { B.tick = .4 + Math.random(); const v = g * (.5 + Math.random()); if (Math.random() < .35) fx('thud', { dest: B.pan, gain: v * 1.3, rate: .5 + Math.random() * .5 }) || noise(B.pan, t, .05, 'lowpass', 200, 1, v); else noise(B.pan, t, .02 + Math.random() * .05, 'bandpass', 300 + Math.random() * 500, 2.5, v * 1.2); }
+}
+function burEvent(f, e, p) { if (!AU.ctx) return; const t = now(), d = Math.hypot(f.x - p.x, f.z - p.z), near = Math.pow(clamp(1 - d / 34, 0, 1), 1.4); if (near <= 0) return;
+  if (e === 'dive') { noise(AU.suit, t, .8, 'lowpass', 300, .8, .7 * near, 55); tone(AU.suit, t, .7, 'sine', 70, 38, .35 * near); }
+  else if (e === 'surface') { noise(AU.suit, t, .55, 'lowpass', 70, .8, .6 * near, 320); fx('thud', { dest: AU.suit, gain: .7 * near, rate: .7 }); }
+  else if (e === 'breach') { fx('boom', { dest: AU.suit, gain: 1.5 * near, rate: .55 }) || noise(AU.suit, t, .5, 'lowpass', 110, 1, 1.4 * near); fx('thud', { dest: AU.suit, gain: 1.4 * near, rate: .5 }); noise(AU.suit, t, 1.1, 'lowpass', 420, .7, .8 * near, 80); S.shake = Math.max(S.shake, .9 * near); S.burst = Math.max(S.burst, .5 * near);
+    if (d < 7) { const n = Math.round(46 * (1 - d / 7)); for (let i = 0; i < n; i++) { const tt = t + .5 + Math.pow(Math.random(), 1.6) * 4.2, v = (.05 + Math.random() * .12) * (1 - d / 9); tone(AU.suit, tt, .012 + Math.random() * .02, 'triangle', 700 + Math.random() * 900, 380, v); if (i % 3 === 0) noise(AU.suit, tt, .02, 'bandpass', 900, 3, v * 1.6); } } }
+  else if (e === 'slam') { fx('thud', { dest: AU.suit, gain: 1.6 * near, rate: .62 }) || noise(AU.suit, t, .12, 'lowpass', 140, 1, 1.2 * near); tone(AU.suit, t, .16, 'sine', 62, 34, .7 * near); S.shake = Math.max(S.shake, .7 * near); }
+  else if (e === 'sink') { noise(AU.suit, t, .9, 'lowpass', 220, .9, .55 * near, 60); } }
 function spawnKei(lo, hi, vid, ahead) { const opts = [], pz = P().z; for (let i = 0; i < MW * MH; i++) if (S.flow[i] > lo && S.flow[i] < hi && (!ahead || (((i / MW) | 0) + .5) * CS < pz - 16)) opts.push(i); if (!opts.length) return null; const i = opts[(S.rng() * opts.length) | 0]; const f = mkFoe('kei', (i % MW + .5) * CS, (((i / MW) | 0) + .5) * CS, -1, S.foes.length + 20 + ((S.t * 3) | 0), vid); f.active = !ahead; f.amb = !!ahead; S.foes.push(f); return f; }
 function crewTaken(f, quiet, stunT) {
   const c = CREW[f.crew]; f.alive = false; if (f.chaser) f.chaser.kin = false;
@@ -14544,6 +14627,7 @@ function endCine(skipped) { const c = S.cine; if (NASA.cine) { NASA.cine.stop(.2
 // ---------------------------------------------------------------- audio frame
 function audioFrame(dt) {
   if (!AU.ctx || !S) return; if (S.mode === 'home') return homeAudioFrame(); const t = AU.ctx.currentTime, p = P(); const gz = S.over === 'dup' ? 1 : S.cine ? .12 : S.glitch;
+  burSound(dt, p);
   AU.stat.gain.setTargetAtTime(.01 + gz * .16, t, .05); AU.droneG.gain.setTargetAtTime(S.cine ? .09 : .035 + (S.stage === 3 || (S.sh && S.sh.burn) ? .34 : 0), t, .3);
   const up = 1 + (1 - S.left / 600) * .5; AU.dr[0].frequency.setTargetAtTime(37 * up, t, 1); AU.dr[1].frequency.setTargetAtTime(37.6 * up, t, 1); AU.dr[2].frequency.setTargetAtTime(55.4 * up, t, 1);
   if (Math.random() < gz * dt * 7) { const d = .03 + Math.random() * .22; AU.drop.gain.setValueAtTime(0, t); AU.drop.gain.setValueAtTime(1, t + d); VOICE.gate(false); setTimeout(() => VOICE.gate(true), d * 1000); }
@@ -14563,8 +14647,8 @@ function audioFrame(dt) {
   if (!ship && S.stage < 3 && S.left < 60) { S.buzzT = (S.buzzT || 0) - dt; if (S.buzzT <= 0) { S.buzzT = S.left < 20 ? 1 : 2.4; sfx.buzz(); } }
   S.heartT -= dt; if (S.prox > .2 && S.heartT <= 0) { S.heartT = 1.05 - S.prox * .62; sfx.heart(); }
   const pan = f => { const dx = f.x - p.x, dz = f.z - p.z, d = Math.hypot(dx, dz) || 1; return [d, clamp((dx * Math.cos(p.yaw) + dz * Math.sin(p.yaw)) / d, -1, 1)]; };
-  S.keiT -= dt; if (S.keiT <= 0) { S.keiT = 1.2 + Math.random() * 5 * (1.2 - S.prox); const k = S.foes.filter(f => f.kind === 'kei' && f.stun <= 0 && f.active); if (k.length) { const f = k[(Math.random() * k.length) | 0], [d, pn] = pan(f); if (d < 50) sfx.kei(clamp(1.1 - d / 44, .05, 1) * .7, pn); } }
-  for (const f of S.foes) if (f.kind === 'kei' && f.spd > .5) { f.legT = (f.legT || 0) - dt * f.spd; if (f.legT <= 0) { f.legT = .5 + Math.random() * .5; const [d, pn] = pan(f); const rr = 7 * (f.vsc || 1); if (d < rr) sfx.legs(clamp(1 - d / rr, 0, 1) * .5 * Math.pow(f.vsc || 1, 2.2), pn); } }
+  S.keiT -= dt; if (S.keiT <= 0) { S.keiT = 1.2 + Math.random() * 5 * (1.2 - S.prox); const k = S.foes.filter(f => f.kind === 'kei' && f.stun <= 0 && f.active && !(f.bur && f.dep > .5)); if (k.length) { const f = k[(Math.random() * k.length) | 0], [d, pn] = pan(f); if (d < 50) sfx.kei(clamp(1.1 - d / 44, .05, 1) * .7, pn); } }
+  for (const f of S.foes) if (f.kind === 'kei' && !f.bur && f.spd > .5) { f.legT = (f.legT || 0) - dt * f.spd; if (f.legT <= 0) { f.legT = .5 + Math.random() * .5; const [d, pn] = pan(f); const rr = 7 * (f.vsc || 1); if (d < rr) sfx.legs(clamp(1 - d / rr, 0, 1) * .5 * Math.pow(f.vsc || 1, 2.2), pn); } }
 }
 
 // ---------------------------------------------------------------- HUD
@@ -14754,7 +14838,7 @@ function render(dt, now) {
     // characters into the dynamic batch
     const B = R.batch; B.reset(); const smear = [];
     if (inGame && sceneOn) { const ce = cam.e; for (const f of (S.watch && !S.watch.hide ? S.foes.concat([S.watch.f]) : S.foes)) { const d = Math.hypot(f.x - ce[0], f.z - ce[2]); if (d > 170 || S.cine) continue; const st = { x: f.x, z: f.z, heading: f.heading, speed: f.spd, scale: 1.45 * (f.vsc || 1), stun: f.down ? 1 : Math.max(0, f.stun), alert: f.chgS ? 1 : f.alert, active: f.active, open: f.open, dup: f.kind !== 'crew', charge: f.chgS === 1 ? clamp(f.chgT / f.v.chg.wind, 0, 1) : 0 }; if (f.kind === 'crew') { st.gest = f.gest || null; st.pointYaw = f.pointYaw; st.lookYaw = f.lookYaw; st.fear = f.panic; st.hurt = f.down ? 1 : 0; st.gun = f.ammo > 0 && !f.down && !f.cy ? (f.aimT > 0 ? 2 : f.panic > .15 || f.fired ? 1 : 0) : 0; st.aim = f.aimAt; st.fire = f.flash > 0 ? f.flash / .09 : 0; if (f.gest === 'down' && ASTRO.GESTURES) st.stun = 0; }
-        const n0 = B.n; if (f.kind === 'kei') { if (f.active) st.look = Math.atan2(ce[0] - f.x, -(ce[2] - f.z)); f.rig.fat = (d > 22 ? 1.8 : 1) * (f.vfat || 1); KEI.update(f.rig, st, dt, groundY); KEI.emit(B, f.rig, d > 22 ? 1 : 0); } else { ASTRO.update(f.rig, st, dt, f.cy ? (x, z) => groundY(x, z) + f.cy : groundY); ARM_NOW = f.crew !== undefined && CREW[f.crew] ? armId(CREW[f.crew].id) : null; ASTRO.emit(B, f.rig, d > 16 ? 1 : 0); ARM_NOW = null; } if (S.watch && f === S.watch.f) { const k = clamp((d - 14) / 20, 0, 1); for (let i = n0; i < B.n; i++) { B.d[i * STRIDE + 9] *= 1 + 1.9 * k; B.d[i * STRIDE + 10] += .09 * k; } }   // far off against a black sky a dark thing is nothing at all: up there it catches the sun
+        const n0 = B.n; if (f.bur) { const lod = d > 22 ? 1 : 0; f.rig.fat = d > 22 ? 1.8 : 1; BURROW.update(f.rig, { x: f.x, z: f.z, heading: f.heading, speed: f.spd, depth: f.dep, breach: f.br, stun: f.deadT !== undefined ? 0 : Math.max(0, f.stun), alert: f.alert, look: f.active ? Math.atan2(ce[0] - f.x, -(ce[2] - f.z)) : undefined, dead: f.deadT }, dt, groundY); BURROW.emit(B, f.rig, lod); BURROW.emitGround(B, f.rig, groundY, lod); } else if (f.kind === 'kei') { if (f.active) st.look = Math.atan2(ce[0] - f.x, -(ce[2] - f.z)); f.rig.fat = (d > 22 ? 1.8 : 1) * (f.vfat || 1); KEI.update(f.rig, st, dt, groundY); KEI.emit(B, f.rig, d > 22 ? 1 : 0); } else { ASTRO.update(f.rig, st, dt, f.cy ? (x, z) => groundY(x, z) + f.cy : groundY); ARM_NOW = f.crew !== undefined && CREW[f.crew] ? armId(CREW[f.crew].id) : null; ASTRO.emit(B, f.rig, d > 16 ? 1 : 0); ARM_NOW = null; } if (S.watch && f === S.watch.f) { const k = clamp((d - 14) / 20, 0, 1); for (let i = n0; i < B.n; i++) { B.d[i * STRIDE + 9] *= 1 + 1.9 * k; B.d[i * STRIDE + 10] += .09 * k; } }   // far off against a black sky a dark thing is nothing at all: up there it catches the sun
         smear.push([n0, B.n - n0, f.kind === 'kei' ? (f.stun > 0 ? .45 : .02 + f.alert * .14) : f.kind === 'dup' ? (f.active ? .05 : 0) : 0]); }
       if (!S.cine) { const ce2 = cam.e; const nb0 = B.n;
         emitTracers(B, cam, dt); emitBreakup(B, cam); if (S.depart !== undefined) emitDepart(B, cam, S.depart); else if (S.stage === 3 && S.launchT > LAUNCH_HOLD) emitDepart(B, cam, S.launchT - LAUNCH_HOLD);
