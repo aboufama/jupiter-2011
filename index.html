@@ -10461,6 +10461,7 @@ function shipBegin() {
   const p = P(), r = mulberry(4409 + S.crewIdx * 13);
   S.mode = 'ship'; S.stage = 4; S.foes = []; S.lines = []; S.prints = []; S.dust = []; S.brass = []; S.white = 0; S.shake = 0; S.glitch = .1; S.signal = .9; S.prox = 0; S.near = null; S.climb = null; S.over = null; S.killer = null; S.depart = undefined; S.freeze = 0; S.burst = 0; S.scan = [];
   Object.assign(p, { x: 26.5, z: 36.5, yaw: -Math.PI / 2, pitch: 0, vx: 0, vz: 0, y: 0, lift: 0, air: 0, stam: 1, lamp: true, hold: 0, holdId: null, eye: 1.66, kickP: 0, kickY: 0, fovK: 0, bob: 0, stepD: 0, low: false, crouch: false, running: false, fireT: 9, fireBuf: 0, hitT: 9 });
+  p.ammo = S.crew.id === 'baker' ? 21 : 12;   // a full load as you come aboard
   const X = S.sh = { t: 0, r, bus: 0, core: 0, valve: 0, burn: 0, burnT: 0, power: 0, hide: null, cut: 0, det: 0, noise: null, hunts: 0, said: {}, useWas: true, valveT: 0, scanT: 0,
     doors: SH.doors.map(d => ({ d, x: d.x + .5, z: d.z + .5, open: 0 })), lockers: SH.lockers.map(l => ({ l, open: 0, want: 0, fx: l.x + l.face[0] + .5, fz: l.z + l.face[1] + .5 })),
     dmap: {}, flowP: new Int16Array(SHW * SHH), flowT: 0 };
@@ -10640,6 +10641,7 @@ function shCut(b, X, p) {
 
 // ---------------------------------------------------------------- the radio aboard
 function shRadio(dt, p, X, dw) {
+  if (X.t > 1.5 && shOnce('reload')) { say('SUIT', `SIDEARM RELOADED. ${p.ammo} ROUNDS.`); if (AU.ctx) sfx.click(); }
   if (X.t > 6 && shOnce('n1')) say('NICK (CAPCOM)', 'You are aboard Ithaca. She has been parked cold round Callisto for two years. There is nobody on her.');
   if (X.t > 15 && shOnce('n2')) say('NICK (CAPCOM)', 'Wake her up. Main bus in the reactor room, aft. A guidance core from stores, seated in avionics. Propellant valves in the tank farm.');
   if (X.t > 25 && shOnce('n3')) say('NICK (CAPCOM)', 'Then the flight deck at the bow, and you burn for home. Lockers and crawlways are on your plan.');
@@ -11304,7 +11306,8 @@ function launchStep(dt, cmd, p) {
   p.x = SHIP.x; p.z = SHIP.z + 4.7; p.vx = p.vz = 0; p.vy = 0; p.air = 0; p.y = groundY(p.x, p.z); p.lift = LADDER_TOP + .15 + S.rise;
   // the seat faces aft down the valley; you can turn your head in the helmet, not your body
   const by = Math.PI, bp = lerp(-.12, -.62, clamp(u / 6, 0, 1)); let oy = p.yaw - by; oy = Math.atan2(Math.sin(oy), Math.cos(oy));
-  const k = 1 - Math.exp(-dt * 2.2); p.yaw = by + clamp(oy, -.5, .5) * (1 - k * .5); p.pitch = clamp(lerp(p.pitch, bp, k), bp - .3, bp + .3);
+  if (S.launchT < 1.2) { const k = 1 - Math.exp(-dt * 6); oy *= 1 - k; p.pitch = lerp(p.pitch, bp, k); }   // dropping into the seat
+  S.seatP = bp; p.yaw = by + clamp(oy, -LOOK_Y, LOOK_Y); p.pitch = clamp(p.pitch + (bp - (S.seatP0 === undefined ? bp : S.seatP0)), bp - LOOK_D, bp + LOOK_U); S.seatP0 = bp;   // strapped in: the head turns, the seat does not
   S.shake = Math.max(S.shake * .9, u > 0 ? clamp(1.1 - u * .09, .25, 1) : S.launchT / LAUNCH_HOLD * .5);
   if (AU.ctx) { if (u > 0 && !S.lit) { S.lit = 1; sfx.ignite(1.3); } let m = 0; for (let i = 0; i < 3; i++) { const f = rcsFire(S.launchT + [0, .31, .17][i], i, 7); if (f && f[0]) m |= 1 << i; } for (let i = 0; i < 3; i++) if ((m >> i & 1) && !((S.rm || 0) >> i & 1)) sfx.puff(.7, [-.6, .6, 0][i]); S.rm = m; }
   if (AU.ctx && Math.floor(S.launchT * 2) !== Math.floor((S.launchT - dt) * 2)) sfx.rumble(.5 + Math.min(1, S.shake) * .5);
@@ -11847,6 +11850,20 @@ function emitGun(B, cam, p, dt) {
   SIDEARM.emit(B, { xf, slide: empty ? 1 : cyc, hammer: p.fireT < .03 && !empty ? 0 : 1, trigger: GUN.trig, rounds: p.ammo, flash: p.fireT < .05 && !empty ? 1 - p.fireT / .05 : 0, seed: p.ammo * 7 + 1, t });
   const M = SIDEARM.MUZZLE; for (let a = 0; a < 3; a++) GUN.mz[a] = xf[a * 4] * M[0] + xf[a * 4 + 1] * M[1] + xf[a * 4 + 2] * M[2] + xf[a * 4 + 3];
 }
+const LOOK_Y = .85, LOOK_U = .65, LOOK_D = .32;   // as far as the cabin is built
+/* A camera from a ready basis, and a head turned inside a cabin: the cabin keeps its own camera (where the seat points),
+   and the view is that basis turned by the head's yaw and pitch, so looking round looks round INSIDE the ship. */
+function matBasis(r, up, f, e, asp, fov) {
+  const tn = Math.tan(fov / 2), a = 1 / tn, n = .1, fr = 9000;
+  const Vm = [r[0], up[0], -f[0], 0, r[1], up[1], -f[1], 0, r[2], up[2], -f[2], 0, -V3.dot(r, e), -V3.dot(up, e), V3.dot(f, e), 1], Pm = [a / asp, 0, 0, 0, 0, a, 0, 0, 0, 0, (fr + n) / (n - fr), -1, 0, 0, 2 * fr * n / (n - fr), 0], o = new Float32Array(16);
+  for (let c = 0; c < 4; c++) for (let w = 0; w < 4; w++) { let s = 0; for (let k = 0; k < 4; k++) s += Pm[k * 4 + w] * Vm[c * 4 + k]; o[c * 4 + w] = s; }
+  return { vp: o, f, r, up, tn, e };
+}
+function lookFrom(cab, ly, lp, asp, fov) {
+  const cy = Math.cos(ly), sy = Math.sin(ly), cp = Math.cos(lp), sp = Math.sin(lp), R = cab.r, U = cab.up, F = cab.f;
+  const f1 = [F[0] * cy + R[0] * sy, F[1] * cy + R[1] * sy, F[2] * cy + R[2] * sy], r1 = [R[0] * cy - F[0] * sy, R[1] * cy - F[1] * sy, R[2] * cy - F[2] * sy];
+  return matBasis(r1, [U[0] * cp - f1[0] * sp, U[1] * cp - f1[1] * sp, U[2] * cp - f1[2] * sp], [f1[0] * cp + U[0] * sp, f1[1] * cp + U[1] * sp, f1[2] * cp + U[2] * sp], cab.e, asp, fov);
+}
 function mat(yaw, pitch, e, asp, fov) {
   const cp = Math.cos(pitch), f = [Math.sin(yaw) * cp, Math.sin(pitch), -Math.cos(yaw) * cp], r = [Math.cos(yaw), 0, Math.sin(yaw)], up = V3.cross(r, f), tn = Math.tan(fov / 2), a = 1 / tn, n = .1, fr = 9000;
   const Vm = [r[0], up[0], -f[0], 0, r[1], up[1], -f[1], 0, r[2], up[2], -f[2], 0, -V3.dot(r, e), -V3.dot(up, e), V3.dot(f, e), 1], Pm = [a / asp, 0, 0, 0, 0, a, 0, 0, 0, 0, (fr + n) / (n - fr), -1, 0, 0, 2 * fr * n / (n - fr), 0], o = new Float32Array(16);
@@ -11859,6 +11876,8 @@ const GEAR_OK = typeof GEAR !== 'undefined' && !!GEAR.footprint;
 const POD_OK = typeof POD !== 'undefined' && !!POD.interior, PODB = POD_OK ? makeBatch(24000) : null, PODST = { q: [0, 0, 0, 0], alarm: 0, alt: 1200, lit: 1 };
 function emitPodInterior(B, cam, t, st) {
   if (!POD_OK) return; PODB.reset(); POD.interior(PODB, t, st);
+  // the footwell: the cabin model stops at the console, and a turned head could see the moon under it
+  PODB.quad([-1.7, -1.2, -.775], [1.7, -1.2, -.775], [1.7, -1.2, .7], [-1.7, -1.2, .7], TL.DARK, .1, 0); PODB.quad([-1.7, -.72, -.775], [1.7, -.72, -.775], [1.7, -1.2, -.775], [-1.7, -1.2, -.775], TL.DARK, .1, 0);
   const R = cam.r, U = cam.up, F = cam.f, e = cam.e, d = PODB.d;
   for (let i = 0; i < PODB.n; i++) { const o = i * STRIDE, x = d[o], y = d[o + 1], z = d[o + 2], nx = d[o + 6], ny = d[o + 7], nz = d[o + 8];
     B.v([e[0] + R[0] * x + U[0] * y - F[0] * z, e[1] + R[1] * x + U[1] * y - F[1] * z, e[2] + R[2] * x + U[2] * y - F[2] * z],
@@ -11876,7 +11895,7 @@ let lastYaw = 0, sway = [0, 0], hudT = 0, tPrev = 0, acc = 0, menuT = 0;
 function render(dt, now) {
   const inGame = S && (screen === 'play' || screen === 'pause' || screen === 'ending' || screen === 'cine'); const t = now / 1000;
   if (inGame && S.mode && !S.cine) return finishFrame(dt, t, true, S.mode === 'ship' ? shipRender(dt, t, R.sw / R.sh) : homeRender(dt, t, R.sw / R.sh));
-  let cam, glitch = .1, breath = 0, nosig = 0, fade = 1, white = 0, visor = 1, grain = 1, sceneOn = true, showShip = true, hudOn = inGame && screen !== 'ending';
+  let cam, cab = null, glitch = .1, breath = 0, nosig = 0, fade = 1, white = 0, visor = 1, grain = 1, sceneOn = true, showShip = true, hudOn = inGame && screen !== 'ending';
   const frozen = inGame && S.freeze > 0 && !S.over && !S.cine; const asp = R.sw / R.sh; let flash = 0, pp = null, haze = .035, sunI = .7, sat = 1;
   if (inGame && S.cine) { const c = S.cine; glitch = .1;
     if (c.phase === 'descent' && c.t >= XCUT) { cam = cineExt(c, asp, dt); const tau = c.td ? c.t - c.tdT : -1, g = c.g; showShip = true; visor = smooth((g - .72) / .28); grain = 1; glitch = .05 + (c.td ? .35 * Math.exp(-tau * 3) : 0); white = c.td ? .2 * Math.exp(-tau * 3) : 0; fade = clamp((c.t - XCUT) * 4, 0, 1) * (1 - .3 * Math.exp(-Math.pow((g - .9) / .07, 2))); haze = .05; hudOn = true; breath = .5 + .5 * Math.sin(S.breath * 6.283); }
@@ -11886,7 +11905,8 @@ function render(dt, now) {
       const jy = (c.td ? -.3 * imp * Math.exp(-5 * tau) * Math.sin(14 * tau) : 0) + (c.td2 ? -.22 * Math.exp(-5 * t2) * Math.sin(14 * t2) : 0);
       const jp = c.td ? -.07 * imp * Math.exp(-4 * tau) * Math.sin(10 * tau) - .5 * (1 - Math.exp(-tau * 1.6)) * Math.exp(-wake * .3) + .06 * Math.sin(tau * .9) * Math.min(1, wake) : 0, jw = c.td ? .13 * Math.sin(tau * .62) * Math.min(1, wake * .5) : 0;
       const sh = S.shake * .02 + (c.td ? .07 * imp * Math.exp(-3.2 * tau) : 0) + (c.td2 ? .05 * Math.exp(-3.2 * t2) : 0) + (c.ignT !== undefined ? .03 * Math.exp(-(c.t - c.ignT) * 3) : 0);
-      cam = mat(Math.PI + .25 * Math.sin(c.t * .11) + c.drift * .5 + jw + (Math.random() - .5) * sh, lerp(-1.25, -.2, k * k) + jp + (Math.random() - .5) * sh, [START.x + c.drift * alt * .1, groundY(START.x, START.z) + 9 + Math.max(0, c.h) + jy, START.z + 2], asp, 1.15);
+      cab = mat(Math.PI + .25 * Math.sin(c.t * .11) + c.drift * .5 + jw + (Math.random() - .5) * sh, lerp(-1.25, -.2, k * k) + jp + (Math.random() - .5) * sh, [START.x + c.drift * alt * .1, groundY(START.x, START.z) + 9 + Math.max(0, c.h) + jy, START.z + 2], asp, 1.15);
+      { const dzd = c.td ? Math.exp(-Math.max(0, tau) * .5) : 0; c.ly = (c.ly || 0) * (1 - dzd * .08); c.lp = (c.lp || 0) * (1 - dzd * .08); cam = lookFrom(cab, c.ly, c.lp, asp, 1.15); }   // the head is free in the helmet; the blow takes it for a moment
       const black = !c.td ? 1 : tau < 1 ? 1 : tau < 1.8 ? 1 - (tau - 1) / .8 : tau < 4.2 ? 0 : Math.min(.8, wake / 4.5) * (.78 + .22 * Math.sin(tau * 2.3)) * clamp(CINE_END - tau, 0, 1);
       showShip = false; white = c.dust * .2 + (c.td ? .6 * Math.exp(-tau * 2.2) : 0) + (c.td2 ? .25 * Math.exp(-t2 * 3) : 0) + (c.ignT !== undefined ? .22 * Math.exp(-(c.t - c.ignT) * 5) : 0);
       glitch = .1 + (c.td ? .8 * Math.exp(-tau * 2.5) + .5 * Math.min(1, wake) * Math.exp(-wake * .16) : 0) + (c.t > FLAMEOUT ? .5 : 0); fade = black * clamp(c.t, 0, 1) * clamp((XCUT - c.t) * 6, 0, 1); if (c.td && tau > 1.6 && tau < 4.6) hudOn = false; breath = .5 + .5 * Math.sin(S.breath * 6.283); }
@@ -11898,7 +11918,8 @@ function render(dt, now) {
     if (S.over === 'dup' && S.killer) { const k = S.killer; const ty = Math.atan2(k.x - p.x, -(k.z - p.z)); let d = ty - yaw; d = Math.atan2(Math.sin(d), Math.cos(d)); p.yaw = yaw = yaw + d * Math.min(1, dt * 10); p.pitch = pitch = lerp(pitch, .3, dt * 6); }
     const sh = S.shake * .05, bobY = Math.sin(p.bob * 3.2) * .05, bobX = Math.cos(p.bob * 1.6) * .03;
     const e = [p.x + Math.cos(yaw) * bobX, groundY(p.x, p.z) + (p.lift || 0) + 1.66 + bobY, p.z + Math.sin(yaw) * bobX];
-    cam = mat(yaw + (Math.random() - .5) * sh, pitch + (Math.random() - .5) * sh, e, asp, 1.2 + p.fovK * .09);
+    if (S.stage === 3 && S.mode !== 'ship') { const jy = (Math.random() - .5) * sh, jp = (Math.random() - .5) * sh, sp0 = S.seatP === undefined ? pitch : S.seatP; cab = mat(Math.PI + jy, sp0 + jp, e, asp, 1.2); cam = lookFrom(cab, angd(yaw, Math.PI), pitch - sp0, asp, 1.2 + p.fovK * .09); }
+    else cam = mat(yaw + (Math.random() - .5) * sh, pitch + (Math.random() - .5) * sh, e, asp, 1.2 + p.fovK * .09);
     const dy = (yaw - lastYaw) / Math.max(dt, .001); lastYaw = yaw; sway[0] = lerp(sway[0], clamp(dy * .012, -.05, .05), .12); sway[1] = lerp(sway[1], bobY * .25, .2);
     glitch = S.over === 'dup' ? clamp(.5 + S.overT * .6, 0, 1) : S.over === 'crush' ? 1 : Math.min(1, S.glitch + .45 * dz); breath = .5 + .5 * Math.sin(S.breath * 6.283); white = S.white;
     nosig = S.over === 'dup' ? clamp((S.overT - 1.6) * 2, 0, 1) : S.over === 'crush' ? clamp(S.overT * 2, 0, 1) : (S.signal < .22 ? .6 : 0); fade = clamp(S.t * (dz > 0 ? .3 : .7), 0, 1) * (1 - .25 * dz * (.5 + .5 * Math.sin(t * 2.3)));
@@ -11929,14 +11950,14 @@ function render(dt, now) {
         // the cabin answers the controls: guard and retro switch, hand controller, leg handle, brace lever
         if (!c.qa) c.qa = [0, 0, 0, 0]; for (let i = 0; i < 4; i++) { const qq = c.q[i], tg = qq.done > 0 ? 1 : qq.hold && c.t > qq.t && !qq.done ? clamp(qq.held / qq.hold, 0, 1) : 0; c.qa[i] += clamp(tg - c.qa[i], -dt * 2.2, dt * 2.2); PODST.q[i] = c.qa[i]; }
         PODST.alarm = c.fails > 0 || c.t > 14.8 ? 1 : 0; PODST.alt = Math.max(0, c.h); PODST.lit = c.t > FLAMEOUT ? (Math.sin(c.t * 61) + Math.sin(c.t * 23.7) > .3 ? .12 : .75) : 1;
-        emitPodInterior(B, cam, c.t, PODST);
+        emitPodInterior(B, cab || cam, c.t, PODST);
         const q = c.q[1], hold = c.t > q.t && !q.done && keys[q.key], pre = c.ignT === undefined ? 1 : 0, live = !c.td;
-        emitPodFX(B, cam, { ru: live ? rcsFire(c.t + .17, 2, c.seed + pre * 3) : null, rl: live ? (hold && q.key === 'KeyA' ? [1, 1] : rcsFire(c.t, 0, c.seed + pre)) : null, rr: live ? (hold && q.key === 'KeyD' ? [1, 1] : rcsFire(c.t + .31, 1, c.seed + pre)) : null, eng: c.eng, ign: c.ignT === undefined ? undefined : c.t - c.ignT, gear: c.gearT === undefined ? undefined : c.t - c.gearT });
+        emitPodFX(B, cab || cam, { ru: live ? rcsFire(c.t + .17, 2, c.seed + pre * 3) : null, rl: live ? (hold && q.key === 'KeyA' ? [1, 1] : rcsFire(c.t, 0, c.seed + pre)) : null, rr: live ? (hold && q.key === 'KeyD' ? [1, 1] : rcsFire(c.t + .31, 1, c.seed + pre)) : null, eng: c.eng, ign: c.ignT === undefined ? undefined : c.t - c.ignT, gear: c.gearT === undefined ? undefined : c.t - c.gearT });
         if (c.h < 80) gasGround(B, START.x + (c.drift || 0) * (9 + c.h) * .1, START.z + 2.6, c.dust, c.t, c.td ? c.t - c.tdT : undefined);
         smear.push([n0, B.n - n0, 0]); }
-      if (!S.cine && S.stage === 3) { const n0 = B.n, u = S.launchT - LAUNCH_HOLD; PODST.q[0] = clamp(u * 2 + 1, 0, 1); PODST.q[1] = 0; PODST.q[2] = 0; PODST.q[3] = 1; PODST.alarm = 0; PODST.alt = Math.max(0, u) * Math.max(0, u) * 30; PODST.lit = 1; emitPodInterior(B, cam, S.launchT + 40, PODST);
+      if (!S.cine && S.stage === 3) { const n0 = B.n, u = S.launchT - LAUNCH_HOLD; PODST.q[0] = clamp(u * 2 + 1, 0, 1); PODST.q[1] = 0; PODST.q[2] = 0; PODST.q[3] = 1; PODST.alarm = 0; PODST.alt = Math.max(0, u) * Math.max(0, u) * 30; PODST.lit = 1; emitPodInterior(B, cab || cam, S.launchT + 40, PODST);
         // the tanks vent on the hold, then the engine: its skirt under the sill, and the jets working all the way up
-        emitPodFX(B, cam, { ru: rcsFire(S.launchT + .17, 2, 7), rl: rcsFire(S.launchT, 0, 7), rr: rcsFire(S.launchT + .31, 1, 7), eng: clamp(u * 4, 0, 1), ign: u > 0 ? u : undefined, gear: S.launchT % .8 * (u > 0 ? 9 : 1) });
+        emitPodFX(B, cab || cam, { ru: rcsFire(S.launchT + .17, 2, 7), rl: rcsFire(S.launchT, 0, 7), rr: rcsFire(S.launchT + .31, 1, 7), eng: clamp(u * 4, 0, 1), ign: u > 0 ? u : undefined, gear: S.launchT % .8 * (u > 0 ? 9 : 1) });
         smear.push([n0, B.n - n0, 0]); }
       gl.bindBuffer(gl.ARRAY_BUFFER, R.dyn.b); gl.bufferSubData(gl.ARRAY_BUFFER, 0, B.d.subarray(0, B.n * STRIDE)); }
     R.cam = cam; const svp = shadowMat(cam.e[1] > 500 ? [START.x, 0, START.z] : cam.e);
@@ -12031,6 +12052,7 @@ function filmBegin() {
   const key = e => { if (e.code === 'Escape') fin(); }; addEventListener('keydown', key); v.onended = cards; v.onerror = cards;
   const pr = v.play(); if (pr && pr.catch) pr.catch(() => cards()); tick();
 }
+/* PAGE-A-BEGIN */
 /* Who carries what. Four real pistols with a history in spaceflight between five people. */
 const ARM_INFO = {
   makarov: ['MAKAROV PM', '9 x 18 mm service pistol, eight rounds. The pistol that replaced the TP-82 in the Soyuz survival kit.'],
@@ -12048,6 +12070,7 @@ function buildSelect() { const box = $('crew'); if (!box) return; box.innerHTML 
     const pick = () => { selIdx = i; for (const q of box.children) q.classList.toggle('on', q === r); showRec(); };
     r.addEventListener('click', pick); r.addEventListener('dblclick', () => startRun(i)); r.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { if (selIdx === i) startRun(i); else pick(); } }); box.appendChild(r); });
   showRec(); }
+/* PAGE-A-END */
 function buildVoiceBank() {
   const box = $('vbList'); box.innerHTML = ''; const names = { baker: 'CASE D. BAKER', waldron: 'FORREST WALDRON', algo: 'MATEO O. ALGO', bart: 'JOSEPH J. BARTOLOZZI', watkins: 'DARREN WATKINS JR.', nick: 'NICK STEWART (CAPCOM)', entity: 'UNKNOWN JOVIAN ENTITY' };
   for (const sp of VOICE.speakers) { const h = document.createElement('div'); h.className = 'vbh'; h.textContent = names[sp]; box.appendChild(h);
@@ -12060,6 +12083,7 @@ function buildVoiceBank() {
       box.appendChild(row); } }
 }
 function bindUI() {
+  /* PAGE-B-BEGIN */
   {   /* The file. Shut, it is a folder on a desk. The cover is lifted by its free edge and laid over to the left; the report is
          signed for with one press and turned over after it; under it is the crew sheet. Each leaf is cut into strips hinged
          on one another, so it bends as it goes, and each strip is shaded by its own angle to the light. */
@@ -12095,6 +12119,7 @@ function bindUI() {
     const fitDoc = () => { const sc = $('fscale'); if (!F.offsetHeight) return; sc.style.transform = `scale(${Math.min(1.3, (innerHeight - 70) / F.offsetHeight, (innerWidth - 30) / F.offsetWidth).toFixed(4)}) rotateX(9deg)`; };   // the whole folder stays in view, like a page on a copy stand
     addEventListener('resize', fitDoc); window.openFile = () => { show('disc'); fitDoc(); };
   }
+  /* PAGE-B-END */
   $('mPlay').onclick = () => { auInit(); openFile(); }; $('mFile').onclick = () => show('file'); $('mSet').onclick = () => show('set');
   for (const b of document.querySelectorAll('[data-back]')) b.onclick = () => { S = null; show('menu'); };
   $('againBtn').onclick = () => { const i = S.crewIdx; startRun(i, S.mode === 'ship' ? 'ship' : S.over === 'home' || S.over === 'escape' ? undefined : 'impact'); };
@@ -12108,9 +12133,11 @@ addEventListener('keydown', e => { keys[e.code] = true; if (screen === 'cine' &&
 addEventListener('keyup', e => { keys[e.code] = false; });
 addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
 let dragging = false, skipMove = 0;
-cv.addEventListener('mousedown', () => { if (screen !== 'play') return; dragging = true; if (document.pointerLockElement !== cv && cv.requestPointerLock) { try { const r = cv.requestPointerLock(); if (r && r.catch) r.catch(() => { }); } catch (e) { } } wantFire = true; wantAbility = true; });
+cv.addEventListener('mousedown', () => { if (screen === 'cine') { dragging = true; if (document.pointerLockElement !== cv && cv.requestPointerLock) { try { const r = cv.requestPointerLock(); if (r && r.catch) r.catch(() => { }); } catch (e) { } } return; }
+  if (screen !== 'play') return; dragging = true; if (document.pointerLockElement !== cv && cv.requestPointerLock) { try { const r = cv.requestPointerLock(); if (r && r.catch) r.catch(() => { }); } catch (e) { } } wantFire = true; wantAbility = true; });
 addEventListener('mouseup', () => { dragging = false; });
-addEventListener('mousemove', e => { if (screen !== 'play') return; if (skipMove > 0) { skipMove--; return; } if ((document.pointerLockElement === cv || dragging) && Math.abs(e.movementX) < 250 && Math.abs(e.movementY) < 250) { mdx += e.movementX; mdy += e.movementY; } });
+addEventListener('mousemove', e => { if (screen === 'cine' && S && S.cine && S.cine.phase === 'descent' && (document.pointerLockElement === cv || dragging) && Math.abs(e.movementX) < 250 && Math.abs(e.movementY) < 250) { const c = S.cine, sn = .0023 * SET.sens; c.ly = clamp((c.ly || 0) + e.movementX * sn, -LOOK_Y, LOOK_Y); c.lp = clamp((c.lp || 0) - e.movementY * sn, -LOOK_D, LOOK_U); }
+  if (screen !== 'play') return; if (skipMove > 0) { skipMove--; return; } if ((document.pointerLockElement === cv || dragging) && Math.abs(e.movementX) < 250 && Math.abs(e.movementY) < 250) { mdx += e.movementX; mdy += e.movementY; } });
 document.addEventListener('pointerlockchange', () => { skipMove = 2; if (document.pointerLockElement === cv) lockOK = true; else if (lockOK && screen === 'play' && S && !S.over) show('pause'); });
 function refreshFace(id) { const i = CREW_IDS.indexOf(id); if (i < 0) return; gl.bindTexture(gl.TEXTURE_2D_ARRAY, R.tex);
   for (const [lay, open] of [[TL.FACE + i, false], [TL.FACE_OPEN + i, true]]) gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, lay, 256, 256, 1, gl.RGBA, gl.UNSIGNED_BYTE, faceLayer(id, open));
