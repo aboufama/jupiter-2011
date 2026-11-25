@@ -12879,6 +12879,891 @@ const PARADE = (() => {
 })();
 
 
+/* SHORE — the splashdown. The return capsule comes down under its ringsail canopy into the last few metres of surf
+   off a beach of black volcanic sand, and the shot settles into the first frame of the recovery footage (a match cut).
+   Needs prims.js only (TL, STRIDE). No DOM, no clock, no Math.random: everything is a pure function of t.
+
+     SHORE.build(B)      everything static into batch B: sea bed, beach, dunes, hinterland, far sea, vehicles, tracks,
+                         the standing people, props. Returns {}. It also makes every table frame() uses and runs the
+                         frame code across the shot on a scratch buffer, so the first frame costs what the others do.
+     SHORE.frame(B, t)   everything that moves at time t (seconds, t = 0 the heat shield meets the water): the near sea
+                         (swell, foam runs, lace, wash), capsule, canopy, lines, pilot chute, splash, the people who run
+                         and wade, light bars, boat, far helicopter rotor, windsock. Appends at B.n; never more than
+                         about 104,000 vertices, so give it a batch of 120,000.
+     SHORE.CAM           { e, yaw, pitch, fov, asp } the matched camera (the game's mat(yaw, pitch, e, asp, fov)).
+     SHORE.camAt(t)      { e, yaw, pitch, fov } the aerial operator's camera at time t; equals CAM at T1 exactly and
+                         from then on holds it with a breath of float (under 0.1 degree).
+     SHORE.T0, SHORE.T1  start of the shot (capsule high under the canopy) and the settled match frame.
+     SHORE.SKY           0..1 grey of the overcast sky (clear colour, after tone mapping).
+     SHORE.TRIS          static triangle count after build.
+     SHORE.impact        [x, y, z] of the splash.
+
+   World: metres, +Y up, the sea is +Z (south), the beach is -Z, the shoreline runs along X. Mean sea level y = 0.
+   All light is BAKED into `shade` (flat overcast: soft top light, occlusion under and around things, wet sand dark and
+   glossy by tone). Draw with a flat light term (lit = 1). Everything is on the WHITE layer, so shade is the tone:
+   display = 1 - exp(-1.35 * shade). Tones are matched to the reference frame in that space (before any grade).
+   The fine sea mesh and the foam lace cover what the reference frame (828:576) sees, with a margin; beyond that the
+   sea continues at a coarser grain, so a wider picture still shows a complete scene. */
+const SHORE = (() => {
+  const PI = Math.PI, TAU = PI * 2, D2R = PI / 180;
+  const T0 = -9, T1 = 6, SKY = .76;
+  const RW = 828, RH = 576, ASP = RW / RH;
+  const LW = TL.WHITE;
+
+  // ================================================================ small maths
+  const clamp = (v, a, b) => v < a ? a : v > b ? b : v, mix = (a, b, t) => a + (b - a) * t, sat = v => v < 0 ? 0 : v > 1 ? 1 : v;
+  const sst = (a, b, x) => { const t = sat((x - a) / (b - a)); return t * t * (3 - 2 * t); };
+  const hsh = (a, b) => { let h = Math.imul(a | 0, 374761393) + Math.imul(b | 0, 668265263); h = Math.imul(h ^ h >>> 13, 1274126177); return ((h ^ h >>> 16) >>> 0) / 4294967296; };
+  const rng = seed => { let a = seed | 0; return () => { a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; };
+  // value noise and fbm, 0..1
+  const vn = (x, y, s) => { const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi, ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy), k = s * 7919;
+    const a = hsh(xi + k, yi), b = hsh(xi + 1 + k, yi), c = hsh(xi + k, yi + 1), d = hsh(xi + 1 + k, yi + 1); return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy; };
+  const fbm = (x, y, s, o) => { let v = 0, a = .5, n = 0; for (let i = 0; i < o; i++) { v += a * vn(x, y, s + i * 13); n += a; a *= .5; x = x * 2.03 + 17.1; y = y * 2.03 - 9.4; } return v / n; };
+  // cellular noise: WF1, WF2 = distances to the nearest and second nearest feature point
+  let WF1 = 0, WF2 = 0;
+  function worley(x, y, s) { const xi = Math.floor(x), yi = Math.floor(y); let f1 = 9, f2 = 9;
+    for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) { const cx = xi + i, cy = yi + j, px = cx + hsh(cx + s * 131, cy), py = cy + hsh(cx, cy + s * 257 + 91), d = Math.hypot(px - x, py - y); if (d < f1) { f2 = f1; f1 = d; } else if (d < f2) f2 = d; }
+    WF1 = f1; WF2 = f2; }
+  const TONE = T => -Math.log(1 - T) / 1.35;           // display tone 0..1 -> shade on the WHITE layer
+  const nrm = a => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
+  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]], add = (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]], mad = (a, b, s) => [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s];
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  // the soft top light of an overcast sky on a surface whose normal has this y
+  const LIT = ny => ny >= 0 ? .56 + .44 * ny : Math.max(.2, .56 + .4 * ny);
+
+  // ================================================================ the matched camera
+  // Fitted to the reference frame: the capsule's waterline centre is the world origin.
+  const CAM = { e: [13.66, 17.91, 18.90], yaw: -37 * D2R, pitch: -40 * D2R, fov: 36.2 * D2R, asp: ASP };
+  function basis(yaw, pitch) { const cp = Math.cos(pitch), f = [Math.sin(yaw) * cp, Math.sin(pitch), -Math.cos(yaw) * cp], r = [Math.cos(yaw), 0, Math.sin(yaw)]; return { f, r, u: cross(r, f) }; }
+  const CB = basis(CAM.yaw, CAM.pitch), CF = RH / 2 / Math.tan(CAM.fov / 2);
+  // reference pixel -> world point on the plane y = gy, and back
+  function UN(px, py, gy) { const x = (px - RW / 2) / CF, y = -(py - RH / 2) / CF, d = [CB.r[0] * x + CB.u[0] * y + CB.f[0], CB.r[1] * x + CB.u[1] * y + CB.f[1], CB.r[2] * x + CB.u[2] * y + CB.f[2]], t = ((gy || 0) - CAM.e[1]) / d[1]; return [CAM.e[0] + d[0] * t, gy || 0, CAM.e[2] + d[2] * t]; }
+  function PR(x, y, z) { const dx = x - CAM.e[0], dy = y - CAM.e[1], dz = z - CAM.e[2], w = dx * CB.f[0] + dy * CB.f[1] + dz * CB.f[2]; return [RW / 2 + (dx * CB.r[0] + dy * CB.r[1] + dz * CB.r[2]) / w * CF, RH / 2 - (dx * CB.u[0] + dy * CB.u[1] + dz * CB.u[2]) / w * CF, w]; }
+  const EN = [34, 36, 52];                               // nominal eye for baked view-dependent tone far away
+
+  // ================================================================ 3x4 matrices (row major: m0..m3 / m4..m7 / m8..m11)
+  const mI = () => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0];
+  const mT = (x, y, z) => [1, 0, 0, x, 0, 1, 0, y, 0, 0, 1, z];
+  const mRY = a => { const c = Math.cos(a), s = Math.sin(a); return [c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0]; };   // heading: -Z turns toward +X
+  const mRX = a => { const c = Math.cos(a), s = Math.sin(a); return [1, 0, 0, 0, 0, c, -s, 0, 0, s, c, 0]; };
+  const mRZ = a => { const c = Math.cos(a), s = Math.sin(a); return [c, -s, 0, 0, s, c, 0, 0, 0, 0, 1, 0]; };
+  const mS = s => [s, 0, 0, 0, 0, s, 0, 0, 0, 0, s, 0];
+  function mM(a, b) { const o = new Array(12); for (let r = 0; r < 3; r++) { const a0 = a[r * 4], a1 = a[r * 4 + 1], a2 = a[r * 4 + 2]; o[r * 4] = a0 * b[0] + a1 * b[4] + a2 * b[8]; o[r * 4 + 1] = a0 * b[1] + a1 * b[5] + a2 * b[9]; o[r * 4 + 2] = a0 * b[2] + a1 * b[6] + a2 * b[10]; o[r * 4 + 3] = a0 * b[3] + a1 * b[7] + a2 * b[11] + a[r * 4 + 3]; } return o; }
+  const mMs = (...m) => m.reduce(mM);
+  const mP = (m, p) => [m[0] * p[0] + m[1] * p[1] + m[2] * p[2] + m[3], m[4] * p[0] + m[5] * p[1] + m[6] * p[2] + m[7], m[8] * p[0] + m[9] * p[1] + m[10] * p[2] + m[11]];
+  // rotation that takes +Y to the unit vector a by the shortest way
+  function mTilt(ax, ay, az) { const vx = az, vz = -ax, k = 1 / (1 + ay); return [1 - vz * vz * k, -vz, vx * vz * k, 0, vz, 1 - (vx * vx + vz * vz) * k, -vx, 0, vx * vz * k, vx, 1 - vx * vx * k, 0]; }
+
+  // ================================================================ geometry collector (local space parts)
+  // 9 floats per vertex: x y z | nx ny nz | albedo multiplier | emissive | palette slot
+  function Geo() {
+    let a = new Float32Array(9 * 1536), n = 0, slot = 0, alb = 1, em = 0, X = null;
+    const grow = k => { if ((n + k) * 9 > a.length) { const b = new Float32Array(Math.max(a.length * 2, (n + k) * 9)); b.set(a); a = b; } };
+    const g = {
+      mat(s, al, e) { slot = s || 0; alb = al === undefined ? 1 : al; em = e || 0; return g; },
+      xf(m) { X = m || null; return g; },
+      v(p, nn, al) { grow(1); const o = n * 9; let x = p[0], y = p[1], z = p[2], nx = nn[0], ny = nn[1], nz = nn[2];
+        if (X) { const m = X; const tx = m[0] * x + m[1] * y + m[2] * z + m[3], ty = m[4] * x + m[5] * y + m[6] * z + m[7], tz = m[8] * x + m[9] * y + m[10] * z + m[11], ux = m[0] * nx + m[1] * ny + m[2] * nz, uy = m[4] * nx + m[5] * ny + m[6] * nz, uz = m[8] * nx + m[9] * ny + m[10] * nz, l = Math.hypot(ux, uy, uz) || 1; x = tx; y = ty; z = tz; nx = ux / l; ny = uy / l; nz = uz / l; }
+        a[o] = x; a[o + 1] = y; a[o + 2] = z; a[o + 3] = nx; a[o + 4] = ny; a[o + 5] = nz; a[o + 6] = alb * (al === undefined ? 1 : al); a[o + 7] = em; a[o + 8] = slot; n++; },
+      // flat triangle / quad; `out` is a direction (or null) the normal should agree with
+      tri(p0, p1, p2, out) { let nn = nrm(cross(sub(p1, p0), sub(p2, p0))); if (out && dot(nn, out) < 0) nn = [-nn[0], -nn[1], -nn[2]]; g.v(p0, nn); g.v(p1, nn); g.v(p2, nn); return g; },
+      quad(p0, p1, p2, p3, out) { let nn = nrm(cross(sub(p1, p0), sub(p3, p0))); if (out && dot(nn, out) < 0) nn = [-nn[0], -nn[1], -nn[2]]; g.v(p0, nn); g.v(p1, nn); g.v(p2, nn); g.v(p0, nn); g.v(p2, nn); g.v(p3, nn); return g; },
+      // loft through rings (arrays of points, same count). o: { open (rings are open strips), flat, capA, capB, al(i, j, p) -> albedo multiplier,
+      //   out(p) -> direction the surface faces near p (default: away from the ring centroid) }
+      loft(R, o) { o = o || {}; const nr = R.length, np = R[0].length, cl = !o.open, nq = cl ? np : np - 1;
+        const cen = R.map(r => { const c = [0, 0, 0]; for (const p of r) { c[0] += p[0]; c[1] += p[1]; c[2] += p[2]; } return [c[0] / np, c[1] / np, c[2] / np]; });
+        const FN = []; for (let i = 0; i < nr - 1; i++) { const row = []; for (let j = 0; j < nq; j++) { const j1 = (j + 1) % np, p0 = R[i][j], p1 = R[i][j1], p2 = R[i + 1][j1], p3 = R[i + 1][j];
+            let nn = cross(sub(p2, p0), sub(p3, p1)); const l = Math.hypot(nn[0], nn[1], nn[2]); nn = l > 1e-12 ? [nn[0] / l, nn[1] / l, nn[2] / l] : [0, 1, 0];
+            const mid = [(p0[0] + p1[0] + p2[0] + p3[0]) / 4, (p0[1] + p1[1] + p2[1] + p3[1]) / 4, (p0[2] + p1[2] + p2[2] + p3[2]) / 4];
+            const od = o.out ? o.out(mid) : sub(mid, [(cen[i][0] + cen[i + 1][0]) / 2, (cen[i][1] + cen[i + 1][1]) / 2, (cen[i][2] + cen[i + 1][2]) / 2]);
+            if (dot(nn, od) < 0) nn = [-nn[0], -nn[1], -nn[2]]; row.push(nn); } FN.push(row); }
+        const VN = (i, j) => { let s = [0, 0, 0]; for (const di of [-1, 0]) for (const dj of [-1, 0]) { const ii = i + di; let jj = j + dj; if (ii < 0 || ii >= nr - 1) continue; if (cl) jj = (jj + np) % np; else if (jj < 0 || jj >= nq) continue; const f = FN[ii][jj]; s[0] += f[0]; s[1] += f[1]; s[2] += f[2]; } return nrm(s); };
+        for (let i = 0; i < nr - 1; i++) for (let j = 0; j < nq; j++) { const j1 = (j + 1) % np, q = [[i, j], [i, j1], [i + 1, j1], [i + 1, j]];
+          for (const k of [0, 1, 2, 0, 2, 3]) { const [a0, b0] = q[k], p = R[a0][b0]; g.v(p, o.flat ? FN[i][j] : VN(a0, b0), o.al ? o.al(a0, b0, p) : undefined); } }
+        if (o.capA) { const c = cen[0], nn = nrm(sub(c, cen[1])); for (let j = 0; j < np; j++) { g.v(c, nn); g.v(R[0][j], nn); g.v(R[0][(j + 1) % np], nn); } }
+        if (o.capB) { const c = cen[nr - 1], nn = nrm(sub(c, cen[nr - 2])); for (let j = 0; j < np; j++) { g.v(c, nn); g.v(R[nr - 1][(j + 1) % np], nn); g.v(R[nr - 1][j], nn); } }
+        return g; },
+      // surface of revolution about +Y: prof = [[r, y], ...]
+      lathe(prof, seg, o) { return g.loft(prof.map(([r, y]) => { const R = []; for (let i = 0; i < seg; i++) { const t = i / seg * TAU; R.push([r * Math.sin(t), y, -r * Math.cos(t)]); } return R; }), o); },
+      // tapered tube from a to b
+      tube(p0, p1, r0, r1, sides, o) { const ax = nrm(sub(p1, p0)), px = nrm(Math.abs(ax[1]) < .9 ? cross(ax, [0, 1, 0]) : cross(ax, [1, 0, 0])), py = cross(ax, px), R = [[], []];
+        for (let i = 0; i < sides; i++) { const t = i / sides * TAU, c = Math.cos(t), s = Math.sin(t), d = [px[0] * c + py[0] * s, px[1] * c + py[1] * s, px[2] * c + py[2] * s]; R[0].push(mad(p0, d, r0)); R[1].push(mad(p1, d, r1)); } return g.loft(R, o); },
+      // box from centre and half sizes (axis aligned in the current frame); faces string picks sides: xXyYzZ
+      box(c, h, faces) { const P = (sx, sy, sz) => [c[0] + h[0] * sx, c[1] + h[1] * sy, c[2] + h[2] * sz], F = faces || 'xXyYzZ';
+        if (F.includes('Z')) g.quad(P(-1, 1, 1), P(1, 1, 1), P(1, -1, 1), P(-1, -1, 1), [0, 0, 1]); if (F.includes('z')) g.quad(P(1, 1, -1), P(-1, 1, -1), P(-1, -1, -1), P(1, -1, -1), [0, 0, -1]);
+        if (F.includes('X')) g.quad(P(1, 1, 1), P(1, 1, -1), P(1, -1, -1), P(1, -1, 1), [1, 0, 0]); if (F.includes('x')) g.quad(P(-1, 1, -1), P(-1, 1, 1), P(-1, -1, 1), P(-1, -1, -1), [-1, 0, 0]);
+        if (F.includes('Y')) g.quad(P(-1, 1, -1), P(1, 1, -1), P(1, 1, 1), P(-1, 1, 1), [0, 1, 0]); if (F.includes('y')) g.quad(P(-1, -1, 1), P(1, -1, 1), P(1, -1, -1), P(-1, -1, -1), [0, -1, 0]); return g; },
+      // ellipsoid
+      ball(c, r, seg, rings, o) { const R = []; for (let j = 0; j <= rings; j++) { const ph = j / rings * PI, row = [], sr = Math.max(Math.sin(ph), 1e-3); for (let i = 0; i < seg; i++) { const th = i / seg * TAU; row.push([c[0] + r[0] * sr * Math.sin(th), c[1] + r[1] * Math.cos(ph), c[2] - r[2] * sr * Math.cos(th)]); } R.push(row); } return g.loft(R, o); },
+      // multiply every albedo so far (from vertex index i0) by fn(x, y, z, nx, ny, nz)
+      post(fn, i0) { for (let i = i0 || 0; i < n; i++) { const o = i * 9; a[o + 6] *= fn(a[o], a[o + 1], a[o + 2], a[o + 3], a[o + 4], a[o + 5]); } return g; },
+      get n() { return n; },
+      done() { return a.slice(0, n * 9); },
+    };
+    return g;
+  }
+
+  // ---- static batch writer (world space)
+  let SD = null, SN = 0, SMAX = 0;
+  function sv(x, y, z, nx, ny, nz, sh, em) { if (SN >= SMAX) return; const o = SN * 12; SD[o] = x; SD[o + 1] = y; SD[o + 2] = z; SD[o + 3] = .5; SD[o + 4] = .5; SD[o + 5] = LW; SD[o + 6] = nx; SD[o + 7] = ny; SD[o + 8] = nz; SD[o + 9] = sh; SD[o + 10] = em || 0; SD[o + 11] = 0; SN++; }
+  // haze toward the sky tone with distance from the nominal eye
+  const SH_HAZE = TONE(SKY - .02);
+  const hazeK = d => d < 90 ? 0 : 1 - Math.exp(-(d - 90) / 1500);
+  const hazed = (sh, x, y, z) => { const k = hazeK(Math.hypot(x - EN[0], y - EN[1], z - EN[2])); return sh + (SH_HAZE - sh) * k; };
+  // stamp a part into the static batch through matrix M (rotation and uniform scale s), palette pal (slot -> shade)
+  function stampS(P, M, pal, ao) { const n = P.length, s = Math.hypot(M[0], M[4], M[8]) || 1;
+    for (let i = 0; i < n; i += 9) { const x = P[i], y = P[i + 1], z = P[i + 2], a = P[i + 3], b = P[i + 4], c = P[i + 5];
+      const wx = M[0] * x + M[1] * y + M[2] * z + M[3], wy = M[4] * x + M[5] * y + M[6] * z + M[7], wz = M[8] * x + M[9] * y + M[10] * z + M[11], nx = (M[0] * a + M[1] * b + M[2] * c) / s, ny = (M[4] * a + M[5] * b + M[6] * c) / s, nz = (M[8] * a + M[9] * b + M[10] * c) / s;
+      let sh = (pal ? pal[P[i + 8]] : 1) * P[i + 6] * LIT(ny); if (ao) sh *= ao(wx, wy, wz); sv(wx, wy, wz, nx, ny, nz, hazed(sh, wx, wy, wz), P[i + 7]); } }
+  // ---- dynamic batch writer
+  let BD = null, BN = 0, BMAX = 0;
+  function stampD(P, M, pal, k) { const n = P.length; if (BN + n / 9 > BMAX) return; const d = BD; let o = BN * 12; k = k === undefined ? 1 : k;
+    const m0 = M[0], m1 = M[1], m2 = M[2], m3 = M[3], m4 = M[4], m5 = M[5], m6 = M[6], m7 = M[7], m8 = M[8], m9 = M[9], m10 = M[10], m11 = M[11];
+    for (let i = 0; i < n; i += 9) { const x = P[i], y = P[i + 1], z = P[i + 2], a = P[i + 3], b = P[i + 4], c = P[i + 5], ny = m4 * a + m5 * b + m6 * c;
+      d[o] = m0 * x + m1 * y + m2 * z + m3; d[o + 1] = m4 * x + m5 * y + m6 * z + m7; d[o + 2] = m8 * x + m9 * y + m10 * z + m11; d[o + 3] = .5; d[o + 4] = .5; d[o + 5] = LW;
+      d[o + 6] = m0 * a + m1 * b + m2 * c; d[o + 7] = ny; d[o + 8] = m8 * a + m9 * b + m10 * c; d[o + 9] = (pal ? pal[P[i + 8]] : 1) * P[i + 6] * (ny >= 0 ? .56 + .44 * ny : .56 + .36 * ny) * k; d[o + 10] = P[i + 7]; d[o + 11] = 0; o += 12; }
+    BN += n / 9; }
+  function dv(x, y, z, nx, ny, nz, sh, em) { if (BN >= BMAX) return; const o = BN * 12, d = BD; d[o] = x; d[o + 1] = y; d[o + 2] = z; d[o + 3] = .5; d[o + 4] = .5; d[o + 5] = LW; d[o + 6] = nx; d[o + 7] = ny; d[o + 8] = nz; d[o + 9] = sh; d[o + 10] = em || 0; d[o + 11] = 0; BN++; }
+
+  // ================================================================ the ground
+  // cross-shore profile: z (south positive) -> height. Monotone cubic through the control points.
+  const PZ = [-4200, -1200, -300, -110, -80, -68, -61, -56, -50, -46, -42, -25, -20, -8, -5.5, -3, 0, 3, 9, 16, 30, 60, 150, 450];
+  const PY = [38, 11, 4.6, 3.6, 3.5, 4.3, 6.1, 5.4, 2.6, 1.72, 1.52, 1.28, 1.03, .17, 0, -.07, -.52, -.78, -1.0, -.75, -1.6, -3, -6, -14];
+  const PM = (() => { const n = PZ.length, d = [], m = new Array(n); for (let i = 0; i < n - 1; i++) d.push((PY[i + 1] - PY[i]) / (PZ[i + 1] - PZ[i])); m[0] = d[0]; m[n - 1] = d[n - 2];
+    for (let i = 1; i < n - 1; i++) m[i] = d[i - 1] * d[i] <= 0 ? 0 : 2 * d[i - 1] * d[i] / (d[i - 1] + d[i]); return m; })();
+  function prof(z) { const n = PZ.length; if (z <= PZ[0]) return PY[0]; if (z >= PZ[n - 1]) return PY[n - 1]; let i = 0; while (z > PZ[i + 1]) i++; const h = PZ[i + 1] - PZ[i], t = (z - PZ[i]) / h, t2 = t * t, t3 = t2 * t;
+    return (2 * t3 - 3 * t2 + 1) * PY[i] + (t3 - 2 * t2 + t) * h * PM[i] + (-2 * t3 + 3 * t2) * PY[i + 1] + (t3 - t2) * h * PM[i + 1]; }
+  function ground(x, z) { let y = prof(z);
+    if (z < -43) { const d = sst(-43, -52, z) * sst(-130, -72, z);                         // the dune ridge: blowouts and hummocks
+      y += d * ((fbm(x * .045, z * .05, 21, 3) - .5) * 4.2 + (fbm(x * .16, z * .16, 23, 2) - .5) * 1.3);
+      y += sst(-90, -400, z) * (fbm(x * .004, z * .004, 27, 3) - .35) * 14 + sst(-600, -3000, z) * fbm(x * .0011, z * .0011, 29, 3) * 90; }
+    else if (z < -22) y += sst(-22, -30, z) * ((fbm(x * .13, z * .13, 31, 2) - .5) * .22);  // hummocky backshore
+    if (z < -3 && z > -30) y += Math.sin(x * .21 + 1.3) * .035 * sst(-3, -8, z) * sst(-30, -18, z);   // faint beach cusps
+    return y; }
+  // objects that sit on the sand and darken it: [x, z, halfLength, halfWidth, heading, strength, soft radius]
+  const OCC = [];
+  function occl(x, z) { let a = 1; for (let i = 0; i < OCC.length; i++) { const o = OCC[i], dx = x - o[0], dz = z - o[1]; if (dx * dx + dz * dz > 36) continue; const c = Math.cos(o[4]), s = Math.sin(o[4]), lx = dx * c + dz * s, lz = -dx * s + dz * c;
+      const ex = Math.max(0, Math.abs(lx) - o[3]), ez = Math.max(0, Math.abs(lz) - o[2]), d = Math.hypot(ex, ez) / o[6]; a *= 1 - o[5] * Math.exp(-d * d); } return a; }
+  // sand tone (display) before light and occlusion
+  function sandTone(x, z, y) {
+    let T = mix(.238, .262, sst(0, .45, y)); T = mix(T, .30, sst(1.0, 1.4, y));
+    T += (fbm(x * .33, z * .33, 3, 3) - .5) * .045 + (vn(x * 2.1, z * 2.1, 5) - .5) * .018;
+    if (y < .7) { const p = PR(x, y, z), dx = CAM.e[0] - x, dz = CAM.e[2] - z, sinE = (CAM.e[1] - y) / Math.hypot(dx, CAM.e[1] - y, dz), g = 1 - sinE; T += .2 * sst(.7, .05, y) * g * g * Math.sqrt(g) * (p[2] > 0 ? 1 : 0); }   // wet sheen toward grazing
+    if (z < -44) { const veg = sst(.38, .62, fbm(x * .09, z * .09, 41, 3) + sst(-46, -62, z) * .22 - sst(-52, -44, z) * .3); T = mix(mix(T, .36, sst(-44, -50, z)), .15 + .05 * vn(x * .6, z * .6, 43), veg * sst(-44, -49, z));
+      if (z < -75) T = mix(T, .19 + .1 * fbm(x * .012, z * .012, 45, 3), sst(-75, -95, z)); }
+    return T; }
+
+  // ================================================================ the sea
+  // swell: travelling toward the beach, wavelengths bunch up as the water shoals (stretched cross-shore coordinate)
+  const WV = [[22, 6.6, .17, 8], [12.5, 4.5, .085, -15], [7.2, 3.1, .042, 26], [4.1, 2.25, .02, -38]].map(([lam, per, A, th]) => { const k = TAU / lam, a = th * D2R; return { k, w: TAU / per, A, dx: Math.sin(a), dz: -Math.cos(a) }; });
+  const NW = WV.length;
+  const depthAt = z => Math.max(.22, -prof(z));
+  const STR = (() => { const z0 = -8, dz = .25, n = 2200, a = new Float32Array(n); let s = 0; for (let i = 1; i < n; i++) { const z = z0 + (i - .5) * dz; s += Math.sqrt(1.7 / depthAt(z)) * dz; a[i] = s; } const zero = a[Math.round((0 - z0) / dz)]; for (let i = 0; i < n; i++) a[i] -= zero; return { z0, dz, n, a }; })();
+  function stretch(z) { const f = clamp((z - STR.z0) / STR.dz, 0, STR.n - 1.001), i = f | 0; return STR.a[i] + (STR.a[i + 1] - STR.a[i]) * (f - i); }
+  const stretchD = z => Math.sqrt(1.7 / depthAt(z));
+  const envAt = z => .34 * sst(-5.5, 0, z) + .46 * sst(0, 9, z) + .2 * sst(8, 20, z);
+  const levelAt = t => .012 * Math.sin(t * .62 + .9) + .006 * Math.sin(t * 1.37 + 2.1);      // slow surge at the shore
+  const IMP = [.42, 0, -.3];                                                                // where the heat shield meets the water
+  // impact ring wave
+  const ringR = t => 2.7 + 5.6 * (1 - Math.exp(-t / 1.6)) + .35 * t;
+  function ringEta(r, t) { if (t <= 0) return 0; const q = (r - ringR(t)) / (.55 + .22 * t), g = 1 / (1 + q * q); return .5 * Math.exp(-t / 1.25) * g * g - .16 * Math.exp(-t / .5) * sst(4, 1.5, r); }
+  // sea surface height anywhere (the mesh uses the same sum from per-vertex tables)
+  // (tables of the z-only terms and per-time constants: this is called a few thousand times a frame)
+  const SYT = (() => { const n = STR.n, e = new Float32Array(n), l = new Float32Array(n); for (let i = 0; i < n; i++) { const z = STR.z0 + i * STR.dz; e[i] = envAt(z); l[i] = sst(8, -4, z); } return { e, l }; })();
+  const SK = WV.map(w => [w.A, w.k * w.dx, w.k * w.dz, w.w]).flat(), ST = { t: NaN, lev: 0, hit: false, R: 0, rw: 1, rA: 0, rD: 0, wt: new Float64Array(NW) };
+  function seaY(x, z, t) { const T = ST;
+    if (t !== T.t) { T.t = t; T.lev = levelAt(t); T.hit = t > 0; if (T.hit) { T.R = ringR(t); T.rw = 1 / (.55 + .22 * t); T.rA = .5 * Math.exp(-t / 1.25); T.rD = .16 * Math.exp(-t / .5); } for (let i = 0; i < NW; i++) T.wt[i] = WV[i].w * t; }
+    let f = (z - STR.z0) / STR.dz; f = f < 0 ? 0 : f > STR.n - 1.001 ? STR.n - 1.001 : f; const i = f | 0, u = f - i, A = STR.a, zs = A[i] + (A[i + 1] - A[i]) * u, E = SYT.e, Lv = SYT.l;
+    let y = (SK[0] * Math.sin(SK[1] * x + SK[2] * zs - T.wt[0]) + SK[4] * Math.sin(SK[5] * x + SK[6] * zs - T.wt[1]) + SK[8] * Math.sin(SK[9] * x + SK[10] * zs - T.wt[2]) + SK[12] * Math.sin(SK[13] * x + SK[14] * zs - T.wt[3])) * (E[i] + (E[i + 1] - E[i]) * u) + T.lev * (Lv[i] + (Lv[i + 1] - Lv[i]) * u);
+    if (T.hit) { const dx = x - IMP[0], dz = z - IMP[2], r2 = dx * dx + dz * dz; if (r2 < 484) { const r = Math.sqrt(r2), q = (r - T.R) * T.rw, g = 1 / (1 + q * q); y += T.rA * g * g - (r < 4 ? T.rD * sst(4, 1.5, r) : 0); } }
+    return y; }
+
+  // ---- foam. Each vertex carries up to two "arrival events" (a bore front reaches it at time TA and the foam it leaves
+  // dissolves over TAU) plus standing foam KS. The fronts are polylines that stall at time Ts; s = distance behind.
+  // side: +1 if the swept water is on the +z side walking the polyline in order.
+  const LOBES = [];
+  function lobe(pts, o) { LOBES.push(Object.assign({ pts, Ts: T1 + .6, k: .17, tau: 3.3, K: 1.25, endA: 0, endB: 0 }, o)); }
+  // signed distance to a polyline; returns s >= 0 on the swept side (else -1); LE = 0..1 fade toward an open end
+  let LE = 1, LA = 0;
+  const scal = a => .2 * (vn(a * .37, 3.3, 425) - .5) + .08 * (vn(a * 1.45, 1.1, 427) - .5);   // scallops in a travelling front, by distance along it
+  function lobeDist(L, x, z) { const P = L.pts; let best = 1e9, bi = 0, bt = 0;
+    if (!L.cum) { L.cum = [0]; for (let i = 1; i < P.length; i++) L.cum.push(L.cum[i - 1] + Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1])); }
+    for (let i = 0; i < P.length - 1; i++) { const ax = P[i][0], az = P[i][1], dx = P[i + 1][0] - ax, dz = P[i + 1][1] - az, t = clamp(((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz), 0, 1), d = Math.hypot(x - ax - dx * t, z - az - dz * t); if (d < best) { best = d; bi = i; bt = t; } }
+    const ax = P[bi][0], az = P[bi][1], dx = P[bi + 1][0] - ax, dz = P[bi + 1][1] - az, cr = dx * (z - az) - dz * (x - ax); LE = 1; LA = L.cum[bi] + bt * (L.cum[bi + 1] - L.cum[bi]);
+    if (cr < 0) return -1;
+    // an open end fades out by how much nearer the point is to the line than to its end point, which is smooth everywhere
+    // (it goes to nothing along the whole edge of the region that end sweeps, not only beside the line)
+    if (L.endA) LE = Math.min(LE, sst(0, L.endA, Math.hypot(x - P[0][0], z - P[0][1]) - best));
+    if (L.endB) { const q = P[P.length - 1]; LE = Math.min(LE, sst(0, L.endB, Math.hypot(x - q[0], z - q[1]) - best)); }
+    return best; }
+  function defineLobes() {
+    // A: the foam run that sweeps in past the capsule from the south east (matched to the reference at T1)
+    const wig = (x, s, a) => (fbm(x * .05, s, 61, 2) - .5) * a;
+    const A = [[-1.75, 6.5], [-1.2, 5.0], [1.2, 2.0], [2.9, 0.0], [4.8, -.4], [7.2, -1.0], [8.8, -1.1], [10.6, -.3], [12.4, .9], [13.5, 1.3], [17, 1.9], [22, 1.3]];
+    for (let x = 30; x <= 330; x += 10) A.push([x, 1.6 + wig(x, 1.5, 5)]);
+    lobe(A, { lace: { a0: 0, a1: 44, s1: 3.2, du: .74, dw: .56, w: 1.2 }, endA: 5, KF: x => 1 + .22 * sst(3, 6, x), tauF: x => mix(mix(mix(2.35, 3.3, sst(3.5, 6, x)), .9, sst(11, 13.5, x)), 1.9 + 1.1 * vn(x * .07, 3.3, 63), sst(15, 21, x)) });
+    // A2: the line the backwash has left behind it (the lower edge of the run in the reference)
+    lobe([[320, 374], [380, 381], [450, 372], [500, 363], [540, 372], [575, 390], [610, 402], [650, 412], [700, 420], [745, 431], [790, 462], [828, 492], [900, 540]].map(p => { const q = UN(p[0], p[1], 0); return [q[0], q[2]]; }),
+      { lace: { a0: 0, a1: 60, s1: 1.4, du: .74, dw: .5, th: .8 }, Ts: T1 - 1.4, k: .1, tau: 4.2, K: .78, endA: 2.5, endB: 2.5, noRoll: 1, KF: x => .6 + .6 * vn(x * .5, 4.4, 62) });
+    // B: the next line of white water behind, still well outside the frame at T1
+    const Bp = []; for (let x = -330; x <= 330; x += 10) Bp.push([x, 26 + wig(x, 7.7, 7)]);
+    lobe(Bp, { far: 1, Ts: T1 + 3.5, k: .2, tau: 3.0, K: 1.2, KF: x => .55 + .9 * vn(x * .035, 9.1, 65) });
+    // C: far breakers on the outer bar
+    const Cp = []; for (let x = -330; x <= 330; x += 10) Cp.push([x, 62 + wig(x, 12.7, 12)]);
+    lobe(Cp, { far: 1, Ts: T1 + 6, k: .13, tau: 3.4, K: 1.15, KF: x => .3 + 1.1 * vn(x * .025, 4.1, 67) });
+    // W1: the bright streak up the beach to the west: the tail of the last swash
+    const W1 = [[-330, 2]]; for (let x = -320; x <= -50; x += 10) W1.push([x, 1.2 + wig(x, 21.5, 4)]);
+    W1.push([-40, 2.6], [-30, 2.0], [-23, .9], [-17.3, 0], [-15.2, -1.0], [-13.1, -1.9], [-10.7, -2.4], [-8.8, -2.8], [-6.9, -3.2], [-5.6, -3.45]);
+    lobe(W1, { lace: { a0: 290, a1: 345, s1: 1.5, du: .7, dw: .42, w: 1.15 }, Ts: T1 + .25, k: .12, tau: 1.5, K: 1.1, endB: 2.4, KF: x => (x > -25 ? .55 + .6 * vn(x * .45, 2.2, 68) : .4 + .8 * vn(x * .04, 2.2, 69)) });
+    // W0: the swash running up the sand west of the capsule, a pale foamy film with a scalloped edge (traced from the reference)
+    const W0 = [[-330, -5.0]]; for (let x = -320; x <= -40; x += 10) W0.push([x, -5.3 + wig(x, 31.5, 2.2)]);
+    W0.push([-28.56, -6.22], [-26.35, -5.82], [-24.07, -5.29], [-22.52, -5.28], [-21.36, -5.55], [-19.73, -5.40], [-17.93, -5.04], [-16.94, -5.37], [-15.27, -6.28], [-14.16, -6.46], [-12.58, -6.74], [-11.08, -7.07], [-9.73, -7.51], [-8.86, -7.47], [-8.64, -6.74], [-8.53, -5.76], [-8.41, -5.05], [-7.9, -4.2]);
+    lobe(W0, { lace: { a0: 296, a1: 340, s1: 1.8, du: .9, dw: .6, w: .9, th: 1.35, pa: .6, pc: .6, pd: .2 }, Ts: T1 + .9, k: .1, tau: 6, K: .86, endB: 1.0, noRoll: 1, KF: x => .78 + .44 * vn(x * .3, 1.7, 66) });
+    // W3: lace between the canopy and the beach
+    lobe([[-9.2, .4], [-7.1, -1.2], [-5.6, -1.7], [-4.2, -2.0], [-3.3, -2.1]], { lace: { a0: 0, a1: 7, s1: 1.8, du: .7, dw: .5, w: .85 }, Ts: T1 - .8, k: .1, tau: 1.6, K: .85, endA: 1.5, endB: 1.2, noRoll: 1 });
+    lobe([[-9, 3.2], [-7.4, 2.0], [-5.9, 1.1], [-4.1, .3], [-3.2, 0]], { lace: { a0: 0, a1: 7.5, s1: 1.8, du: .7, dw: .5, w: .85 }, Ts: T1 - 1.6, k: .1, tau: 2.0, K: .75, endA: 1.5, endB: 1, noRoll: 1 });
+  }
+  // the (up to two) strongest foam events at a point: [arrival time, 1 / tau, strength, ramp rate] each
+  function evAt(x, z, out, o) { const ev = []; for (const L of LOBES) { const s = lobeDist(L, x, z); if (s < 0) continue; const K = L.K * LE * (L.KF ? L.KF(x) : 1), tau = (L.tauF ? L.tauF(x) : L.tau) * (.25 + .75 * LE), TA = L.Ts - Math.sqrt(s / (L.k * (1 + scal(LA)))); if (K < .05 || TA + 4 * tau < T0 - .5 || TA > T1 + 9) continue; ev.push([TA, 1 / tau, K, clamp(Math.sqrt(L.k * Math.max(s, .02)) / .28, .4, 6)]); }
+    ev.sort((a, b) => b[2] / b[1] - a[2] / a[1]); for (let k = 0; k < 2; k++) { const e = ev[k]; out[o + k * 4] = e ? e[0] : 1e9; out[o + k * 4 + 1] = e ? e[1] : 1; out[o + k * 4 + 2] = e ? e[2] : 0; out[o + k * 4 + 3] = e ? e[3] : 1; } }
+  // lace threshold: low along the cell walls of the foam net (where foam lingers), high in the holes
+  function lace(x, z) { const u = x * .8 + z * .6, w = -x * .6 + z * .8;                  // along / across the fronts
+    worley(u * .5, w * .8, 3); const cell = sat(1.15 - WF1 * 1.5);                         // holes at the cell centres
+    return clamp(.1 + .5 * fbm(u * .34, w * .95, 71, 3) + .34 * cell + .2 * (fbm(u * .1, w * .22, 73, 2) - .5), .08, 1.05); }
+  // ---- the mesh: a coarse tensor grid (L1) whose cells near the matched frame are split 4 x 4 (L0)
+  const C1 = 1.6, SUB = 4, C0 = C1 / SUB, CX0 = -24, CX1 = 17, CZ0 = -6, CZ1 = 16, NGROW = 10, GROW = 1.5;
+  const SH_DEEP = TONE(.372), SH_SKYR = TONE(.80), SH_FOAM = TONE(.905), SH_FILM = TONE(.285);
+  let SEA = null;
+  function seaAxis(c0, c1, growLo, growHi) { const a = []; let x = c0 * C1, s = C1; const lo = []; for (let i = 0; i < growLo; i++) { s *= GROW; x -= s; lo.push(x); } lo.reverse(); a.push(...lo); for (let i = c0; i <= c1; i++) a.push(i * C1); x = c1 * C1; s = C1; for (let i = 0; i < growHi; i++) { s *= GROW; x += s; a.push(x); } return a; }
+  function waterShade(x, y, z, gx, gz, ex, ey, ez) { const vx = ex - x, vy = ey - y, vz = ez - z, il = 1 / Math.sqrt(vx * vx + vy * vy + vz * vz); let c = 1 - (vy - gx * vx - gz * vz) * il; c = c < 0 ? 0 : c > 1 ? 1 : c; return SH_DEEP + (SH_SKYR - SH_DEEP) * c * c * Math.sqrt(c); }
+  function seaInit() {
+    if (SEA) return SEA; defineLobes();
+    const XS = seaAxis(CX0, CX1, NGROW, NGROW), ZS = seaAxis(CZ0, CZ1, 0, NGROW), nx = XS.length - 1, nz = ZS.length - 1, ic0 = NGROW, ic1 = NGROW + (CX1 - CX0), jc1 = CZ1 - CZ0;
+    // which core cells are refined: inside the matched frame's footprint on the water (plus a margin)
+    const fp = [UN(-30, -40), UN(RW + 30, -40), UN(RW + 30, RH + 430), UN(-30, RH + 430)];
+    const inFp = (x, z) => { for (let i = 0; i < 4; i++) { const a = fp[i], b = fp[(i + 1) % 4]; if ((b[0] - a[0]) * (z - a[2]) - (b[2] - a[2]) * (x - a[0]) < 0) return false; } return true; };
+    const fine = new Uint8Array(nx * nz), keep = new Uint8Array(nx * nz);
+    for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) { const xc = (XS[i] + XS[i + 1]) / 2, zc = (ZS[j] + ZS[j + 1]) / 2; keep[j * nx + i] = Math.min(ground(XS[i], ZS[j]), ground(XS[i + 1], ZS[j]), ground(XS[i], ZS[j + 1]), ground(XS[i + 1], ZS[j + 1])) < .42 ? 1 : 0;
+      if (keep[j * nx + i] && i >= ic0 && i < ic1 && j < jc1 && inFp(xc, zc)) fine[j * nx + i] = 1; }
+    const vid = new Map(), VXa = [], VZa = [], VF = [];
+    const vert = (I, J, f) => { const key = I * 8192 + J; let v = vid.get(key); if (v === undefined) { v = VXa.length; vid.set(key, v); const i = I >> 2, a = I & 3, j = J >> 2, b = J & 3; VXa.push(XS[i] + a * C0); VZa.push(ZS[j] + b * C0); VF.push(0); } if (f) VF[v] = 1; return v; };
+    const idx = [], hang = [];
+    for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) { const c = j * nx + i; if (!keep[c]) continue;
+      if (!fine[c]) { const a = vert(i * 4, j * 4), b = vert(i * 4 + 4, j * 4), d = vert(i * 4 + 4, j * 4 + 4), e = vert(i * 4, j * 4 + 4); idx.push(a, e, d, a, d, b); continue; }
+      for (let q = 0; q < SUB; q++) for (let p = 0; p < SUB; p++) { const a = vert(i * 4 + p, j * 4 + q, 1), b = vert(i * 4 + p + 1, j * 4 + q, 1), d = vert(i * 4 + p + 1, j * 4 + q + 1, 1), e = vert(i * 4 + p, j * 4 + q + 1, 1); idx.push(a, e, d, a, d, b); }
+      const nb = (di, dj) => { const ii = i + di, jj = j + dj; return ii >= 0 && ii < nx && jj >= 0 && jj < nz && keep[jj * nx + ii] && !fine[jj * nx + ii]; };
+      if (nb(-1, 0)) for (let q = 1; q < SUB; q++) hang.push(vert(i * 4, j * 4 + q), vert(i * 4, j * 4), vert(i * 4, j * 4 + 4), q / SUB);
+      if (nb(1, 0)) for (let q = 1; q < SUB; q++) hang.push(vert(i * 4 + 4, j * 4 + q), vert(i * 4 + 4, j * 4), vert(i * 4 + 4, j * 4 + 4), q / SUB);
+      if (nb(0, -1)) for (let p = 1; p < SUB; p++) hang.push(vert(i * 4 + p, j * 4), vert(i * 4, j * 4), vert(i * 4 + 4, j * 4), p / SUB);
+      if (nb(0, 1)) for (let p = 1; p < SUB; p++) hang.push(vert(i * 4 + p, j * 4 + 4), vert(i * 4, j * 4 + 4), vert(i * 4 + 4, j * 4 + 4), p / SUB); }
+    const NV = VXa.length, NS = idx.length, F = () => new Float32Array(NV);
+    const S = SEA = { XS, ZS, NV, NS, X: Float32Array.from(VXa), Z: Float32Array.from(VZa), IDX: Uint32Array.from(idx), HANG: Float32Array.from(hang), BED: F(), ENV: F(), SP: F(), PH: new Float32Array(NV * NW * 2), PT: F(), EV: new Float32Array(NV * 8), KS: F(), RI: F(), AN: F(), HZ: F(), SST: F(), LV: F(), EDGE: new Uint8Array(NV),
+      Y: F(), SH: F(), TPL: new Float32Array(NS * 12), x0: XS[0], x1: XS[nx], z0: ZS[0], z1: ZS[nz] };
+    for (let v = 0; v < NV; v++) { const x = S.X[v], z = S.Z[v], edge = x <= S.x0 + .01 || x >= S.x1 - .01 || z >= S.z1 - .01; S.EDGE[v] = edge ? 1 : 0;
+      S.BED[v] = ground(x, z); S.ENV[v] = edge ? 0 : envAt(z); S.SP[v] = stretchD(z); S.LV[v] = edge ? 0 : sst(8, -4, z); const zs = stretch(z);
+      for (let i = 0; i < NW; i++) { const w = WV[i], ph = w.k * (x * w.dx + zs * w.dz); S.PH[(v * NW + i) * 2] = Math.sin(ph); S.PH[(v * NW + i) * 2 + 1] = Math.cos(ph); }
+      S.PT[v] = VF[v] ? lace(x, z) : .55; S.RI[v] = Math.hypot(x - IMP[0], z - IMP[2]); S.AN[v] = .75 + .5 * vn(Math.atan2(z - IMP[2], x - IMP[0]) * 2.6, S.RI[v] * .35, 77);
+      S.HZ[v] = hazeK(Math.hypot(x - EN[0], EN[1], z - EN[2])); S.SST[v] = seaStatic(x, z);
+      evAt(x, z, S.EV, v * 8); S.KS[v] = 0; }
+    S.inFp = inFp;
+    for (let k = 0; k < NS; k++) { const v = S.IDX[k], o = k * 12; S.TPL[o] = S.X[v]; S.TPL[o + 2] = S.Z[v]; S.TPL[o + 3] = .5; S.TPL[o + 4] = .5; S.TPL[o + 5] = LW; S.TPL[o + 7] = 1; }
+    return S; }
+  // far, still sea: tone by the grazing angle from the nominal eye, hazed, with the surf lines along the coast baked in
+  function seaStatic(x, z) { let sh = waterShade(x, 0, z, 0, 0, EN[0], EN[1], EN[2]); const dep = -ground(x, z);
+    const surf = Math.max(sst(5, 1.5, z) * sst(-5, -1, z), .8 * Math.exp(-((z - 27) * (z - 27)) / 14), .7 * Math.exp(-((z - 63) * (z - 63)) / 40)) * (.35 + .9 * vn(x * .03, z * .2, 81));
+    sh += (SH_FOAM - sh) * sat(surf * 1.3 - .25) * .8; if (dep < .05) sh = SH_FILM;
+    return hazed(sh, x, 0, z); }
+  function seaFrame(t, ex, ey, ez) {
+    const S = seaInit(), NV = S.NV, X = S.X, Z = S.Z, PH = S.PH, EV = S.EV, Y = S.Y, SH = S.SH;
+    const ca = new Float64Array(NW), cb = new Float64Array(NW), kx = new Float64Array(NW), kz = new Float64Array(NW);
+    for (let i = 0; i < NW; i++) { const w = WV[i]; ca[i] = w.A * Math.cos(w.w * t); cb[i] = w.A * Math.sin(w.w * t); kx[i] = w.k * w.dx; kz[i] = w.k * w.dz; }
+    const lev = levelAt(t), hit = t > 0, Rr = hit ? ringR(t) : 0, rw = 1 / (.55 + .22 * t), rA = hit ? .5 * Math.exp(-t / 1.25) : 0, rD = hit ? .16 * Math.exp(-t / .5) : 0;
+    const fRing = hit ? 1.35 * Math.exp(-t / 2.1) : 0, fIn = hit ? 1.3 * Math.exp(-t / 2.7) * sst(0, .12, t) : 0, fw = 1 / (.5 + .25 * t), fCol = hit ? .5 * sst(.3, 2, t) : 0;
+    IF.hit = hit; IF.Rr = Rr; IF.fRing = fRing; IF.fIn = fIn; IF.fw = fw; IF.fCol = fCol;
+    for (let v = 0; v < NV; v++) {
+      if (S.EDGE[v]) { Y[v] = 0; SH[v] = S.SST[v]; continue; }
+      const o = v * 8; let s = 0, gx = 0, gz = 0;
+      for (let i = 0; i < NW; i++) { const sp = PH[o + i * 2], cp = PH[o + i * 2 + 1]; s += sp * ca[i] - cp * cb[i]; const c = cp * ca[i] + sp * cb[i]; gx += kx[i] * c; gz += kz[i] * c; }
+      const env = S.ENV[v]; let y = s * env + lev * S.LV[v]; gx *= env; gz *= env * S.SP[v];
+      const ri = S.RI[v]; let cov = S.KS[v];
+      if (hit && ri < 22) { const q = (ri - Rr) * rw, g = 1 / (1 + q * q); y += rA * g * g - (ri < 4 ? rD * sst(4, 1.5, ri) : 0);
+        const q2 = (ri - Rr) * fw, g2 = 1 / (1 + q2 * q2); cov += (fRing * g2 * g2 + fIn * sst(Rr + .4, Rr - 1.2, ri) * (.45 + .55 * sst(Rr - 4.5, Rr - .5, ri))) * S.AN[v]; const qc = (ri - 2.75) * 2.6; cov += fCol / (1 + qc * qc * qc * qc); }
+      const x = X[v], z = Z[v];
+      let sh = waterShade(x, y, z, gx, gz, ex, ey, ez); sh += (SH_HAZE - sh) * S.HZ[v];
+      let dep = y - S.BED[v]; if (dep < .05) sh = SH_FILM + (sh - SH_FILM) * (dep < 0 ? 0 : dep * 20);
+      const e = v * 8; let dt = t - EV[e]; if (dt > 0) { const u = dt * EV[e + 1]; if (u < 4) { const d = 1 - u * .25, d2 = d * d, r = dt * EV[e + 3]; cov += EV[e + 2] * d2 * d2 * (r < 1 ? r : 1); } }
+      dt = t - EV[e + 4]; if (dt > 0) { const u = dt * EV[e + 5]; if (u < 4) { const d = 1 - u * .25, d2 = d * d, r = dt * EV[e + 7]; cov += EV[e + 6] * d2 * d2 * (r < 1 ? r : 1); } }
+      if (cov > .04) { let f = (cov - .42 - .4 * S.PT[v]) * 2.4; f = f < 0 ? 0 : f > 1 ? 1 : f; f *= f * (3 - 2 * f); f += (1 - f) * (cov > .9 ? .27 : cov * .3);
+        if (dep < .09) { const run = cov > .3 ? 1 : (cov - .04) * 3.85, up = .03 * run; if (y < S.BED[v] + up) y = S.BED[v] + up; let g = cov * .5 + f * .45; if (g > .58) g = .58; g *= dep < .04 ? 1 : (.09 - dep) * 20; f = f > g ? f : g; if (dep < .03) f *= run; }   // the swash runs up the sand as a pale film
+        sh += (SH_FOAM * (.76 + .3 * S.PT[v]) - sh) * f; }
+      Y[v] = y; SH[v] = sh; }
+    const H = S.HANG; for (let i = 0; i < H.length; i += 4) { const a = H[i + 1], b = H[i + 2], w = H[i + 3]; Y[H[i]] = Y[a] + (Y[b] - Y[a]) * w; SH[H[i]] = SH[a] + (SH[b] - SH[a]) * w; }
+    const NS = S.NS; if (BN + NS > BMAX) return; const T = S.TPL, I = S.IDX; for (let k = 0, o = 1; k < NS; k++, o += 12) { const v = I[k]; T[o] = Y[v]; T[o + 8] = SH[v]; }
+    BD.set(T, BN * 12); BN += NS; }
+  const IF = { hit: false, Rr: 0, fRing: 0, fIn: 0, fw: 1, fCol: 0 };
+  // ---- the bore fronts as geometry: a low roller of white water riding each front, crisp where the grid is soft
+  function lobeStations(L) { if (L.st) return L.st; const P = L.pts, raw = []; let acc = 0;
+    for (let i = 0; i < P.length - 1; i++) { const ax = P[i][0], az = P[i][1], bx = P[i + 1][0], bz = P[i + 1][1], len = Math.hypot(bx - ax, bz - az), xm = Math.abs((ax + bx) / 2), step = xm < 30 ? (L.far ? 2.2 : .62) : xm < 70 ? (L.far ? 4 : 2.6) : 9, n = Math.max(1, Math.ceil(len / step));
+      for (let k = (i ? 1 : 0); k <= n; k++) { const u = k / n; raw.push([ax + (bx - ax) * u, az + (bz - az) * u, acc + len * u]); } acc += len; }
+    const n = raw.length, st = new Float32Array(n * 7);
+    for (let i = 0; i < n; i++) { const a = raw[Math.max(0, i - 1)], b = raw[Math.min(n - 1, i + 1)], dx = b[0] - a[0], dz = b[1] - a[1], l = Math.hypot(dx, dz) || 1, x = raw[i][0], d = raw[i][2];
+      let K = (L.KF ? L.KF(x) : 1) * (L.K / 1.25); if (L.endA) K *= sst(0, L.endA, d); if (L.endB) K *= sst(0, L.endB, acc - d);
+      st[i * 7] = x; st[i * 7 + 1] = raw[i][1]; st[i * 7 + 2] = -dz / l; st[i * 7 + 3] = dx / l; st[i * 7 + 4] = K * sst(-7.6, -6.2, raw[i][1] + 0) ; st[i * 7 + 5] = hsh(i, 411 + P.length); st[i * 7 + 6] = scal(d); }
+    L.st = st; L.sn = n; return st; }
+  function frontsFrame(t) { const S = SEA;
+    for (const L of LOBES) { if (L.noRoll || t > L.Ts + 1.6) continue; const st = lobeStations(L), n = L.sn, dT = L.Ts - t, sf = dT > 0 ? L.k * dT * dT : 0, speed = dT > 0 ? 2 * L.k * dT : 0, fade = dT > 0 ? 1 : 1 - (-dT) / 1.6; if (sf > 150) continue;
+      const wB = (.085 + .3 * Math.min(speed, 3)) * fade, hB = (.015 + .06 * Math.min(speed, 4)) * fade; let pv = false, ax = 0, ay = 0, az = 0, bx = 0, by = 0, bz = 0, cx = 0, cy = 0, cz = 0;
+      for (let i = 0; i < n; i++) { const o = i * 7, K = st[o + 4], nx = st[o + 2], nz = st[o + 3], sfi = sf * (1 + st[o + 6]), x = st[o] + nx * sfi, z = st[o + 1] + nz * sfi, ok = K > .08 && x > S.x0 + 3 && x < S.x1 - 3 && z < S.z1 - 3 && (!L.far || (x > -150 && x < 150));
+        if (!ok) { pv = false; continue; }
+        const ph = st[o + 5], w = wB * K * (.7 + .6 * vn(i * .31 + t * .5, ph * 9, 421)), h = hB * Math.min(K, 1.2), wb = w * (1.1 + 1.3 * vn(i * .47 - t * .35, ph * 5, 423));
+        const near = Math.abs(x) < 60, tx = x - nx * w * .25, tz = z - nz * w * .25, kx = x + nx * w * .3, kz = z + nz * w * .3, qx = x + nx * wb, qz = z + nz * wb;
+        const shal = z < -1.5, ty = Math.max(near ? seaY(tx, tz, t) : 0, shal ? ground(tx, tz) : -9) + .012, ky = Math.max(near ? seaY(kx, kz, t) : 0, shal ? ground(kx, kz) : -9) + .02 + h, qy = Math.max(near ? seaY(qx, qz, t) : 0, shal ? ground(qx, qz) : -9) + .014;
+        if (pv) { const s0 = SH_FOAM * .9, s1 = SH_FOAM * 1.06, s2 = SH_FOAM * .82;
+          dv(ax, ay, az, 0, 1, 0, s0); dv(tx, ty, tz, 0, 1, 0, s0); dv(kx, ky, kz, 0, 1, 0, s1); dv(ax, ay, az, 0, 1, 0, s0); dv(kx, ky, kz, 0, 1, 0, s1); dv(bx, by, bz, 0, 1, 0, s1);
+          dv(bx, by, bz, 0, 1, 0, s1); dv(kx, ky, kz, 0, 1, 0, s1); dv(qx, qy, qz, 0, 1, 0, s2); dv(bx, by, bz, 0, 1, 0, s1); dv(qx, qy, qz, 0, 1, 0, s2); dv(cx, cy, cz, 0, 1, 0, s2); }
+        ax = tx; ay = ty; az = tz; bx = kx; by = ky; bz = kz; cx = qx; cy = qy; cz = qz; pv = true; } }
+    // the ring thrown out by the impact
+    if (t > .12 && t < 4.2) { const R = ringR(t), fade = Math.exp(-t / 1.5) * sst(.1, .35, t), N = 72; let px0 = 0, py0 = 0, pz0 = 0, px1 = 0, py1 = 0, pz1 = 0, px2 = 0, py2 = 0, pz2 = 0;
+      for (let i = 0; i <= N; i++) { const a = (i % N) / N * TAU, cs = Math.cos(a), sn = Math.sin(a), nn = vn((i % N) * .5, t * .6, 431), n2 = vn((i % N) * .21 + 3, 1.7, 433), r = R + (nn - .5) * .7 + (n2 - .5) * 1.5, w = (.3 + .55 * nn) * fade * sst(.25, .5, n2 + .25 * Math.sin((i % N) * 1.3)), h = .22 * fade;
+        const tx = IMP[0] + cs * (r + w * .5), tz = IMP[2] + sn * (r + w * .5), kx = IMP[0] + cs * r, kz = IMP[2] + sn * r, qx = IMP[0] + cs * (r - w * 1.6), qz = IMP[2] + sn * (r - w * 1.6);
+        const ty = Math.max(seaY(tx, tz, t), ground(tx, tz)) + .012, ky = Math.max(seaY(kx, kz, t), ground(kx, kz)) + .02 + h * .3, qy = Math.max(seaY(qx, qz, t), ground(qx, qz)) + .014;
+        if (i && w > .04) { const s0 = SH_FOAM * .9, s1 = SH_FOAM * 1.05, s2 = SH_FOAM * .85;
+          dv(px0, py0, pz0, 0, 1, 0, s0); dv(tx, ty, tz, 0, 1, 0, s0); dv(kx, ky, kz, 0, 1, 0, s1); dv(px0, py0, pz0, 0, 1, 0, s0); dv(kx, ky, kz, 0, 1, 0, s1); dv(px1, py1, pz1, 0, 1, 0, s1);
+          dv(px1, py1, pz1, 0, 1, 0, s1); dv(kx, ky, kz, 0, 1, 0, s1); dv(qx, qy, qz, 0, 1, 0, s2); dv(px1, py1, pz1, 0, 1, 0, s1); dv(qx, qy, qz, 0, 1, 0, s2); dv(px2, py2, pz2, 0, 1, 0, s2); }
+        px0 = tx; py0 = ty; pz0 = tz; px1 = kx; py1 = ky; pz1 = kz; px2 = qx; py2 = qy; pz2 = qz; } } }
+  // ---- lace: what a bore leaves behind is a net of bright strands round dark holes. Nodes hang on each front in
+  // (a, s) = (distance along it, distance behind it) and the impact has a polar net; links are ribbons lying on the
+  // water whose width follows the same coverage as the mesh underneath, so the net appears as the front passes and thins.
+  let LACE = null;
+  function laceInit() { if (LACE) return LACE; const S = seaInit(), nd = [], lk = [], ev = new Float32Array(8);
+    const node = (x, z, nx, nz, Ts) => { const bed = ground(x, z); if (bed > .4 || !S.inFp(x, z)) return -1; evAt(x, z, ev, 0); const ri = Math.hypot(x - IMP[0], z - IMP[2]);
+      if (ev[2] < .05 && ri > 9.5) return -1; nd.push(x, z, ev[0], ev[1], ev[2], ev[3], ev[4], ev[5], ev[6], ev[7], ri, .75 + .5 * vn(Math.atan2(z - IMP[2], x - IMP[0]) * 2.6, ri * .35, 77), bed, nx, nz, Ts); return nd.length / 16 - 1; };
+    // links: [node a, node b, half width, threshold, bend]
+    const net = (ni, nj, pos, o) => { const id = new Int32Array(ni * nj).fill(-1);
+      for (let j = 0; j < nj; j++) for (let i = 0; i < ni; i++) { const p = pos(i, j); if (p) id[j * ni + i] = node(p[0], p[1], p[2], p[3], p[4]); }
+      for (let j = 0; j < nj; j++) for (let i = 0; i < ni; i++) { const a = id[j * ni + i]; if (a < 0) continue; const h = n => hsh(i * 131 + j * 17 + o.seed * 977, n + 440);
+        const link = (b, w, th, n) => { if (b >= 0) lk.push(a, b, w, th, (h(n) - .5) * o.bend); }, edge = j === 0 && o.edge;
+        if (i + 1 < ni && h(1) < (edge ? .97 : o.pa)) link(id[j * ni + i + 1], (edge ? .09 + .14 * h(5) * h(6) : .05 + .11 * h(5) * h(6)) * o.w, (edge ? .04 + .12 * h(7) : .12 + .34 * h(7)) * o.th, 11);
+        if (j + 1 < nj && h(2) < o.pc) link(id[(j + 1) * ni + i], (.05 + .1 * h(8) * h(9)) * o.w, (.12 + .34 * h(10)) * o.th, 12);
+        if (i + 1 < ni && j + 1 < nj && h(3) < o.pd) link(id[(j + 1) * ni + i + 1], (.045 + .07 * h(13)) * o.w, (.14 + .34 * h(14)) * o.th, 15);
+        else if (i > 0 && j + 1 < nj && h(4) < o.pd) link(id[(j + 1) * ni + i - 1], (.045 + .07 * h(16)) * o.w, (.14 + .34 * h(17)) * o.th, 18); } };
+    for (let li = 0; li < LOBES.length; li++) { const L = LOBES[li], o = L.lace; if (!o) continue; const P = L.pts, cum = [0]; for (let i = 1; i < P.length; i++) cum.push(cum[i - 1] + Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]));
+      const at = a => { a = clamp(a, 0, cum[cum.length - 1]); let i = 0; while (i < P.length - 2 && a > cum[i + 1]) i++; const u = (a - cum[i]) / (cum[i + 1] - cum[i]); return [P[i][0] + (P[i + 1][0] - P[i][0]) * u, P[i][1] + (P[i + 1][1] - P[i][1]) * u]; };
+      const a1 = Math.min(o.a1, cum[cum.length - 1]), ni = Math.floor((a1 - o.a0) / o.du) + 1, nj = Math.floor(o.s1 / o.dw) + 1;
+      net(ni, nj, (i, j) => { const h1 = hsh(i + li * 53, j + 451), h2 = hsh(i + li * 53, j + 452), a = o.a0 + (i + (h1 - .5) * .9) * o.du, s = j === 0 ? .03 + .12 * h2 : j * o.dw + (h2 - .5) * .9 * o.dw;
+        const p = at(a), q0 = at(a - .9), q1 = at(a + .9), dx = q1[0] - q0[0], dz = q1[1] - q0[1], l = Math.hypot(dx, dz) || 1, nx = -dz / l, nz = dx / l; return [p[0] + nx * s, p[1] + nz * s, nx, nz, L.Ts]; }, Object.assign({ seed: li + 1, pa: .74, pc: .7, pd: .3, bend: .5, w: 1, th: 1, edge: 1 }, o)); }
+    // round the impact: rings and spokes
+    { const nr = 8, nt = 30; net(nt, nr, (i, j) => { const h1 = hsh(i, j + 461), h2 = hsh(i, j + 462), r = 2.8 + j * .74 * (1 + .03 * j) + (h2 - .5) * .95 + (vn(i * .37, 2.2, 463) - .5) * 1.5, th = (i + (h1 - .5) * 1.1 + (j & 1) * .5) / nt * TAU; return [IMP[0] + Math.cos(th) * r, IMP[2] + Math.sin(th) * r, 0, 0, 0]; }, { seed: 31, pa: .5, pc: .66, pd: .3, bend: .7, w: 1.1, th: 1.25, edge: 0 }); }
+    const n = nd.length / 16, m = lk.length / 5; LACE = { n, m, nd: Float32Array.from(nd), lk: Float32Array.from(lk), X: new Float32Array(n), Y: new Float32Array(n), Z: new Float32Array(n), C: new Float32Array(n), E: new Float32Array(n) }; return LACE; }
+  const SH_SEAM = TONE(.46);
+  // one soft strand: bright along the middle, falling to the tone underneath at both edges
+  function tent(ax, ay, az, wa, bx, by, bz, wb, sx, sz, ca, cb, ea, eb) { const d = BD, o = BN * 12, alx = ax - sx * wa, alz = az - sz * wa, arx = ax + sx * wa, arz = az + sz * wa, blx = bx - sx * wb, blz = bz - sz * wb, brx = bx + sx * wb, brz = bz + sz * wb;
+    for (let k = 0, q = o; k < 12; k++, q += 12) { d[q + 3] = .5; d[q + 4] = .5; d[q + 5] = LW; d[q + 6] = 0; d[q + 7] = 1; d[q + 8] = 0; d[q + 10] = 0; d[q + 11] = 0; }
+    d[o] = alx; d[o + 1] = ay; d[o + 2] = alz; d[o + 9] = ea; d[o + 12] = ax; d[o + 13] = ay; d[o + 14] = az; d[o + 21] = ca; d[o + 24] = bx; d[o + 25] = by; d[o + 26] = bz; d[o + 33] = cb;
+    d[o + 36] = alx; d[o + 37] = ay; d[o + 38] = alz; d[o + 45] = ea; d[o + 48] = bx; d[o + 49] = by; d[o + 50] = bz; d[o + 57] = cb; d[o + 60] = blx; d[o + 61] = by; d[o + 62] = blz; d[o + 69] = eb;
+    d[o + 72] = ax; d[o + 73] = ay; d[o + 74] = az; d[o + 81] = ca; d[o + 84] = arx; d[o + 85] = ay; d[o + 86] = arz; d[o + 93] = ea; d[o + 96] = brx; d[o + 97] = by; d[o + 98] = brz; d[o + 105] = eb;
+    d[o + 108] = ax; d[o + 109] = ay; d[o + 110] = az; d[o + 117] = ca; d[o + 120] = brx; d[o + 121] = by; d[o + 122] = brz; d[o + 129] = eb; d[o + 132] = bx; d[o + 133] = by; d[o + 134] = bz; d[o + 141] = cb; BN += 12; }
+  function laceFrame(t) { const L = laceInit(), n = L.n, D = L.nd, C = L.C, X = L.X, Y = L.Y, Z = L.Z, E = L.E, hit = IF.hit, Rr = IF.Rr;
+    for (let i = 0; i < n; i++) { const o = i * 16; let cov = 0, dt = t - D[o + 2];
+      if (dt > 0) { const u = dt * D[o + 3]; if (u < 4) { const d = 1 - u * .25, d2 = d * d, r = dt * D[o + 5]; cov += D[o + 4] * d2 * d2 * (r < 1 ? r : 1); } }
+      dt = t - D[o + 6]; if (dt > 0) { const u = dt * D[o + 7]; if (u < 4) { const d = 1 - u * .25, d2 = d * d, r = dt * D[o + 9]; cov += D[o + 8] * d2 * d2 * (r < 1 ? r : 1); } }
+      const ri = D[o + 10]; if (hit && ri < 22) { const q2 = (ri - Rr) * IF.fw, g2 = 1 / (1 + q2 * q2); cov += (IF.fRing * g2 * g2 + IF.fIn * sst(Rr + .4, Rr - 1.2, ri) * (.45 + .55 * sst(Rr - 4.5, Rr - .5, ri))) * D[o + 11]; const qc = (ri - 2.75) * 2.6; cov += IF.fCol / (1 + qc * qc * qc * qc); }
+      C[i] = cov; if (cov < .05) continue;
+      // the backwash carries the net a little way seaward once its bore has stalled
+      const Ts = D[o + 15], dr = Ts ? .3 * sst(Ts - .2, Ts + 4.5, t) + .035 * Math.sin(1.1 * t + i) * sst(Ts - 2, Ts, t) : 0, x = D[o] + D[o + 13] * dr, z = D[o + 1] + D[o + 14] * dr;
+      X[i] = x; Z[i] = z; const yw = seaY(x, z, t), bed = D[o + 12]; Y[i] = (yw > bed ? yw : bed) + .03;
+      // the tone the mesh shows underneath (about), for the strand's edges
+      let f = (cov - .62) * 2.4; f = f < 0 ? 0 : f > 1 ? 1 : f; f *= f * (3 - 2 * f); f += (1 - f) * (cov > .9 ? .27 : cov * .3); E[i] = SH_SEAM + (SH_FOAM - SH_SEAM) * f; }
+    const K = L.lk, m = L.m, SF = SH_FOAM * 1.05; for (let k = 0; k < m; k++) { const o = k * 5, a = K[o], b = K[o + 1], ca = C[a], cb = C[b]; if (ca < .05 || cb < .05) continue; const c = (ca < cb ? ca : cb) * .65 + (ca < cb ? cb : ca) * .35; let f = (c - K[o + 3]) * 2.8; if (f <= 0) continue; if (f > 1) f = 1;
+      const ax = X[a], az = Z[a], bx = X[b], bz = Z[b], dx = bx - ax, dz = bz - az, l = Math.sqrt(dx * dx + dz * dz); if (l < .05 || l > 2.4) continue; if (BN + 24 > BMAX) return;
+      const w = K[o + 2] * (.55 + 1.15 * (c > 1.1 ? 1.1 : c)), sx = -dz / l, sz = dx / l, ea = E[a], eb = E[b], ta = ea + (SF - ea) * f, tb = eb + (SF - eb) * f, bend = K[o + 4] * l;
+      if (l < .5 || (bend < .05 && bend > -.05)) { tent(ax, Y[a], az, w * .8, bx, Y[b], bz, w * .8, sx, sz, ta, tb, ea, eb); continue; }
+      const mx = (ax + bx) / 2 + sx * bend, mz = (az + bz) / 2 + sz * bend, my = (Y[a] + Y[b]) / 2, em = (ea + eb) / 2, tm = em + (SF - em) * f;
+      let ux = mx - ax, uz = mz - az, ul = Math.sqrt(ux * ux + uz * uz); const s1x = -uz / ul, s1z = ux / ul; ux = bx - mx; uz = bz - mz; ul = Math.sqrt(ux * ux + uz * uz); const s2x = -uz / ul, s2z = ux / ul;
+      tent(ax, Y[a], az, w * .7, mx, my, mz, w, s1x, s1z, ta, tm, ea, em); tent(mx, my, mz, w, bx, Y[b], bz, w * .7, s2x, s2z, tm, tb, em, eb); } }
+  // the sea outside the animated patch (static)
+  function buildFarSea() { const S = seaInit(), XS = S.XS, ZS = S.ZS, X = [], Z = []; let x = XS[0], s = XS[1] - XS[0]; const lo = []; for (let i = 0; i < 7; i++) { s *= 1.6; x -= s; lo.push(x); } lo.reverse(); X.push(...lo, ...XS); x = XS[XS.length - 1]; s = XS[XS.length - 1] - XS[XS.length - 2]; for (let i = 0; i < 7; i++) { s *= 1.6; x += s; X.push(x); }
+    Z.push(...ZS); let z = ZS[ZS.length - 1]; s = ZS[ZS.length - 1] - ZS[ZS.length - 2]; for (let i = 0; i < 7; i++) { s *= 1.6; z += s; Z.push(z); }
+    for (let j = 0; j < Z.length - 1; j++) for (let i = 0; i < X.length - 1; i++) { const xa = X[i], xb = X[i + 1], za = Z[j], zb = Z[j + 1]; if (xa >= S.x0 - .01 && xb <= S.x1 + .01 && zb <= S.z1 + .01) continue;
+      if (Math.min(ground(xa, za), ground(xb, za), ground(xa, zb), ground(xb, zb)) > .3) continue;
+      const P = [[xa, za], [xa, zb], [xb, zb], [xa, za], [xb, zb], [xb, za]]; for (const p of P) sv(p[0], 0, p[1], 0, 1, 0, seaStatic(p[0], p[1])); } }
+
+  // ================================================================ the land (static)
+  function axisGraded(parts, g0, far0, g1, far1) { const a = []; let x = parts[0][0]; a.push(x); for (const [x0, x1, st] of parts) { const n = Math.round((x1 - x0) / st); for (let i = 1; i <= n; i++) a.push(x0 + i * st); }
+    let s = parts[0][2], lo = []; x = parts[0][0]; while (x > far0) { s *= g0; x -= s; lo.push(x); } lo.reverse(); s = parts[parts.length - 1][2]; x = a[a.length - 1]; const hi = []; while (x < far1) { s *= g1; x += s; hi.push(x); } return lo.concat(a, hi); }
+  function buildLand() {
+    const XA = axisGraded([[-40, -12, .5], [-12, 20, .25]], 1.15, -5200, 1.15, 5200), ZA = axisGraded([[-46, -24, .5], [-24, -3, .25], [-3, 14, 1]], 1.25, -4300, 2, 15);
+    const nx = XA.length, nz = ZA.length, H = new Float32Array(nx * nz), SHd = new Float32Array(nx * nz);
+    for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) H[j * nx + i] = ground(XA[i], ZA[j]);
+    for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) { const x = XA[i], z = ZA[j], y = H[j * nx + i], i0 = Math.max(i - 1, 0), i1 = Math.min(i + 1, nx - 1), j0 = Math.max(j - 1, 0), j1 = Math.min(j + 1, nz - 1);
+      const gx = (H[j * nx + i1] - H[j * nx + i0]) / (XA[i1] - XA[i0]), gz = (H[j1 * nx + i] - H[j0 * nx + i]) / (ZA[j1] - ZA[j0]), ny = 1 / Math.sqrt(1 + gx * gx + gz * gz);
+      let sh = TONE(sat(sandTone(x, z, y))) * (.25 + .75 * LIT(ny)) * (z > -45 && z < 0 ? occl(x, z) : 1); SHd[j * nx + i] = hazed(sh, x, y, z); }
+    for (let j = 0; j < nz - 1; j++) for (let i = 0; i < nx - 1; i++) { const q = [[i, j], [i, j + 1], [i + 1, j + 1], [i, j], [i + 1, j + 1], [i + 1, j]]; for (const [a, b] of q) sv(XA[a], H[b * nx + a], ZA[b], 0, 1, 0, SHd[b * nx + a]); } }
+
+  // ================================================================ the capsule
+// Local frame: +Y the axis toward the apex, y = 0 the plane of the shoulder (the widest ring, 5.0 m across).
+  const CAP_R = 2.5, V_DESC = 7.2, WIND = [-.78 * 1.25, .627 * 1.25];
+  let CAPS = null;
+  // the resting attitude (the match frame): where the shoulder centre is, which way the apex leans, and the roll
+  const REST = { p: [.07, .41, .23], lean: 15.4 * D2R, az: 26 * D2R, spin: 117 * D2R };
+  function capsMat(px, py, pz, lx, lz, spin) { const l = Math.hypot(lx, lz), s = Math.sin(l), k = l > 1e-6 ? s / l : 1; const M = mM(mTilt(lx * k, Math.cos(l), lz * k), mRY(spin)); M[3] = px; M[7] = py; M[11] = pz; return M; }
+  const RESTL = [REST.lean * Math.sin(REST.az), -REST.lean * Math.cos(REST.az)];           // lean as a vector (x, z), radians
+  // pale flaked patches as seen in the reference frame: [cx, cy, rx, ry, rotation deg, strength]
+  const FLAKES = [[419, 186, 20, 9, 12, 1.1], [446, 205, 25, 13, 26, 1.2], [472, 222, 20, 9, 36, 1], [414, 223, 17, 8, -14, .95], [403, 247, 9.5, 31, -7, 1], [399, 229, 11, 9, 0, .9]];
+  function flakeAt(px, py) { let m = 0; for (const f of FLAKES) { const a = f[4] * D2R, c = Math.cos(a), s = Math.sin(a), dx = px - f[0], dy = py - f[1], u = (dx * c + dy * s) / f[2], v = (-dx * s + dy * c) / f[3], d = u * u + v * v; if (d < 4) m = Math.max(m, f[5] * (1.25 - d * .75)); } return m; }
+  // the gumdrop: [r, y] from the centre of the heat shield round the shoulder and up the bell to the forward deck
+  const CAP_H = 1.95, CAP_TOP = CAP_H * .93, CAP_SAG = .8;
+  const capR = y => CAP_R * Math.pow(Math.max(0, 1 - Math.pow(Math.max(y, 0) / CAP_H, 2.4)), 1 / 2.1);
+  const CAP_SIDE = (() => { const a = []; for (let i = 0; i <= 19; i++) { const y = CAP_TOP * Math.pow(i / 19, .92); a.push([capR(y), y]); } return a; })();
+  function capsInit() {
+    if (CAPS) return CAPS; const g = Geo(), R = CAP_R, SEG = 52;
+    // heat shield: a spherical cap CAP_SAG deep, then the shoulder fillet, then the bell, then the forward deck
+    const P = [], rc = 2.36, yc = -.115, Rs = (rc * rc + (CAP_SAG + yc) * (CAP_SAG + yc)) / (2 * (CAP_SAG + yc));
+    for (let i = 0; i <= 5; i++) { const r = rc * i / 5; P.push([Math.max(r, .0005), yc - (Math.sqrt(Rs * Rs - r * r) - Math.sqrt(Rs * Rs - rc * rc))]); }
+    for (let i = 1; i <= 4; i++) { const a = (-62 + i * 62 / 4) * D2R; P.push([R - .14 + .14 * Math.cos(a), .14 * Math.sin(a)]); }
+    for (let i = 1; i < CAP_SIDE.length; i++) P.push(CAP_SIDE[i].slice());
+    P.push([CAP_SIDE[CAP_SIDE.length - 1][0] - .07, CAP_TOP + .035], [.62, CAP_TOP + .05], [.5, CAP_TOP + .055]);
+    const top = CAP_TOP + .05;
+    const rings = P.map(([r, y]) => { const a = []; for (let i = 0; i < SEG; i++) { const t = i / SEG * TAU; a.push([r * Math.sin(t), y, -r * Math.cos(t)]); } return a; });
+    g.loft(rings);
+    const nSkin = g.n;
+    // radius and outward normal of the side wall at height y
+    const side = y => { let i = 0; while (i < CAP_SIDE.length - 2 && y > CAP_SIDE[i + 1][1]) i++; const a = CAP_SIDE[i], b = CAP_SIDE[i + 1], t = (y - a[1]) / (b[1] - a[1]), dr = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dr, dy); return [a[0] + dr * t, dy / l, -dr / l]; };
+    const onSide = (az, y, off) => { const [r, nr, ny] = side(y); return [(r + off * nr) * Math.sin(az), y + off * ny, -(r + off * nr) * Math.cos(az)]; };
+    const patch = (az0, az1, ya, yb, off, n, m) => { n = n || 4; m = m || 2; for (let j = 0; j < m; j++) for (let i = 0; i < n; i++) { const a0 = mix(az0, az1, i / n), a1 = mix(az0, az1, (i + 1) / n), y0 = mix(ya, yb, j / m), y1 = mix(ya, yb, (j + 1) / m), am = (a0 + a1) / 2; g.quad(onSide(a0, y1, off), onSide(a1, y1, off), onSide(a1, y0, off), onSide(a0, y0, off), [Math.sin(am), .5, -Math.cos(am)]); } };
+    // forward deck: docking tunnel, three mortar cans, the riser fitting, a ring of bolts
+    g.mat(0, 1); g.lathe([[.5, top - .01], [.5, top + .24], [.46, top + .28], [.31, top + .28]], 20); g.mat(0, .45); g.lathe([[.31, top + .28], [.31, top + .12], [.001, top + .12]], 20, { out: () => [0, 1, 0] });
+    for (let k = 0; k < 3; k++) { const a = (k * 120 + 40) * D2R, c = [Math.sin(a) * .8, top - .06, -Math.cos(a) * .8]; g.mat(0, .8); g.tube(c, [c[0], c[1] + .22, c[2]], .12, .12, 10); g.mat(0, .22); g.tube([c[0], c[1] + .22, c[2]], [c[0], c[1] + .08, c[2]], .1, .1, 10, { out: () => [0, 1, 0] }); }
+    for (let k = 0; k < 3; k++) { const a = (k * 120 + 100) * D2R, c = [Math.sin(a) * .8, top - .03, -Math.cos(a) * .8]; g.mat(0, .6); g.box([c[0], c[1] + .06, c[2]], [.11, .06, .11]); }
+    // windows (dark glass in a pale frame), the side hatch, thruster ports, umbilical housing
+    for (const a of [-25, 25, 155, 205]) { const A = a * D2R; g.mat(2, .9); patch(A - .075, A + .075, .96, 1.26, .014, 3); g.mat(1, 1); patch(A - .05, A + .05, 1.0, 1.22, .028, 2); }
+    g.mat(2, .8); patch(-.19, .19, .18, .8, .016, 5, 3); g.mat(3, 1); patch(-.165, .165, .22, .76, .03, 5, 3); g.mat(1, 1); patch(-.045, .045, .46, .6, .042, 2, 1);
+    for (const a of [90, 180, 270]) for (const dy of [0, .28]) for (const da of [-.07, .07]) { const A = a * D2R + da; g.mat(2, .7); patch(A - .034, A + .034, .26 + dy, .43 + dy, .014, 1, 1); g.mat(1, .6); patch(A - .019, A + .019, .3 + dy, .39 + dy, .026, 1, 1); }
+    for (const a of [135, 225]) { const A = a * D2R; g.mat(2, .75); patch(A - .055, A + .055, 1.36, 1.56, .018, 2, 1); }
+    { const A = 180 * D2R; g.mat(2, .8); g.tube(onSide(A, .06, .04), onSide(A, .34, .11), .1, .08, 8, { capB: 1 }); }
+    // recovery whip and beacon
+    g.mat(0, .7); g.tube([.34, top + .24, .2], [.52, top + 1.15, .32], .014, .008, 4); g.mat(0, .9); g.tube([-.3, top + .26, -.25], [-.3, top + .42, -.25], .035, .03, 6, { capB: 1 });
+    const a = g.done(), N = a.length / 9;
+    // ---- char. Skin vertices take their tone from where they fall in the reference frame at rest (so the flaked
+    // patches register in the match cut); the side that camera cannot see gets procedural flaking.
+    const M = capsMat(REST.p[0], REST.p[1], REST.p[2], RESTL[0], RESTL[1], REST.spin);
+    for (let i = 0; i < N; i++) { const o = i * 9, x = a[o], y = a[o + 1], z = a[o + 2], slot = a[o + 8];
+      if (i < nSkin) { const w = mP(M, [x, y, z]), nw = [M[0] * a[o + 3] + M[1] * a[o + 4] + M[2] * a[o + 5], M[4] * a[o + 3] + M[5] * a[o + 4] + M[6] * a[o + 5], M[8] * a[o + 3] + M[9] * a[o + 4] + M[10] * a[o + 5]];
+        const p = PR(w[0], w[1], w[2]), face = dot(nw, nrm(sub(CAM.e, w))), az = Math.atan2(x, -z);
+        const cx = Math.cos(az) * 2.2, sx = Math.sin(az) * 2.2, nz1 = fbm(cx + 7, sx + y * 1.5, 91, 3), nz2 = fbm(cx * 4 + y * 3, sx * 4 - y * 2, 93, 2), streak = fbm(cx * 7, sx * 7 + y * .4, 95, 2);
+        let m = flakeAt(p[0], p[1]) + (nz2 - .5) * .45; m = sat((m - .36) * 2.6);              // matched side
+        const mp = sst(.6, .68, nz1 + (y > 1.2 ? .06 : 0)) * (.7 + .5 * nz2);                  // far side
+        m = mix(mp, m, sst(-.05, .2, face));
+        let T = .178 + .06 * (streak - .5) + .04 * (nz2 - .5);                                 // char
+        if (y < -.14) { T = .11 + .04 * nz1; m *= .1; } else if (y < .1) m *= sst(-.14, .1, y) * .9 + .1;
+        T = mix(T, .80 - .1 * nz2, sat(m)); if (y > CAP_TOP - .03) T = mix(T, .3, .5 * (1 - sat(m)));
+        a[o + 6] = TONE(T) / mix(1, LIT(nw[1]), .45 + .55 * sst(-.05, .2, face)); }            // the reference is lit flat: bake the top light out of the side the camera sees
+      else { const w = mP(M, [x, y, z]), p = PR(w[0], w[1], w[2]), m = sat((flakeAt(p[0], p[1]) - .3) * 2.2), nwy = M[4] * a[o + 3] + M[5] * a[o + 4] + M[6] * a[o + 5];   // deck hardware sits in the same pale flaked band
+        a[o + 6] = mix(a[o + 6] * TONE([.5, .05, .1, .16][slot]), TONE(.74) / LIT(nwy), y > CAP_TOP - .1 && slot !== 1 ? m * .85 : 0); } }
+    CAPS = { a, N, top }; return CAPS; }
+
+  // capsule motion: fills CP = position of the shoulder centre, lean vector (lx, lz) in radians, spin
+  const CP = { x: 0, y: 0, z: 0, lx: 0, lz: 0, spin: 0 }, LINE_L = 16.5, HS = CAP_SAG;   // LINE_L: riser fitting to the canopy's skirt plane
+  // the pendulum swing under the canopy (radians, x and z)
+  function swing(t, o) { o[0] = .07 * Math.sin(.82 * t + 1.1) + .02 * Math.sin(2.3 * t); o[1] = .05 * Math.sin(.74 * t + 2.6) + .015 * Math.sin(2.9 * t + 1); }
+  const SW0 = [0, 0]; swing(0, SW0);
+  function capsPose(t, o) { o = o || CP;
+    if (t <= 0) { const sw = [0, 0]; swing(t, sw); o.x = IMP[0] - WIND[0] * t; o.z = IMP[2] - WIND[1] * t; o.y = HS - V_DESC * t; o.lx = sw[0]; o.lz = sw[1]; o.spin = REST.spin + .5 - .085 * t; return o; }
+    // settling: fades every residual motion out completely a little before T1
+    const k = 1 - sst(3.6, T1 - .5, t), g = 1 - Math.exp(-t / .22);
+    o.x = mix(IMP[0], REST.p[0], g); o.z = mix(IMP[2], REST.p[2], g);
+    if (t < .2) o.y = HS - V_DESC * t + V_DESC / .4 * t * t; else { const u = t - .2, y1 = HS - V_DESC * .1; o.y = REST.p[1] + (y1 - REST.p[1]) * Math.exp(-u / .5) * Math.cos(TAU * u / 1.05) * k; }
+    const e = Math.exp(-t / 1.15) * k, c = Math.cos(2.7 * t), f = 1 - e * c, e0 = Math.exp(-t / .14), rock = Math.exp(-t / .9) * Math.sin(3.5 * t) * .085 * k;
+    o.lx = RESTL[0] * f + SW0[0] * e0 + rock * RESTL[1] / REST.lean; o.lz = RESTL[1] * f + SW0[1] * e0 - rock * RESTL[0] / REST.lean;
+    o.spin = REST.spin + .5 * Math.exp(-t / .5) * k;
+    if (t > T1 - .5) { const b = .0035 * sst(T1 - .5, T1 + 1.5, t) * Math.sin(1.9 * (t - T1)); o.lx += b * RESTL[1] / REST.lean; o.lz -= b * RESTL[0] / REST.lean; }   // a breath of rocking on the swell
+    return o; }
+  let CM = null;
+  function capsFrame(t) { const C = capsInit(), p = capsPose(t); CM = capsMat(p.x, p.y, p.z, p.lx, p.lz, p.spin); stampD(C.a, CM, null, 1); }
+  // where the riser leaves the capsule (world), from the current matrix
+  function capsAttach(t, o) { const p = capsPose(t, { }), M = capsMat(p.x, p.y, p.z, p.lx, p.lz, p.spin), y = CAP_TOP + .33; o[0] = M[1] * y + M[3]; o[1] = M[5] * y + M[7]; o[2] = M[9] * y + M[11]; return o; }
+
+  // ================================================================ the canopy
+  // One ringsail: 24 gores, 14 cloth rings in orange and white bands. (s, phi): s = 0 at the vent, 1 at the skirt.
+  const CAN_S = 7.2, NCOL = 48, RINGS = [[.02, .05, 1], [.05, .13, 0], [.13, .215, 0], [.215, .3, 0], [.3, .355, 1], [.355, .41, 1], [.41, .49, 0], [.49, .57, 0], [.57, .645, 1], [.645, .72, 1], [.72, .795, 1], [.795, .865, 0], [.865, .935, 0], [.935, 1, 0]];
+  const CAN_TIP = UN(102, 300, 0), CAN_SKIRT = UN(333, 295, 0);        // where it lies in the match frame: vent end, skirt end
+  let CAN = null, PILOT = null;
+  function canInit() {
+    if (CAN) return CAN; const NRW = RINGS.length * 2, a = 4.75, b = 3.55, thM = 101 * D2R, n = 600, th = new Float32Array(n + 1), L = new Float32Array(n + 1);
+    for (let i = 1; i <= n; i++) { const t0 = (i - 1) / n * thM, t1 = i / n * thM; L[i] = L[i - 1] + Math.hypot(a * (Math.sin(t1) - Math.sin(t0)), b * (Math.cos(t1) - Math.cos(t0))); th[i] = t1; }
+    const sc = CAN_S / L[n], thAt = s => { const l = s * L[n]; let i = 0; while (i < n && L[i + 1] < l) i++; return th[i] + (th[Math.min(i + 1, n)] - th[i]) * (l - L[i]) / Math.max(1e-6, L[i + 1] - L[i]); };
+    const C = CAN = { NRW, S: new Float32Array(NRW), RI: new Float32Array(NRW), HI: new Float32Array(NRW), WL: new Float32Array(NRW), ST: new Float32Array(NRW), TN: new Float32Array(NRW), cs: new Float32Array(NCOL + 1), sn: new Float32Array(NCOL + 1), sc: new Float32Array(NCOL + 1),
+      N1: new Float32Array(NRW * (NCOL + 1)), N2: new Float32Array(NRW * (NCOL + 1)), N3: new Float32Array(NRW * (NCOL + 1)), IN: new Float32Array(NRW * (NCOL + 1)), P: new Float32Array(NRW * (NCOL + 1) * 3), Nn: new Float32Array(NRW * (NCOL + 1) * 3), ySkirt: b * sc * Math.cos(thM), R: a * sc };
+    for (let k = 0; k < RINGS.length; k++) for (let e = 0; e < 2; e++) { const row = k * 2 + e, w = RINGS[k][1] - RINGS[k][0], gap = k < 1 ? 0 : .07 * w, s = e ? RINGS[k][1] - gap : RINGS[k][0], t = thAt(s);
+      C.S[row] = s; C.RI[row] = a * sc * Math.sin(t); C.HI[row] = b * sc * (Math.cos(t) - Math.cos(thM)); C.ST[row] = Math.sin(t);
+      C.WL[row] = 1.16 * Math.pow(Math.max(0, Math.sin(PI * Math.pow(s, 1.25))), .62) + .13 * s * s; C.TN[row] = RINGS[k][2]; }
+    for (let j = 0; j <= NCOL; j++) { const ph = j / NCOL * TAU; C.cs[j] = Math.cos(ph); C.sn[j] = Math.sin(ph); C.sc[j] = Math.abs(Math.sin(ph * 12)); }
+    for (let r = 0; r < NRW; r++) for (let j = 0; j <= NCOL; j++) { const jj = j % NCOL, s = C.S[r], cx = Math.cos(jj / NCOL * TAU), sx = Math.sin(jj / NCOL * TAU), i = r * (NCOL + 1) + j;
+      C.N1[i] = fbm(cx * 1.3 + 5, sx * 1.3 + s * 2.2, 111, 2); C.N2[i] = fbm(cx * 2.4 + s * 6, sx * 2.4 - s * 3, 113, 2); C.N3[i] = fbm(cx * 5 + 2, sx * 5 + s * 1.5, 115, 2); }
+    { const g = Geo(); g.mat(0, 1); const R = []; for (let r = 0; r <= 4; r++) { const a = r / 4 * 1.75, row = []; for (let j = 0; j < 12; j++) { const p = j / 12 * TAU, sc = 1 - .05 * (j & 1); row.push([Math.max(.02, Math.sin(a) * .62 * sc) * Math.cos(p), Math.cos(a) * .45 - Math.cos(1.75) * .45, Math.max(.02, Math.sin(a) * .62 * sc) * Math.sin(p)]); } R.push(row); } g.loft(R, { al: i => (i & 1 ? 1 : .93) }); PILOT = g.done(); }
+    return C; }
+  // canopy state at time t: skirt-plane centre c, axis a (toward the vent), lateral axes e1 (horizontal) and e2, q (0 inflated .. 1 on the water),
+  // flat (how much the e2 direction is squashed), fl (flutter)
+  const CS = { c: [0, 0, 0], a: [0, 1, 0], e1: [1, 0, 0], e2: [0, 0, 1], q: 0, flat: 1, fl: 0, br: 1 };
+  const CAN_AF = nrm(sub(CAN_TIP, CAN_SKIRT)), CAN_LAT = [CAN_AF[2], 0, -CAN_AF[0]];
+  const AT = [0, 0, 0];
+  function canState(t, st) { st = st || CS; const sw = [0, 0];
+    if (t <= 0) { swing(t, sw); capsAttach(t, AT); const l = Math.hypot(sw[0], sw[1]), s = Math.sin(l), k = l > 1e-6 ? s / l : 1; st.a = [sw[0] * k, Math.cos(l), sw[1] * k];
+      st.c = mad(AT, st.a, LINE_L); st.q = 0; st.flat = 1; st.fl = .02; st.br = 1 + .014 * Math.sin(5.6 * t) + .008 * Math.sin(9.1 * t + 1); }
+    else { capsAttach(0, AT); const l = Math.hypot(SW0[0], SW0[1]), s = Math.sin(l), a0 = [SW0[0] * s / l, Math.cos(l), SW0[1] * s / l], c0 = mad(AT, a0, LINE_L);
+      const E = Math.pow(sst(.35, 3.9, t), .9) * PI / 2, up = nrm(mad(a0, CAN_AF, -dot(a0, CAN_AF))), kk = 1 - sst(.0, 1.2, t); st.a = nrm([up[0] * Math.cos(E) + CAN_AF[0] * Math.sin(E) + (a0[0] - up[0]) * kk, up[1] * Math.cos(E) + CAN_AF[1] * Math.sin(E), up[2] * Math.cos(E) + CAN_AF[2] * Math.sin(E) + (a0[2] - up[2]) * kk]);
+      const ey = t < 4.3 ? 1 - Math.pow(1 - t / 4.3, 1.7) : 1, ex = sst(.15, 4.1, t), cf = [CAN_SKIRT[0], .0, CAN_SKIRT[2]];
+      st.c = [mix(c0[0], cf[0], ex), mix(c0[1], cf[1], ey), mix(c0[2], cf[2], ex)]; st.q = sst(.5, 4.1, t); st.flat = 1 - .975 * Math.pow(sst(.6, 4.0, t), 1.3); st.fl = .02 + .3 * sst(.1, .9, t) * (1 - sst(3.0, 4.9, t)); st.br = 1 + .05 * Math.exp(-t / .5) * Math.sin(9 * t); }
+    const d = dot(CAN_LAT, st.a); st.e1 = nrm([CAN_LAT[0] - st.a[0] * d, CAN_LAT[1] - st.a[1] * d, CAN_LAT[2] - st.a[2] * d]); st.e2 = cross(st.a, st.e1); return st; }
+  const SH_ORANGE = TONE(.535), SH_WHITE = TONE(.875);
+  function canFrame(t, ex, ey, ez) {
+    const C = canInit(), st = canState(t), NRW = C.NRW, W = NCOL + 1, P = C.P, Nn = C.Nn, IN = C.IN, q = st.q, c = st.c, a = st.a, e1 = st.e1, e2 = st.e2, fl = st.fl, wet = sst(3.2, 5.2, t);
+    for (let r = 0; r < NRW; r++) { const s = C.S[r], ri = C.RI[r] * st.br, hi = C.HI[r], wl = C.WL[r], sth = C.ST[r];
+      for (let j = 0; j < W; j++) { const i = r * W + j, cs = C.cs[j], sn = C.sn[j], n1 = C.N1[i], n2 = C.N2[i];
+        const rr = mix(ri * (1 - .035 * (1 - C.sc[j]) * sth * sth), wl * (.74 + .52 * n1), q), hh = mix(hi, CAN_S * (1 - s) + q * (.5 * sn * sn * Math.sin(PI * s) + (n2 - .5) * .5), q);
+        let f = fl * (Math.sin(5 * j / NCOL * TAU + 9 * s - 7.3 * t) * .6 + Math.sin(3 * j / NCOL * TAU - 5 * s + 4.1 * t + 2) * .5 + (n2 - .5) * 2 * Math.sin(3.3 * t + n1 * 9)) * (.35 + s);
+        const lx = cs * (rr + f * .6), ly = sn * (rr + f * .6) * st.flat + f * (1 - st.flat) * .5;
+        let x = c[0] + a[0] * hh + e1[0] * lx + e2[0] * ly, y = c[1] + a[1] * hh + e1[1] * lx + e2[1] * ly, z = c[2] + a[2] * hh + e1[2] * lx + e2[2] * ly;
+        if (y < 1.2) { const top = sn >= 0 ? 1 : 0, edge = Math.abs(cs), yw = seaY(x, z, t) + (top ? .055 + .16 * n2 * (1 - edge * edge) * (.8 + .25 * Math.sin(.9 * t + n1 * 12)) : .012) - .05 * edge * edge * edge; if (y < yw) y = yw; }
+        P[i * 3] = x; P[i * 3 + 1] = y; P[i * 3 + 2] = z;
+        // seen from underneath the cloth is in its own shade against the sky
+        if (q < 1) { const ox = x - c[0], oy = y - c[1], oz = z - c[2], vx = ex - x, vy = ey - y, vz = ez - z, dd = (ox * vx + oy * vy + oz * vz) / Math.sqrt((ox * ox + oy * oy + oz * oz) * (vx * vx + vy * vy + vz * vz) + 1e-9); IN[i] = 1 - (1 - q) * .47 * (dd < -.12 ? 1 : dd > .12 ? 0 : (.12 - dd) / .24); } else IN[i] = 1; } }
+    // normals: across the ring pair and round the columns
+    for (let k = 0; k < RINGS.length; k++) for (let j = 0; j < W; j++) { const i0 = (k * 2) * W + j, i1 = (k * 2 + 1) * W + j, jm = j === 0 ? NCOL - 1 : j - 1, jp = j === NCOL ? 1 : j + 1, a0 = (k * 2) * W + jm, a1 = (k * 2) * W + jp;
+      const ux = P[i1 * 3] - P[i0 * 3], uy = P[i1 * 3 + 1] - P[i0 * 3 + 1], uz = P[i1 * 3 + 2] - P[i0 * 3 + 2], vx = P[a1 * 3] - P[a0 * 3], vy = P[a1 * 3 + 1] - P[a0 * 3 + 1], vz = P[a1 * 3 + 2] - P[a0 * 3 + 2];
+      let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx; const l = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1; nx /= l; ny /= l; nz /= l; Nn[i0 * 3] = Nn[i1 * 3] = nx; Nn[i0 * 3 + 1] = Nn[i1 * 3 + 1] = ny; Nn[i0 * 3 + 2] = Nn[i1 * 3 + 2] = nz; }
+    if (BN + RINGS.length * NCOL * 6 > BMAX) return; const d = BD; let o = BN * 12;
+    for (let k = 0; k < RINGS.length; k++) { const base = RINGS[k][2] ? SH_WHITE : SH_ORANGE;
+      for (let j = 0; j < NCOL; j++) { const r0 = k * 2, r1 = r0 + 1, q4 = [r0 * W + j, r0 * W + j + 1, r1 * W + j + 1, r0 * W + j, r1 * W + j + 1, r1 * W + j];
+        for (let m = 0; m < 6; m++) { const i = q4[m], ny = Nn[i * 3 + 1], n3 = C.N3[i], edge = Math.abs(C.cs[i % W]);
+          // inflated: soft top light through the cloth; on the water: flat, wet and darker toward the sunken edges, creases
+          const lit = mix(.6 + .4 * Math.abs(ny), 1, .35), sh = base * IN[i] * mix(lit * (.93 + .14 * n3), (.8 + .34 * n3) * (1 - .3 * edge * edge * edge * edge), wet * q);
+          d[o] = P[i * 3]; d[o + 1] = P[i * 3 + 1]; d[o + 2] = P[i * 3 + 2]; d[o + 3] = .5; d[o + 4] = .5; d[o + 5] = LW; d[o + 6] = Nn[i * 3]; d[o + 7] = ny; d[o + 8] = Nn[i * 3 + 2]; d[o + 9] = sh; d[o + 10] = 0; d[o + 11] = 0; o += 12; } } }
+    BN += RINGS.length * NCOL * 6;
+    linesFrame(t, ex, ey, ez, C, st); }
+  // a ribbon that faces the eye
+  function ribbon(ax, ay, az, bx, by, bz, w, sh, ex, ey, ez) { let dx = bx - ax, dy = by - ay, dz = bz - az, vx = ex - ax, vy = ey - ay, vz = ez - az, sx = dy * vz - dz * vy, sy = dz * vx - dx * vz, sz = dx * vy - dy * vx; const l = Math.sqrt(sx * sx + sy * sy + sz * sz) || 1; sx *= w / l; sy *= w / l; sz *= w / l;
+    dv(ax - sx, ay - sy, az - sz, 0, 1, 0, sh); dv(ax + sx, ay + sy, az + sz, 0, 1, 0, sh); dv(bx + sx, by + sy, bz + sz, 0, 1, 0, sh); dv(ax - sx, ay - sy, az - sz, 0, 1, 0, sh); dv(bx + sx, by + sy, bz + sz, 0, 1, 0, sh); dv(bx - sx, by - sy, bz - sz, 0, 1, 0, sh); }
+  // suspension lines, riser, pilot chute and its bridle
+  const SH_LINE = TONE(.56);
+  function linesFrame(t, ex, ey, ez, C, st) {
+    const W = NCOL + 1, rs = (C.NRW - 1) * W, at = capsAttach(t, [0, 0, 0]), slack = sst(.02, .9, t), SEGN = 7, wpx = .00078 * Math.hypot(ex - st.c[0], ey - st.c[1], ez - st.c[2]), wl = Math.max(.018, wpx), ws = Math.max(.013, wpx);
+    // confluence: 4.2 m up the riser while taut, sinking back to the fitting as everything goes slack
+    const kx = at[0] + (st.c[0] - at[0]) * (4.2 / LINE_L) * (1 - slack), ky = at[1] + Math.max(0, (st.c[1] - at[1]) * (4.2 / LINE_L) * (1 - slack)), kz = at[2] + (st.c[2] - at[2]) * (4.2 / LINE_L) * (1 - slack);
+    if (slack < 1) ribbon(at[0], at[1], at[2], kx, ky, kz, .03, SH_LINE * .8, ex, ey, ez);
+    for (let g = 0; g < 24; g++) { const i = rs + g * 2, px = C.P[i * 3], py = C.P[i * 3 + 1], pz = C.P[i * 3 + 2];
+      if (slack <= 0) { ribbon(kx, ky, kz, px, py, pz, wl, SH_LINE, ex, ey, ez); continue; }
+      // slack: a sagging curve that falls onto the water and lies there in a loose bight
+      const h1 = (hsh(g, 301) - .5) * (.35 + .65 * hsh(g, 305)), h2 = hsh(g, 302), mx = (kx + px) / 2 + h1 * 1.6 * slack + CAN_LAT[0] * h1 * 1.6 * slack, mz = (kz + pz) / 2 + h1 * .6 * slack + CAN_LAT[2] * h1 * 1.6 * slack, my = (ky + py) / 2 - slack * (2 + 9 * h2) * sst(0, 2.5, t);
+      let lx = kx, ly = ky, lz = kz; for (let k = 1; k <= SEGN; k++) { const u = k / SEGN, w0 = (1 - u) * (1 - u), w1 = 2 * u * (1 - u), w2 = u * u; let x = w0 * kx + w1 * mx + w2 * px, y = w0 * ky + w1 * my + w2 * py, z = w0 * kz + w1 * mz + w2 * pz;
+        if (y < .5) { const yw = seaY(x, z, t) + .02; if (y < yw) y = yw; const r = Math.hypot(x - CP.x, z - CP.z); if (r < 2.6) { const ys = CP.y + 1.95 * (1 - (r / 2.6) * (r / 2.6)); if (y < ys) y = ys; } }
+        ribbon(lx, ly, lz, x, y, z, ws, SH_LINE * (.75 + .5 * h2), ex, ey, ez); lx = x; ly = y; lz = z; } }
+    // pilot chute: rides above the vent on its bridle, then trails down and lies just beyond the tip
+    const vi = 0, vx = C.P[vi * 3], vy0 = C.P[vi * 3 + 1], vz = C.P[vi * 3 + 2], apx = st.c[0] + st.a[0] * mix(C.HI[0], CAN_S, st.q), apy = st.c[1] + st.a[1] * mix(C.HI[0], CAN_S, st.q), apz = st.c[2] + st.a[2] * mix(C.HI[0], CAN_S, st.q);
+    const lag = canState(Math.max(T0 - 1, t - .55), { }), bl = 5.2, kq = sst(.3, 3.6, t), bx = apx + mix(lag.a[0], CAN_AF[0], kq * kq) * bl * mix(1, -.17, kq), bz = apz + mix(lag.a[2], CAN_AF[2], kq * kq) * bl * mix(1, -.17, kq); let by = apy + mix(lag.a[1], .0, kq) * bl * mix(1, .5, kq) + .8 * Math.sin(kq * PI);
+    const wy = by < 2 ? seaY(bx, bz, t) + .05 : -9; let fl = 1 - .93 * sst(2.4, 4.4, t); if (by < wy) { by = wy; }
+    const px = apx, py = Math.max(apy, vy0), pz = apz; ribbon(px, py, pz, bx, by + .05, bz, .014, SH_LINE, ex, ey, ez);
+    const pa = nrm([bx - px + 1e-4, (by - py) * fl + (1 - fl) * 6, bz - pz]), Mp = mM(mTilt(pa[0], pa[1], pa[2]), [1, 0, 0, 0, 0, fl, 0, 0, 0, 0, 1, 0]); Mp[3] = bx; Mp[7] = by; Mp[11] = bz; stampD(PILOT, Mp, [SH_WHITE * .96], 1); }
+
+  // ================================================================ the splash
+  // A crown of sheets thrown out from under the heat shield, breaking into fingers and drops. Pure ballistics with drag.
+  const SPL_N = 72, SPL_M = 9, SPL_T = .36, GRAV = 9.81;
+  let SPL = null;
+  function splInit() { if (SPL) return SPL; const r = rng(4711), col = [], th0 = Math.atan2(WIND[1], WIND[0]);
+    for (let c = 0; c < SPL_N; c++) { const th = (c + (r() - .5) * .5) / SPL_N * TAU, lobe = .55 + .55 * fbm(c * .17, 1.5, 201, 2) + .4 * Math.pow(vn(c * .42, 7.7, 203), 3) + .08 * (r() - .5); col.push({ th, cs: Math.cos(th), sn: Math.sin(th), str: lobe * (1 + .25 * Math.cos(th - th0)), el: (38 + 24 * vn(c * .5, 3.1, 205)) * D2R, k: .55 + .35 * r() }); }
+    const NP = 2100, dr = new Float32Array(NP * 8), NG = SPL_N * SPL_M, hq = new Float32Array(NG), hv = new Float32Array(NG); for (let i = 0; i < NG; i++) { hq[i] = r(); hv[i] = r(); }
+    for (let i = 0; i < NP; i++) { const c = col[(r() * SPL_N) | 0], th = c.th + (r() - .5) * .2, big = i < 170, tau = Math.pow(r(), 1.3) * (big ? .3 : .5), el = c.el + (r() - .3) * (big ? .5 : .8), v = (big ? 6 + 6 * r() : 3.5 + 10.5 * r() * r()) * (.55 + .5 * c.str) * (1 - .45 * tau / .5);
+      dr[i * 8] = Math.cos(th); dr[i * 8 + 1] = Math.sin(th); dr[i * 8 + 2] = tau; dr[i * 8 + 3] = v * Math.cos(el); dr[i * 8 + 4] = v * Math.sin(el); dr[i * 8 + 5] = big ? .5 + .3 * r() : .9 + 1.6 * r(); dr[i * 8 + 6] = big ? .07 + .07 * r() : .028 + .04 * r(); dr[i * 8 + 7] = r(); }
+    SPL = { col, dr, NP, hq, hv, P: new Float32Array(NG * 4) }; return SPL; }
+  const SH_SPRAY = TONE(.9);
+  function splashFrame(t, ex, ey, ez) { if (t <= 0 || t > 3.6) return; const S = splInit(), R0 = 2.5, cx = IMP[0], cz = IMP[2];
+    // the crown: one ragged wall of water round the capsule. Each column throws a stream (launch times tau_m, fastest and
+    // flattest first); neighbours are joined into a sheet that tears open from the lip down as it thins.
+    if (t < 2.6) { const P = S.P;
+      for (let c = 0; c < SPL_N; c++) { const C = S.col[c];
+        for (let m = 0; m < SPL_M; m++) { const o = (c * SPL_M + m) * 4, tau = m / (SPL_M - 1) * SPL_T * (.75 + .25 * C.str); if (tau > t) { P[o] = cx + C.cs * (R0 + .05); P[o + 1] = -.02; P[o + 2] = cz + C.sn * (R0 + .05); P[o + 3] = -1; continue; }
+          const age = t - tau, f = tau / SPL_T, v = 12.5 * C.str * (1 - .7 * Math.pow(f, .8)), el = C.el + .12 + f * .5, k = C.k, e = (1 - Math.exp(-k * age)) / k, rr = R0 + .1 + v * Math.cos(el) * e + .8 * (1 - Math.exp(-age * 3)) * f;
+          P[o] = cx + C.cs * rr; P[o + 1] = (v * Math.sin(el) + GRAV / k) * e - GRAV * age / k; P[o + 2] = cz + C.sn * rr; P[o + 3] = age; } }
+      for (let c = 0; c < SPL_N; c++) { const c1 = (c + 1) % SPL_N, C = S.col[c];
+        for (let m = SPL_M - 2; m >= 0; m--) { const i0 = c * SPL_M + m, i1 = c1 * SPL_M + m, a = i0 * 4, b = i1 * 4, d = (i1 + 1) * 4, e = (i0 + 1) * 4, age = P[a + 3]; if (age < 0 && P[b + 3] < 0) continue;
+          if (age > .42 + 1.05 * S.hq[i0] + m * .15) break; if ( (P[a + 1] < -.02 && P[b + 1] < -.02 && P[d + 1] < -.02 && P[e + 1] < -.02)) continue; if (BN + 6 > BMAX) return;
+          { const ux = P[e] - P[a], uy = P[e + 1] - P[a + 1], uz = P[e + 2] - P[a + 2], wx = P[b] - P[a], wy = P[b + 1] - P[a + 1], wz = P[b + 2] - P[a + 2], lim = .5 + .55 * S.hv[i0]; if (ux * ux + uy * uy + uz * uz > lim * lim * 1.9 || wx * wx + wy * wy + wz * wz > lim * lim) break; }   // torn
+          const dim = 1 - .2 * sst(.3, 1.6, age), sa = SH_SPRAY * (.84 + .2 * S.hv[i0]) * dim, sb = SH_SPRAY * (.84 + .2 * S.hv[i1]) * dim, sd = SH_SPRAY * (.84 + .2 * S.hv[i1 + 1]) * dim, se = SH_SPRAY * (.84 + .2 * S.hv[i0 + 1]) * dim;
+          const ya = P[a + 1] < -.03 ? -.03 : P[a + 1], yb = P[b + 1] < -.03 ? -.03 : P[b + 1], yd = P[d + 1] < -.03 ? -.03 : P[d + 1], ye = P[e + 1] < -.03 ? -.03 : P[e + 1];
+          dv(P[a], ya, P[a + 2], C.cs, .4, C.sn, sa); dv(P[b], yb, P[b + 2], C.cs, .4, C.sn, sb); dv(P[d], yd, P[d + 2], C.cs, .4, C.sn, sd); dv(P[a], ya, P[a + 2], C.cs, .4, C.sn, sa); dv(P[d], yd, P[d + 2], C.cs, .4, C.sn, sd); dv(P[e], ye, P[e + 2], C.cs, .4, C.sn, se); } } }
+    // drops: short streaks along their motion as the eye sees it
+    const D = S.dr; for (let i = 0; i < S.NP; i++) { const o = i * 8, age = t - D[o + 2]; if (age <= 0) continue; const k = D[o + 5], e = (1 - Math.exp(-k * age)) / k, y = (D[o + 4] + GRAV / k) * e - GRAV * age / k; if (y < -.02) continue;
+      const r = R0 + D[o + 3] * e, x = cx + D[o] * r, z = cz + D[o + 1] * r, ed = Math.exp(-k * age), vr = D[o + 3] * ed, vy = (D[o + 4] + GRAV / k) * ed - GRAV / k, sz = D[o + 6] * (1 - .35 * sst(.4, 2.6, age)), st = .022;
+      const hx = D[o] * vr * st, hy = vy * st, hz = D[o + 1] * vr * st, l = Math.sqrt(hx * hx + hy * hy + hz * hz) || 1, m = (l + sz * 1.6) / l; ribbon(x - hx * m, y - hy * m, z - hz * m, x + hx * m, y + hy * m, z + hz * m, sz, SH_SPRAY * (.8 + .2 * D[o + 7]), ex, ey, ez); } }
+
+  // ================================================================ camera
+  // The aerial operator: the helicopter slides in and down from the south east, the lens follows the capsule with a little
+  // lag and float and slowly tightens, and everything comes to rest on CAM at T1.
+  const CAM_P0 = [CAM.e[0] + 53, CAM.e[1] + 41, CAM.e[2] + 40], CAM_PC = [CAM.e[0] + 16, CAM.e[1] + 3, CAM.e[2] + 26], AIM1 = UN(RW / 2, RH / 2, 0), FOV0 = .80, CT = { };
+  function camAt(t) {
+    if (t >= T1) { const d = t - T1, k = sst(0, 1.5, d) * .0008; return { e: CAM.e.slice(), yaw: CAM.yaw + k * (Math.sin(.9 * d) + .5 * Math.sin(2.3 * d)), pitch: CAM.pitch + k * (.8 * Math.sin(.7 * d + .4) * Math.sin(.35 * d) + .4 * Math.sin(1.9 * d)), fov: CAM.fov }; }
+    const u = clamp((t - T0) / (T1 - .3 - T0), 0, 1), E = 1 - Math.pow(1 - u, 2.5), w0 = (1 - E) * (1 - E), w1 = 2 * E * (1 - E), w2 = E * E, wob = (1 - sst(T1 - 3, T1 - .3, t));
+    const e = [w0 * CAM_P0[0] + w1 * CAM_PC[0] + w2 * CAM.e[0] + wob * .35 * Math.sin(.53 * t + 1), w0 * CAM_P0[1] + w1 * CAM_PC[1] + w2 * CAM.e[1] + wob * .3 * Math.sin(.71 * t + 2.2), w0 * CAM_P0[2] + w1 * CAM_PC[2] + w2 * CAM.e[2] + wob * .35 * Math.sin(.47 * t + 4)];
+    // what the operator is holding in the frame: the capsule a moment ago, a little above it while the canopy is up
+    const a = capsPose(t - .13, CT), ax = a.x, ay = a.y, az = a.z, b = capsPose(t - .34, CT), gx = (ax + b.x) / 2, gy = (ay + b.y) / 2, gz = (az + b.z) / 2;
+    const upK = 7.5 * (1 - sst(T0, .5, t) * .75) * (1 - sst(.2, 2.2, t)), fin = sst(.3, T1 - .5, t), ft = fin * fin * (3 - 2 * fin);
+    const tx = gx + (AIM1[0] - REST.p[0]) * ft, ty = gy + upK + (AIM1[1] - REST.p[1]) * ft, tz = gz + (AIM1[2] - REST.p[2]) * ft;
+    const dx = tx - e[0], dy = ty - e[1], dz = tz - e[2]; let yaw = Math.atan2(dx, -dz), pitch = Math.atan2(dy, Math.hypot(dx, dz));
+    const fa = .0045 * wob + .0006; yaw += fa * (Math.sin(.83 * t + .4) + .5 * Math.sin(2.1 * t + 1.7)) * (t < T1 - .3 ? 1 : 0) * wob; pitch += fa * (.8 * Math.sin(.67 * t + 2.9) + .5 * Math.sin(1.7 * t + .3)) * wob;
+    if (t > 0) pitch -= .012 * Math.exp(-t / .3) * Math.sin(t * 7) * wob;                          // the operator overshoots as it stops dead
+    const fz = sst(T0, T1 - .6, t); return { e, yaw, pitch, fov: mix(FOV0, CAM.fov, fz * fz * (3 - 2 * fz) * .55 + E * .45) }; }
+
+  // ================================================================ vehicles (static)
+  // Local frame: the nose points to -Z, x to the right, y up from the ground. Palette slots: 0 paint, 1 glass, 2 black
+  // (tyres, grille, arches), 3 bright metal, 4 stripe, 5 lenses, 6 second paint.
+  function vehicle(o) {
+    const g = Geo(), c = .05, st = o.st, n = st.length;
+    // st: [z, yBottom, yBelt, yRoof (or 0), halfWidthBody, halfWidthRoof, crown]
+    const sec = k => { const [z, yb, yl, yr, wl, wr, cr] = st[k], cab = yr > yl + .05; return cab ? [[wl * .93, yb, z], [wl, yb + .1, z], [wl, yl - c, z], [wl - c, yl, z], [wl - c - .02, yl + .012, z], [wr + .03, yr - .04, z], [wr - .03, yr, z], [0, yr + (cr || .03), z]]
+      : [[wl * .93, yb, z], [wl, yb + .1, z], [wl, yl - c, z], [wl - c, yl, z], [wl - c - .01, yl + .004, z], [wl * .6, yl + (cr || .03) * .75, z], [wl * .3, yl + (cr || .03) * .95, z], [0, yl + (cr || .03), z]]; };
+    const S = []; for (let k = 0; k < n; k++) S.push(sec(k));
+    const isCab = k => st[k][3] > st[k][2] + .05;
+    for (let k = 0; k < n - 1; k++) for (let j = 0; j < 7; j++) for (const sx of [1, -1]) { const a = S[k][j], b = S[k + 1][j], d = S[k + 1][j + 1], e = S[k][j + 1], m = p => [p[0] * sx, p[1], p[2]];
+      const ca = isCab(k), cb = isCab(k + 1); let slot = 0, al = 1;
+      if (j === 4 && ca && cb) { slot = 1; al = 1; } else if (j >= 4 && j <= 6 && ca !== cb) { slot = 1; al = 1.35; }       // side glass / windscreen and backlight
+      if (o.panel && ca && cb && j === 4 && o.panel(k)) { slot = 0; }
+      if (o.box && k >= o.box) { slot = j >= 4 && ca && cb ? 6 : slot === 1 ? 6 : slot; }
+      g.mat(slot, al * (j === 0 ? .55 : 1)); g.quad(m(a), m(b), m(d), m(e), [sx * (j < 4 ? 1 : .4), j >= 3 ? 1 : 0, 0]); }
+    // nose and tail faces
+    for (const k of [0, n - 1]) { const A = S[k], out = [0, 0, k ? 1 : -1]; g.mat(0, .92); for (let j = 0; j < 7; j++) g.quad([A[j][0], A[j][1], A[j][2]], [-A[j][0], A[j][1], A[j][2]], [-A[j + 1][0], A[j + 1][1], A[j + 1][2]], [A[j + 1][0], A[j + 1][1], A[j + 1][2]], out); }
+    // pillars over the glass
+    for (let k = 1; k < n - 1; k++) if (isCab(k) && (o.pillar ? o.pillar(k) : true)) for (const sx of [1, -1]) { const a = S[k][4], b = S[k][5], w = .035; g.mat(o.box && k >= o.box ? 6 : 0, .95); g.quad([sx * (a[0] + .008), a[1], a[2] - w], [sx * (a[0] + .008), a[1], a[2] + w], [sx * (b[0] + .008), b[1], b[2] + w], [sx * (b[0] + .008), b[1], b[2] - w], [sx, .3, 0]); }
+    const zF = st[0][0], zR = st[n - 1][0], wl = st[1][4];
+    // bumpers, grille, lamps
+    g.mat(o.bump === undefined ? 3 : o.bump, 1); g.box([0, o.yb + .16, zF - .06], [wl * .98, .09, .09]); g.box([0, o.yb + .16, zR + .06], [wl * .98, .09, .09]);
+    g.mat(2, 1); g.quad([-wl * .55, st[0][2] - .1, zF - .012], [wl * .55, st[0][2] - .1, zF - .012], [wl * .55, o.yb + .3, zF - .012], [-wl * .55, o.yb + .3, zF - .012], [0, 0, -1]);
+    for (const sx of [1, -1]) { g.mat(5, 1); g.quad([sx * wl * .62, st[0][2] - .1, zF - .014], [sx * wl * .93, st[0][2] - .1, zF - .014], [sx * wl * .93, st[0][2] - .3, zF - .014], [sx * wl * .62, st[0][2] - .3, zF - .014], [0, 0, -1]);
+      g.mat(2, 1.8); g.quad([sx * wl * .6, st[n - 1][2] - .08, zR + .014], [sx * wl * .94, st[n - 1][2] - .08, zR + .014], [sx * wl * .94, st[n - 1][2] - .34, zR + .014], [sx * wl * .6, st[n - 1][2] - .34, zR + .014], [0, 0, 1]); }
+    // wheels: tyre, rim, hub, and the dark arch above
+    for (const zw of o.axles) for (const sx of [1, -1]) { const x0 = sx * (wl - .25), x1 = sx * (wl + .015), rw = o.rw;
+      g.mat(2, .8); const ring = (x, r) => { const R = []; for (let i = 0; i < 14; i++) { const a = i / 14 * TAU; R.push([x, rw + Math.cos(a) * r, zw + Math.sin(a) * r]); } return R; };
+      g.loft([ring(x0, rw), ring(x1 - sx * .03, rw), ring(x1, rw * .9)], { out: p => [0, p[1] - rw, p[2] - zw] }); g.mat(2, .7); g.loft([ring(x1, rw * .9), ring(x1 - sx * .02, rw * .62)], { flat: 1, out: () => [sx, 0, 0] });
+      g.mat(3, .8); g.loft([ring(x1 - sx * .02, rw * .62), ring(x1 + sx * .01, rw * .3)], { flat: 1, out: () => [sx, 0, 0], capB: 1 });
+      g.mat(2, .45); const xa = sx * (wl + .004), ra = rw + .09; for (let i = 0; i < 10; i++) { const a0 = i / 10 * PI, a1 = (i + 1) / 10 * PI; g.tri([xa, rw, zw], [xa, rw + Math.sin(a0) * ra, zw + Math.cos(a0) * ra], [xa, rw + Math.sin(a1) * ra, zw + Math.cos(a1) * ra], [sx, 0, 0]); } }
+    // door seams and handles
+    for (const zd of o.doors || []) for (const sx of [1, -1]) { g.mat(2, 1.2); g.quad([sx * (wl + .006), st[1][2] - .06, zd - .012], [sx * (wl + .006), st[1][2] - .06, zd + .012], [sx * (wl + .006), o.yb + .14, zd + .012], [sx * (wl + .006), o.yb + .14, zd - .012], [sx, 0, 0]);
+      g.mat(3, .7); g.box([sx * (wl + .012), st[1][2] - .16, zd + .16], [.012, .018, .06]); }
+    // mirrors
+    if (o.mirror !== undefined) for (const sx of [1, -1]) { g.mat(o.mslot || 0, .8); g.box([sx * (wl + .13), st[1][2] + .13, o.mirror], [.07, .075, .035]); g.mat(2, 1); g.box([sx * (wl + .05), st[1][2] + .08, o.mirror + .02], [.05, .018, .018]); }
+    // a stripe along the flank
+    if (o.stripe) for (const sx of [1, -1]) { g.mat(4, 1); g.quad([sx * (wl + .007), o.stripe[1], zF + .25], [sx * (wl + .007), o.stripe[1], zR - .15], [sx * (wl + .007), o.stripe[0], zR - .15], [sx * (wl + .007), o.stripe[0], zF + .25], [sx, 0, 0]); }
+    if (o.extra) o.extra(g, st, wl);
+    // occlusion: the underside and the lower flanks sit in their own shade
+    g.post((x, y, z, nx, ny) => (ny < -.5 ? .35 : 1) * mix(.62, 1, sst(o.yb, o.yb + .55, y)));
+    return g.done(); }
+  const lightBar = (g, y, z, w) => { g.mat(2, 1.4); g.box([0, y + .03, z], [w, .03, .15]); g.mat(5, .55); g.box([-w * .55, y + .1, z], [w * .42, .055, .12]); g.box([w * .55, y + .1, z], [w * .42, .055, .12]); g.mat(3, .9); g.box([0, y + .1, z], [w * .1, .06, .13]); };
+  const VEH = {
+    suv: () => vehicle({ yb: .34, rw: .4, axles: [-1.52, 1.48], doors: [-.62, .42, 1.42], mirror: -.78, stripe: [.78, .98], pillar: k => true,
+      st: [[-2.55, .46, .98, 0, .93, 0, .02], [-2.42, .34, 1.06, 0, .99, 0, .03], [-1.25, .34, 1.12, 0, 1.0, 0, .035], [-1.08, .34, 1.13, 0, 1.0, 0, .03], [-.5, .34, 1.13, 1.86, 1.0, .8, .04], [.5, .34, 1.13, 1.9, 1.0, .82, .04], [1.5, .34, 1.13, 1.9, 1.0, .82, .04], [2.38, .34, 1.13, 1.86, 1.0, .8, .04], [2.5, .34, 1.1, 0, .99, 0, .02], [2.56, .46, 1.0, 0, .96, 0, .02]],
+      extra: (g, st, wl) => { lightBar(g, 1.9, -.1, .62); g.mat(2, 1.2); for (const sx of [1, -1]) g.tube([sx * .7, 1.93, .5], [sx * .7, 1.93, 2.2], .02, .02, 4); g.mat(2, 1); g.tube([.5, 1.9, 1.4], [.5, 2.75, 1.5], .012, .006, 4); } }),
+    truck: () => vehicle({ yb: .4, rw: .44, axles: [-1.85, 1.75], doors: [-1.0, -.05], mirror: -1.28, mslot: 2, box: 5, bump: 3, pillar: k => k < 5,
+      st: [[-3.0, .52, 1.08, 0, .98, 0, .02], [-2.88, .4, 1.16, 0, 1.02, 0, .03], [-1.78, .4, 1.22, 0, 1.03, 0, .03], [-1.6, .4, 1.23, 0, 1.03, 0, .03], [-1.05, .4, 1.23, 2.02, 1.03, .86, .04], [-.02, .4, 1.23, 2.05, 1.03, .88, .04], [.06, .4, 1.3, 2.32, 1.1, 1.06, .01], [2.9, .4, 1.3, 2.32, 1.1, 1.06, .01], [2.98, .5, 1.3, 0, 1.08, 0, .01]],
+      panel: k => k >= 5,
+      extra: (g, st, wl) => { lightBar(g, 2.06, -.6, .7); g.mat(3, .7); for (const sx of [1, -1]) { g.tube([sx * .8, 2.44, .3], [sx * .8, 2.44, 2.8], .025, .025, 4); } for (let k = 0; k < 6; k++) g.tube([-.8, 2.44, .4 + k * .46], [.8, 2.44, .4 + k * .46], .018, .018, 4);
+        g.mat(2, 1.3); for (const sx of [1, -1]) for (const z of [.75, 1.45, 2.15]) g.quad([sx * 1.107, 2.1, z - .3], [sx * 1.107, 2.1, z + .3], [sx * 1.107, 1.0, z + .3], [sx * 1.107, 1.0, z - .3], [sx, 0, 0]);
+        g.mat(4, 1); for (const sx of [1, -1]) g.quad([sx * 1.11, 1.62, .1], [sx * 1.11, 1.62, 2.9], [sx * 1.11, 1.42, 2.9], [sx * 1.11, 1.42, .1], [sx, 0, 0]); } }),
+    sedan: () => vehicle({ yb: .26, rw: .33, axles: [-1.38, 1.36], doors: [-.5, .5], mirror: -.62,
+      st: [[-2.3, .36, .68, 0, .84, 0, .02], [-2.2, .26, .76, 0, .89, 0, .03], [-1.1, .26, .86, 0, .9, 0, .04], [-.85, .26, .87, 0, .9, 0, .03], [-.1, .26, .87, 1.4, .9, .66, .04], [.95, .26, .87, 1.4, .9, .66, .04], [1.6, .26, .9, 0, .9, 0, .03], [2.2, .26, .88, 0, .88, 0, .03], [2.3, .36, .8, 0, .84, 0, .02]] }),
+    pickup: () => vehicle({ yb: .36, rw: .4, axles: [-1.75, 1.65], doors: [-.85], mirror: -1.12,
+      st: [[-2.75, .48, 1.0, 0, .95, 0, .02], [-2.62, .36, 1.08, 0, .99, 0, .03], [-1.5, .36, 1.14, 0, 1.0, 0, .03], [-1.32, .36, 1.15, 0, 1.0, 0, .03], [-.75, .36, 1.15, 1.84, 1.0, .82, .04], [.25, .36, 1.15, 1.86, 1.0, .82, .04], [.42, .36, 1.14, 0, 1.0, 0, 0], [2.7, .36, 1.14, 0, 1.0, 0, 0], [2.76, .46, 1.1, 0, .98, 0, 0]],
+      extra: (g, st, wl) => { g.mat(2, 1.6); g.quad([-.9, 1.146, .52], [.9, 1.146, .52], [.9, 1.146, 2.62], [-.9, 1.146, 2.62], [0, 1, 0]); g.mat(0, .7); g.box([0, 1.0, 1.5], [.5, .16, .7]); } }),
+    van: () => vehicle({ yb: .34, rw: .38, axles: [-1.7, 1.6], doors: [-1.0, .0], mirror: -1.3, stripe: [.9, 1.12], panel: k => k >= 5,
+      st: [[-2.7, .46, 1.0, 0, .95, 0, .02], [-2.6, .34, 1.1, 0, 1.0, 0, .03], [-1.9, .34, 1.2, 0, 1.0, 0, .03], [-1.75, .34, 1.22, 0, 1.0, 0, .03], [-1.15, .34, 1.22, 2.15, 1.0, .86, .04], [-.1, .34, 1.22, 2.3, 1.0, .92, .04], [2.6, .34, 1.22, 2.3, 1.0, .92, .04], [2.68, .46, 1.2, 0, .98, 0, .02]],
+      extra: (g) => { lightBar(g, 2.3, -.3, .6); g.mat(5, .6); g.box([0, 2.36, 2.3], [.5, .05, .1]); } }),
+    jeep: () => vehicle({ yb: .38, rw: .4, axles: [-1.15, 1.1], doors: [-.2], mirror: -.5, bump: 2,
+      st: [[-1.95, .5, 1.02, 0, .82, 0, .01], [-1.85, .38, 1.06, 0, .86, 0, .02], [-.72, .38, 1.1, 0, .88, 0, .02], [-.6, .38, 1.1, 0, .88, 0, .02], [-.42, .38, 1.1, 1.78, .88, .78, .02], [1.7, .38, 1.1, 1.8, .88, .8, .02], [1.78, .44, 1.08, 0, .88, 0, .01]],
+      extra: (g) => { g.mat(2, .9); const R = []; for (let i = 0; i < 12; i++) { const a = i / 12 * TAU; R.push([Math.cos(a) * .38, 1.0 + Math.sin(a) * .38, 1.84]); } const R2 = R.map(p => [p[0], p[1], 2.06]); g.loft([R, R2], { capB: 1, out: p => [p[0], p[1] - 1, .3] }); } }),
+  };
+  // where they stand: [kind, x, z, heading (degrees, 0 = nose north), palette]
+  const PAL_V = { white: [.86, .09, .045, .5, .24, .78, .86], red: [.235, .09, .045, .5, .8, .78, .25], dark: [.115, .1, .045, .42, .2, .7, .115], navy: [.14, .09, .045, .45, .2, .7, .14], amb: [.84, .09, .045, .5, .3, .78, .84], olive: [.2, .08, .045, .2, .2, .6, .2], grey: [.42, .1, .045, .5, .2, .75, .42] };
+  // (the first, third, fourth and last are the four in the matched frame; sizes are scaled to their length there)
+  const CARS = [['suv', -1.73, -14.63, 220, 'white', .84], ['truck', 13.4, -21.6, 204, 'red', .9], ['sedan', -5.15, -14.69, 224, 'dark', .82], ['pickup', -10.5, -14.3, 235, 'navy', .84], ['van', 10.6, -26.2, 188, 'amb', .88], ['jeep', 18.2, -19.4, 168, 'olive', .88],
+    ['sedan', -24, -37, 262, 'grey', .86], ['pickup', 31, -36.5, 96, 'white', .86], ['sedan', 44, -37.5, 276, 'dark', .86], ['van', -52, -37.8, 84, 'grey', .88], ['suv', 62, -36.2, 268, 'navy', .86], ['pickup', -1.0, -17.95, 215, 'red', .84]];
+  const CAR_DIM = { suv: [2.6, 1.02], truck: [3.05, 1.12], sedan: [2.35, .92], pickup: [2.8, 1.02], van: [2.75, 1.02], jeep: [1.95, .9] };
+  function carMat(c) { const h = c[3] * D2R, x = c[1], z = c[2], f = [Math.sin(h), -Math.cos(h)], y0 = ground(x, z), yf = ground(x + f[0] * 1.5, z + f[1] * 1.5), yr = ground(x - f[0] * 1.5, z - f[1] * 1.5), pitch = Math.atan2(yf - yr, 3);
+    const M = mMs(mT(x, (yf + yr) / 2 * .6 + y0 * .4 - .01, z), mRY(h), mRX(pitch), mS(c[5] || 1)); return M; }
+  function buildVehicles() { const parts = {}; for (const c of CARS) { const P = parts[c[0]] || (parts[c[0]] = VEH[c[0]]()); stampS(P, carMat(c), PAL_V[c[4]].map(TONE)); } }
+  // wheel tracks: where each one drove down from the track along the back of the beach
+  function sandSh(x, z, k) { const y = ground(x, z); return hazed(TONE(sat(sandTone(x, z, y) * k)) * occl(x, z), x, y, z); }
+  function strip(pts, w, k, lift) { for (let i = 0; i < pts.length - 1; i++) { const a = pts[i], b = pts[i + 1], dx = b[0] - a[0], dz = b[1] - a[1], l = Math.hypot(dx, dz) || 1, nx = -dz / l * w, nz = dx / l * w, p = pts[Math.max(0, i - 1)], q = pts[Math.min(pts.length - 1, i + 2)];
+      const l0 = Math.hypot(b[0] - p[0], b[1] - p[1]) || 1, n0x = -(b[1] - p[1]) / l0 * w, n0z = (b[0] - p[0]) / l0 * w, l1 = Math.hypot(q[0] - a[0], q[1] - a[1]) || 1, n1x = -(q[1] - a[1]) / l1 * w, n1z = (q[0] - a[0]) / l1 * w;
+      const V = [[a[0] - n0x, a[1] - n0z], [a[0] + n0x, a[1] + n0z], [b[0] + n1x, b[1] + n1z], [b[0] - n1x, b[1] - n1z]], ka = typeof k === 'function' ? k(i, 0) : k, kb = typeof k === 'function' ? k(i + 1, 1) : k;
+      for (const j of [0, 1, 2, 0, 2, 3]) sv(V[j][0], ground(V[j][0], V[j][1]) + lift, V[j][1], 0, 1, 0, sandSh(V[j][0], V[j][1], j === 0 || j === 1 ? ka : kb)); } }
+  function buildTracks() { for (let ci = 0; ci < CARS.length; ci++) { const c = CARS[ci], h = c[3] * D2R, f = [Math.sin(h), -Math.cos(h)], r = [Math.cos(h), Math.sin(h)], dim = CAR_DIM[c[0]].map(v => v * (c[5] || 1)), len = c[2] > -30 ? 10 + 8 * hsh(ci, 501) : 14, side = hsh(ci, 502) < .5 ? -1 : 1;
+      for (const sx of [-1, 1]) { const pts = []; for (let k = 0; k <= 26; k++) { const u = k / 26, d = dim[0] * .9 + u * (len + 26), bend = sst(len * .5, len + 14, u * (len + 26)) * side * 1.25;
+          let x = c[1] - f[0] * d + r[0] * sx * (dim[1] - .17), z = c[2] - f[1] * d + r[1] * sx * (dim[1] - .17); const cb = Math.cos(bend), sb = Math.sin(bend), ox = x - c[1], oz = z - c[2]; x = c[1] + ox * cb - oz * sb * .4; z = c[2] + oz * cb + ox * sb * .4;
+          if (c[2] > -30) z = Math.max(z, -37 + sx * .2 * side - u * 1.5); pts.push([x, z]); }
+        strip(pts, .13, (i) => mix(.8, .93, i / 26) , .02); } }
+    // the track itself along the back of the beach, and scuffed sand where people have been walking down
+    for (const off of [-.85, .85]) { const pts = []; for (let x = -420; x <= 420; x += 6) pts.push([x, -37 + off + Math.sin(x * .02) * 1.2]); strip(pts, .16, .84, .02); }
+    for (const [x0, z0, x1, z1, sd] of [[1.5, -17, 2, -9.5, 1], [3, -20, 4.5, -11, 2], [3, -25, 6, -13.5, 3], [8, -24, 7, -15, 4], [2, -9, 1.5, -5.8, 5]]) { const pts = []; for (let k = 0; k <= 10; k++) { const u = k / 10; pts.push([mix(x0, x1, u) + (vn(u * 3, sd, 511) - .5) * 1.4, mix(z0, z1, u)]); } strip(pts, .34, (i) => .9 + .05 * hsh(i, sd), .016); } }
+  // tide lines: a thin dark wrack line and a paler line of pumice and shell along old high-water marks
+  function buildTideLines() { for (const [yt, k, w, sd] of [[.3, .86, .13, 1], [.34, 1.1, .06, 2], [.74, 1.14, .09, 3], [.8, .84, .16, 4], [1.16, 1.2, .12, 5], [1.2, .86, .22, 6]]) { const pts = []; let z = -8; for (let x = -420; x <= 420; x += (Math.abs(x) < 45 ? .9 : 7)) { for (let it = 0; it < 6; it++) { const y = ground(x, z), g = (ground(x, z - .2) - y) / .2; z -= clamp((yt - y) / (g || .07), -2, 2) * .8; }
+        pts.push([x, z + (fbm(x * .22, sd * 3.1, 521, 3) - .5) * 1.1]); } strip(pts, w, (i) => mix(1, k, .35 + .65 * vn(i * .35, sd, 523)), .014 + sd * .001); } }
+
+  // ================================================================ people
+  // Parts in joint space (the limb hangs down -Y from its joint). Palette slots: 0 jacket, 1 skin, 2 hair, 3 trousers, 4 hat / hood, 5 shoes, 6 prop, 7 jacket trim.
+  let FIG = null;
+  function figInit() { if (FIG) return FIG; const F = {}, ell = (y, rx, rz, n, cz) => { const R = []; for (let i = 0; i < n; i++) { const a = i / n * TAU + PI / n; R.push([rx * Math.sin(a), y, (cz || 0) - rz * Math.cos(a)]); } return R; };
+    // torso (origin at the hips, y up): coat with a hem, and a shorter jacket
+    F.torso = [0, 1].map(k => { const g = Geo(); g.mat(0, 1); g.loft([ell(k ? -.22 : -.06, .185, .125, 8), ell(.1, .17, .118, 8), ell(.36, .19, .122, 8), ell(.5, .205, .1, 8, .005), ell(.56, .075, .07, 8, .01)], { capA: 1 }); g.mat(7, 1); g.loft([ell(.12, .176, .123, 8), ell(.16, .177, .124, 8)]); g.mat(1, .9); g.tube([0, .55, .01], [0, .64, 0], .05, .048, 6); return g.done(); });
+    // heads: bare with hair, cap, hard hat, hood up
+    F.head = [0, 1, 2, 3].map(k => { const g = Geo(); g.mat(1, 1); g.ball([0, .115, -.005], [.082, .112, .098], 7, 5);
+      if (k === 0) { g.mat(2, 1); g.ball([0, .14, .018], [.09, .1, .1], 7, 4); } else if (k === 1) { g.mat(4, 1); g.ball([0, .16, .005], [.092, .078, .104], 7, 4); g.quad([-.07, .165, -.09], [.07, .165, -.09], [.06, .15, -.19], [-.06, .15, -.19], [0, 1, 0]); }
+      else if (k === 2) { g.mat(4, 1); g.ball([0, .175, 0], [.115, .075, .13], 8, 4); g.loft([ell(.15, .135, .15, 8), ell(.16, .1, .11, 8)], { flat: 1 }); } else { g.mat(0, .9); g.ball([0, .125, .03], [.108, .125, .115], 7, 5); }
+      return g.done(); });
+    const limb = (len, r0, r1, n, slot, cap) => { const g = Geo(); g.mat(slot, 1); g.tube([0, .02, 0], [0, -len, 0], r0, r1, n, { capB: cap }); return g; };
+    F.upper = limb(.3, .058, .046, 5, 0).done(); { const g = limb(.26, .046, .037, 5, 0); g.mat(1, 1); g.ball([0, -.31, 0], [.036, .06, .042], 5, 3); F.fore = g.done(); }
+    F.thigh = limb(.45, .088, .062, 6, 3).done(); { const g = limb(.43, .06, .044, 6, 3); g.mat(5, 1); g.box([0, -.45, -.055], [.048, .04, .125]); F.shin = g.done(); }
+    { const g = Geo(); g.mat(6, 1); g.box([0, 0, -.06], [.075, .05, .045]); g.tube([0, 0, -.1], [0, 0, -.2], .04, .045, 6, { capB: 1 }); F.camera = g.done(); }
+    { const g = Geo(); g.mat(6, 1); g.box([0, 0, 0], [.13, .2, .08]); F.pack = g.done(); }
+    FIG = F; return F; }
+  // pose: { lean, look, nod, la: [swing, out, bend], ra: [...], ll: [swing, knee], rl: [...], crouch }
+  const POSES = {
+    stand: { la: [.05, .1, .15], ra: [.02, .1, .2] }, hips: { la: [-.25, .55, 1.9], ra: [-.25, .55, 1.9] }, cross: { la: [.5, -.2, 1.7], ra: [.55, -.2, 1.75], lean: -.03 }, shade: { la: [.05, .1, .15], ra: [1.75, .4, 2.3], nod: -.12 },
+    point: { la: [.05, .1, .2], ra: [1.3, .2, .12], lean: .04 }, camera: { la: [1.25, .22, 2.0], ra: [1.25, .22, 2.0], prop: 1, nod: -.05 }, pockets: { la: [.12, .16, .5], ra: [.12, .16, .5], lean: -.02 }, radio: { la: [.05, .1, .15], ra: [.9, .1, 2.5] }, wave: { la: [.05, .1, .2], ra: [2.7, .35, .4] }, hands: { la: [1.5, .15, 2.2], ra: [1.5, .15, 2.2], nod: -.05 } };
+  // emit one figure. put(P, M, pal) is stampS or stampD. p: { x, y, z, h (heading rad), s (scale), pose, pal, head, coat }
+  function figure(put, p) { const F = figInit(), ps = p.pose, s = p.s || 1, root = mMs(mT(p.x, p.y + (ps.dy || 0) * s, p.z), mRY(p.h), mS(s)), hip = .92 - (ps.crouch || 0), pal = p.pal;
+    const Mt = mMs(root, mT(0, hip, 0), mRX(-(ps.lean || 0)), mRY(ps.twist || 0)); put(F.torso[p.coat || 0], Mt, pal);
+    put(F.head[p.head || 0], mMs(Mt, mT(0, .6, 0), mRY(ps.look || 0), mRX(-(ps.nod || 0))), pal);
+    for (const sd of [-1, 1]) { const a = sd < 0 ? ps.la : ps.ra, Ms = mMs(Mt, mT(sd * .215, .5, 0), mRZ(sd * a[1]), mRX(a[0])); put(F.upper, Ms, pal); const Me = mMs(Ms, mT(0, -.3, 0), mRX(a[2])); put(F.fore, Me, pal);
+      if (ps.prop && sd > 0) put(F.camera, mMs(Mt, mT(0, .7, -.17)), pal);
+      const l = sd < 0 ? (ps.ll || [0, 0]) : (ps.rl || [0, 0]), Mh = mMs(root, mT(sd * .095, hip, 0), mRZ(sd * .03), mRX(l[0])); put(F.thigh, Mh, pal); put(F.shin, mMs(Mh, mT(0, -.45, 0), mRX(-l[1])), pal); }
+    if (p.pack) put(F.pack, mMs(Mt, mT(0, .3, .17)), pal); }
+  // a deterministic person from a seed: clothing tones, head, build
+  function personLook(seed, kind) { const h = n => hsh(seed, n + 600), sk = TONE(h(1) < .18 ? .2 + .1 * h(2) : .44 + .16 * h(2)), hair = TONE(h(3) < .2 ? .4 + .25 * h(4) : .05 + .12 * h(4)); let jk, tr, hat = TONE(.1), head = 0, trim, coat = h(9) < .35 ? 1 : 0;
+    if (kind === 1) { jk = TONE(.25 + .05 * h(5)); tr = TONE(.08 + .05 * h(6)); head = h(7) < .55 ? 2 : 1; hat = TONE(head === 2 ? .46 + .14 * h(8) : .22); trim = TONE(.62); coat = 0; }          // rescue: red jacket, pale band, helmet
+    else if (kind === 2) { jk = TONE(.085 + .04 * h(5)); tr = TONE(.08 + .03 * h(6)); head = 1; hat = TONE(.09); trim = TONE(.45); coat = 0; }                                    // navy crew
+    else { const q = h(5); jk = TONE(q < .62 ? .07 + .13 * h(10) : q < .86 ? .22 + .2 * h(10) : .5 + .3 * h(10)); tr = TONE(h(6) < .7 ? .07 + .12 * h(11) : .2 + .16 * h(11)); head = h(7) < .62 ? 0 : h(7) < .8 ? 1 : 3; hat = TONE(.08 + .3 * h(8)); trim = jk; }
+    return { pal: [jk, sk, hair, tr, hat, TONE(.06), TONE(.07), trim], head, coat, s: .93 + .13 * h(12), pack: kind === 1 && h(13) < .4 }; }
+  // the watchers: [x, z, kind, pose] — the first block are the ones standing in the matched frame
+  const WATCH = [[1.4, -9.2, 0, 'camera'], [1.8, -9.8, 0, 'stand'], [3.1, -11.4, 0, 'pockets'], [4.4, -10.9, 2, 'hips'], [6.0, -11.4, 0, 'cross'], [6.4, -12.5, 0, 'stand'], [6.6, -14.0, 0, 'stand'], [7.6, -13.8, 0, 'camera'], [7.8, -14.8, 0, 'stand'], [5.6, -17.8, 0, 'pockets'], [5.9, -18.6, 2, 'stand'], [4.2, -14.6, 0, 'shade'],
+    // east of the frame (in view when the picture is wider than the reference)
+    [11.2, -10.4, 0, 'shade'], [12.0, -11.3, 0, 'camera'], [11.0, -12.3, 0, 'stand'], [12.9, -12.6, 1, 'hips'], [10.4, -13.9, 0, 'pockets'], [11.6, -14.6, 0, 'hands'], [13.8, -11.0, 0, 'wave'], [14.9, -12.8, 0, 'stand'], [13.3, -15.2, 0, 'cross'],
+    [16.3, -11.2, 0, 'point'], [17.4, -12.9, 0, 'stand'], [19.0, -11.6, 2, 'radio'], [20.8, -13.3, 0, 'camera'], [22.6, -12.1, 0, 'shade'], [24.8, -14.3, 0, 'stand'], [10.0, -17.2, 0, 'stand'], [10.9, -18.1, 0, 'camera'], [16.4, -17.6, 2, 'hips'],
+    [11.2, -23.4, 1, 'stand'], [15.6, -23.6, 1, 'radio'], [28, -16, 0, 'camera'], [31, -15, 0, 'stand'], [36, -18, 0, 'shade'],
+    // beyond the top of the frame and away down the beach to the west
+    [-9.6, -19.6, 0, 'camera'], [-8.7, -20.2, 0, 'stand'], [-5.0, -22.2, 0, 'pockets'], [-2.4, -24.4, 1, 'radio'], [2.4, -26.6, 0, 'stand'], [-13.0, -17.9, 0, 'shade'], [-16.3, -15.9, 0, 'stand'], [-17.0, -16.6, 0, 'hands'], [-21, -15.5, 0, 'camera'], [-28.4, -14.1, 0, 'stand'], [-29.2, -14.8, 0, 'point'],
+    [-36, -17, 0, 'stand'], [-37, -17.6, 0, 'camera'], [-22, -35.6, 0, 'stand'], [42, -36, 0, 'stand']];
+  function watcher(i) { const w = WATCH[i], lk = personLook(i * 7 + 3, w[2] === 3 ? 0 : w[2]), x = w[0], z = w[1]; if (w[2] === 3) { lk.pal[0] = TONE(.72); }
+    const h = Math.atan2(IMP[0] - x, -(IMP[2] - z)) + (hsh(i, 701) - .5) * .5, ps = Object.assign({}, POSES[w[3]]); ps.look = (hsh(i, 702) - .5) * .3; ps.lean = (ps.lean || 0) + (hsh(i, 703) - .5) * .06; return { x, y: ground(x, z), z, h, s: lk.s, pose: ps, pal: lk.pal, head: lk.head, coat: lk.coat, pack: lk.pack }; }
+  function buildPeople() { for (let i = 0; i < WATCH.length; i++) figure((P, M, pal) => stampS(P, M, pal), watcher(i)); }
+  // the ones who move: path, the time they set off, and where they must be at T1 (matched to the reference); they
+  // stand like the others before, then run down the sand and slow as they reach the water
+  const RUN = [
+    { pts: [[3.5, -13.2], [2.6, -9.3], [1.6, -5.5], [1.2, -4.3], [.95, -3.7]], at1: 2, t0: 1.0, kind: 1, sd: 11 },
+    { pts: [[4.9, -13.1], [2.4, -9.6], [.1, -6.5], [-.5, -5.0], [-.8, -4.3]], at1: 2, t0: 1.25, kind: 1, sd: 12 },
+    { pts: [[.6, -13.2], [-.4, -10.6], [-1.1, -8.1], [-1.9, -6.9], [-2.2, -6.4]], at1: 2, t0: 1.6, kind: 0, sd: 13 },
+    { pts: [[2.0, -13.4], [1.0, -11.2], [.3, -9.4], [.0, -7.6], [-.1, -7.0]], at1: 2, t0: 2.2, kind: 2, sd: 14 },
+    { pts: [[9.6, -15.2], [7.4, -12.4], [5.6, -10.2], [4.2, -7.6], [3.8, -6.9]], at1: 2, t0: 1.9, kind: 1, sd: 15 },
+    { pts: [[7.4, -16.4], [4.9, -12.6], [3.0, -9.6], [2.4, -7.8], [2.2, -7.1]], at1: 2, t0: 1.5, kind: 0, sd: 16 },
+    { pts: [[14.6, -14.4], [12.4, -12.6], [10.7, -11.2], [9.4, -8.6], [9.0, -7.6]], at1: 2, t0: 2.4, kind: 0, sd: 17 },
+  ];
+  let RUNI = null;
+  function runInit() { if (RUNI) return RUNI; RUNI = RUN.map(r => { const P = r.pts, L = [0]; for (let i = 1; i < P.length; i++) L.push(L[i - 1] + Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]));
+      // speed: up to a run, easing to a wade by T1, slow after; scaled so the distance at T1 is the matched spot
+      const sp = t => sst(r.t0, r.t0 + .7, t) * (1 - .78 * sst(T1 - 2.2, T1 - .2, t)) * (1 - .9 * sst(T1 + 2.5, T1 + 5.5, t)), dt = .05, n = Math.ceil((T1 + 12 - r.t0) / dt) + 1, D = new Float32Array(n); let d = 0; for (let i = 1; i < n; i++) { d += sp(r.t0 + (i - .5) * dt) * dt; D[i] = d; }
+      const i1 = Math.round((T1 - r.t0) / dt), k = L[r.at1] / D[i1]; for (let i = 0; i < n; i++) D[i] = Math.min(D[i] * k, L[L.length - 1]); return { r, L, D, dt, k, sp, look: personLook(r.sd * 31 + 5, r.kind) }; }); return RUNI; }
+  function runnersFrame(t) { const R = runInit(), put = (P, M, pal) => stampD(P, M, pal, 1);
+    for (const q of R) { const r = q.r, P = r.pts, f = clamp((t - r.t0) / q.dt, 0, q.D.length - 1.001), i = f | 0, d = t <= r.t0 ? 0 : q.D[i] + (q.D[i + 1] - q.D[i]) * (f - i), v = t <= r.t0 ? 0 : q.sp(t) * q.k;
+      let s = 0; while (s < P.length - 2 && d > q.L[s + 1]) s++; const u = clamp((d - q.L[s]) / (q.L[s + 1] - q.L[s]), 0, 1), x = mix(P[s][0], P[s + 1][0], u), z = mix(P[s][1], P[s + 1][1], u);
+      const hd = Math.atan2(P[s + 1][0] - P[s][0], -(P[s + 1][1] - P[s][1])), h0 = Math.atan2(IMP[0] - P[0][0], -(IMP[2] - P[0][1])), go = sst(r.t0 - .1, r.t0 + .5, t), h = h0 + (hd - h0) * go;
+      const run = sat(v / 2.6), ph = d * (2.1 + 1.4 * (1 - run)) * 1.6, sn = Math.sin(ph), cs = Math.cos(ph), amp = .25 + .55 * run, gy = ground(x, z), wet = sat((.05 - gy) / .3);
+      // before setting off: watching; a flinch as it hits
+      const fl = t > 0 && t < r.t0 ? Math.exp(-t / .25) * .1 : 0;
+      const ps = { lean: .04 + .2 * run + fl, look: (1 - go) * (hsh(r.sd, 9) - .5) * .3, nod: -fl, dy: .035 * run * Math.abs(cs) - fl * .3, crouch: fl * .25,
+        la: [-sn * amp * 1.1 * go + .05, .12 + .1 * wet, mix(.2, 1.5, run * go) + .2 * wet], ra: [sn * amp * 1.1 * go + .05, .12 + .1 * wet, mix(.2, 1.5, run * go) + .2 * wet],
+        ll: [sn * amp * go, (Math.max(0, cs) * 1.3 * amp + .12 * run + wet * .25) * go], rl: [-sn * amp * go, (Math.max(0, -cs) * 1.3 * amp + .12 * run + wet * .25) * go] };
+      figure(put, { x, y: gy, z, h, s: q.look.s, pose: ps, pal: q.look.pal, head: q.look.head, coat: 0, pack: q.look.pack }); } }
+
+  // ================================================================ props
+  let PROPS = null;
+  function propsInit() { if (PROPS) return PROPS; const P = {};
+    { const g = Geo(); g.mat(0, 1); g.lathe([[.19, 0], [.19, .03], [.14, .035], [.035, .68], [.001, .7]], 8); g.mat(1, 1); g.lathe([[.105, .3], [.075, .46]], 8); P.cone = g.done(); }
+    { const g = Geo(); g.mat(0, 1); g.tube([0, 0, 0], [0, 5.2, 0], .05, .035, 6); g.mat(1, 1); g.lathe([[.3, 5.2], [.3, 5.24]], 10); P.pole = g.done(); }
+    { const g = Geo(); g.mat(0, 1); g.box([0, .2, 0], [.42, .2, .28]); g.mat(1, 1); g.box([0, .41, 0], [.43, .012, .29]); P.crate = g.done(); }
+    // the far helicopter (rotor is drawn per frame)
+    { const g = Geo(); g.mat(0, 1); g.ball([0, 0, -.4], [1.05, 1.1, 2.3], 10, 6); g.mat(1, 1); g.ball([0, .12, -1.5], [.9, .82, 1.2], 8, 5); g.mat(0, 1); g.tube([0, .35, 1.4], [0, .7, 7.2], .42, .12, 8); g.box([0, 1.5, 7.0], [.05, .85, .32]); g.box([0, .75, 6.6], [.9, .04, .22]); g.tube([0, 1.0, -.3], [0, 1.55, -.3], .22, .16, 6);
+      for (const sx of [-1, 1]) { g.tube([sx * 1.05, -1.45, -2.1], [sx * 1.05, -1.45, 1.6], .05, .05, 4); g.tube([sx * .7, -.9, -1.2], [sx * 1.05, -1.45, -1.2], .04, .04, 4); g.tube([sx * .7, -.9, .7], [sx * 1.05, -1.45, .7], .04, .04, 4); } P.heli = g.done(); }
+    // the recovery boat: a rigid inflatable with an outboard and a console
+    { const g = Geo(); g.mat(0, 1); const hull = []; for (let i = 0; i <= 12; i++) { const u = i / 12, z = -3.1 + u * 5.4, w = 1.02 * Math.pow(Math.sin(Math.min(1, u * 1.9 + .08) * PI / 2), .7); hull.push([w, z]); }
+      for (const sx of [-1, 1]) { const R = hull.map(([w, z]) => { const r = []; for (let k = 0; k < 7; k++) { const a = k / 7 * TAU; r.push([sx * (w + Math.cos(a) * .23), .42 + Math.sin(a) * .23 + (z < -2 ? (-2 - z) * .22 : 0), z]); } return r; }); g.loft(R, { capA: 1, capB: 1 }); }
+      g.mat(1, 1); g.quad([-1, .3, -2.9], [1, .3, -2.9], [1, .3, 2.2], [-1, .3, 2.2], [0, 1, 0]); g.mat(2, 1); g.box([0, .78, .2], [.34, .42, .26]); g.mat(1, 1.4); g.quad([-.32, 1.5, .0], [.32, 1.5, .0], [.34, 1.2, -.08], [-.34, 1.2, -.08], [0, .3, -1]);
+      g.mat(2, .7); g.box([0, .7, 2.42], [.16, .42, .2]); g.mat(3, 1); g.tube([-.5, .65, -1.3], [-.5, 1.75, -1.3], .02, .02, 4); g.tube([.5, .65, -1.3], [.5, 1.75, -1.3], .02, .02, 4); g.tube([-.5, 1.75, -1.3], [.5, 1.75, -1.3], .02, .02, 4); P.boat = g.done(); }
+    PROPS = P; return P; }
+  const HELI = [-150, 78, -92, 2.2], BOAT = [-27, 33, 1.2], SOCK = [20.5, -30.5], SUVM = { };
+  function buildProps() { const P = propsInit(), r = rng(977);
+    // cones round the vehicles, crates and a stretcher by the truck
+    for (const [x, z] of [[10.4, -19.6], [11.5, -18.9], [15.2, -18.2], [16.3, -24.6], [8.6, -24.2], [-4.2, -24.6], [-12.6, -19.8]]) stampS(P.cone, mT(x, ground(x, z), z), [TONE(.42), TONE(.88)]);
+    for (const [x, z, a] of [[15.9, -21.9, .3], [16.8, -22.3, 1.1], [16.2, -21.2, -.4], [12.9, -27.4, .8]]) stampS(P.crate, mMs(mT(x, ground(x, z), z), mRY(a)), [TONE(.3), TONE(.5)]);
+    // windsock pole
+    stampS(P.pole, mT(SOCK[0], ground(SOCK[0], SOCK[1]), SOCK[1]), [TONE(.7), TONE(.5)]);
+    // driftwood: bleached logs along the top of the beach
+    for (let i = 0; i < 46; i++) { const x = (r() - .5) * 360, z = -26 - r() * 14 - (r() < .3 ? 0 : 2), a = r() * PI, len = .8 + r() * 3.4, rad = .06 + r() * .13, y = ground(x, z) + rad * .6, g = Geo(); g.mat(0, 1);
+      const dx = Math.sin(a) * len / 2, dz = Math.cos(a) * len / 2; g.tube([x - dx, y, z - dz], [x + dx, y + (r() - .5) * .2, z + dz], rad, rad * (.5 + r() * .4), 6, { capA: 1, capB: 1 }); if (r() < .5) g.tube([x + dx * .2, y, z + dz * .2], [x + dx * .2 + dz * .5, y + .25 + r() * .3, z + dz * .2 - dx * .5], rad * .5, rad * .25, 5, { capB: 1 }); stampS(g.done(), mI(), [TONE(.4 + .14 * r())], (wx, wy, wz) => .72 + .28 * sat((wy - ground(wx, wz)) / .15)); }
+    // sand fence along the foot of the dunes, marram tufts and low scrub on them
+    { const g = Geo(); g.mat(0, 1); for (let x = -260; x <= 260; x += 2.4) { const z = -44.2 + Math.sin(x * .03) * 1.1, y = ground(x, z), lean = (hsh(x * 10, 801) - .5) * .25; if (hsh(x * 10, 802) < .12) continue; g.tube([x, y - .1, z], [x + lean, y + 1.05, z + lean * .4], .035, .03, 4); }
+      stampS(g.done(), mI(), [TONE(.34)]); const g2 = Geo(); g2.mat(0, 1); for (let x = -260; x < 258; x += 2.4) { if (hsh(x * 10, 802) < .12 || hsh((x + 2.4) * 10, 802) < .12) continue; const z0 = -44.2 + Math.sin(x * .03) * 1.1, z1 = -44.2 + Math.sin((x + 2.4) * .03) * 1.1; for (const hgt of [.5, .9]) { const a = [x, ground(x, z0) + hgt, z0], b = [x + 2.4, ground(x + 2.4, z1) + hgt, z1]; g2.quad([a[0], a[1] + .012, a[2]], [b[0], b[1] + .012, b[2]], [b[0], b[1] - .012, b[2]], [a[0], a[1] - .012, a[2]], [0, 0, 1]); } } stampS(g2.done(), mI(), [TONE(.3)]); }
+    { const g = Geo(); let n = 0; for (let i = 0; i < 5200 && n < 2300; i++) { const x = (r() - .5) * 640, z = -45 - r() * r() * 150, y = ground(x, z), den = fbm(x * .09, z * .09, 41, 3) + sst(-46, -62, z) * .22; if (den < .42 + r() * .2) continue; n++;
+        const big = r() < .1 && z < -58, hh = big ? .7 + r() * 1.3 : .3 + r() * .45, w = big ? .8 + r() * 1.4 : .25 + r() * .3, a = r() * PI, tone = big ? .7 + .3 * r() : .95 + .5 * r();
+        if (big) { g.mat(0, tone); g.ball([x, y + hh * .45, z], [w, hh * .62, w * (.7 + .5 * r())], 6, 3); }
+        else { g.mat(0, tone); for (let k = 0; k < 2; k++) { const b = a + k * PI / 2, dx = Math.cos(b) * w, dz = Math.sin(b) * w; g.tri([x - dx, y, z - dz], [x + dx, y, z + dz], [x + (r() - .5) * .3, y + hh, z + (r() - .5) * .3], [0, 1, 0]); } } }
+      stampS(g.done(), mI(), [TONE(.2)], (wx, wy, wz) => .6 + .4 * sat((wy - ground(wx, wz)) / .5)); }
+    // poles along the track behind the dunes, a few low buildings far off
+    { const g = Geo(); g.mat(0, 1); for (let x = -900; x <= 900; x += 46) { const z = -96 + Math.sin(x * .004) * 8, y = ground(x, z); g.tube([x, y, z], [x, y + 8.2, z], .13, .09, 5); g.box([x, y + 7.6, z], [1.1, .06, .06]); }
+      for (const [x, z, w, d, hh] of [[-240, -150, 9, 6, 3.6], [-226, -158, 5, 5, 3], [310, -170, 12, 7, 4.2], [334, -160, 6, 5, 3.2], [-560, -240, 14, 8, 5], [640, -300, 18, 9, 5.5], [90, -128, 7, 5, 3.2]]) { const y = ground(x, z); g.mat(1, 1); g.box([x, y + hh / 2, z], [w, hh / 2, d]); g.mat(2, 1); g.quad([x - w - .4, y + hh, z + d + .4], [x + w + .4, y + hh, z + d + .4], [x + w + .4, y + hh + 1.6, z], [x - w - .4, y + hh + 1.6, z], [0, 1, .5]); g.quad([x - w - .4, y + hh, z - d - .4], [x + w + .4, y + hh, z - d - .4], [x + w + .4, y + hh + 1.6, z], [x - w - .4, y + hh + 1.6, z], [0, 1, -.5]); }
+      stampS(g.done(), mI(), [TONE(.2), TONE(.5), TONE(.26)]); }
+    // the second helicopter, hanging off over the dunes to the north west
+    stampS(P.heli, mMs(mT(HELI[0], HELI[1], HELI[2]), mRY(HELI[3]), mRX(.05)), [TONE(.2), TONE(.1)]); }
+  // things that move a little: the light bars, the far rotor, the boat on the swell, the windsock
+  function propsFrame(t, ex, ey, ez) { const P = propsInit();
+    // light bars: alternating double flashes
+    for (const ci of [0, 1, 4]) { const c = CARS[ci], M = carMat(c), ph = (t * 1.6 + ci * .37) % 1, side = ph < .5 ? -1 : 1, q = (ph % .5) / .5, on = (q < .16 || (q > .28 && q < .44)) ? 1 : 0; if (!on) continue;
+      const y = ci === 0 ? 2.07 : ci === 1 ? 2.23 : 2.47, z = ci === 0 ? -.1 : ci === 1 ? -.6 : -.3, w = ci === 1 ? .7 : .62, cx = side * w * .55, hw = w * .43;
+      const p = [mP(M, [cx - hw, y, z - .13]), mP(M, [cx + hw, y, z - .13]), mP(M, [cx + hw, y, z + .13]), mP(M, [cx - hw, y, z + .13])]; for (const k of [0, 1, 2, 0, 2, 3]) dv(p[k][0], p[k][1], p[k][2], 0, 1, 0, 1.2, 2.6);
+      const f = [mP(M, [cx - hw, y - .11, z - .135]), mP(M, [cx + hw, y - .11, z - .135]), mP(M, [cx + hw, y, z - .135]), mP(M, [cx - hw, y, z - .135])]; for (const k of [0, 1, 2, 0, 2, 3]) dv(f[k][0], f[k][1], f[k][2], 0, 0, -1, 1.2, 2.2); }
+    // rotor: two blades and the blur between them
+    { const a = t * 39, M = mMs(mT(HELI[0], HELI[1], HELI[2]), mRY(HELI[3]), mRX(.05)), R = 5.6, sh = TONE(.2); for (let b = 0; b < 3; b++) { const an = a + b * TAU / 3, c = Math.cos(an), s = Math.sin(an), p0 = mP(M, [c * .3 - s * .17, 1.62, s * .3 + c * .17]), p1 = mP(M, [c * R - s * .17, 1.7, s * R + c * .17]), p2 = mP(M, [c * R + s * .17, 1.7, s * R - c * .17]), p3 = mP(M, [c * .3 + s * .17, 1.62, s * .3 - c * .17]);
+        for (const k of [p0, p1, p2, p0, p2, p3]) dv(k[0], k[1], k[2], 0, 1, 0, hazed(sh, k[0], k[1], k[2])); }
+      const at = t * 190; for (let b = 0; b < 2; b++) { const an = at + b * PI, c = Math.cos(an), s = Math.sin(an), p0 = mP(M, [.08, 1.5 + c * .1, 7.0 + s * .1]), p1 = mP(M, [.08, 1.5 + c * .95 - s * .06, 7.0 + s * .95 + c * .06]), p2 = mP(M, [.08, 1.5 + c * .95 + s * .06, 7.0 + s * .95 - c * .06]); for (const k of [p0, p1, p2]) dv(k[0], k[1], k[2], 1, 0, 0, hazed(sh, k[0], k[1], k[2])); } }
+    // the boat rides the swell
+    { const x = BOAT[0], z = BOAT[1], h = BOAT[2], f = [Math.sin(h), -Math.cos(h)], y = seaY(x, z, t), yf = seaY(x + f[0] * 2, z + f[1] * 2, t), yb = seaY(x - f[0] * 2, z - f[1] * 2, t), yl = seaY(x - f[1] * 1, z + f[0] * 1, t), yr = seaY(x + f[1] * 1, z - f[0] * 1, t);
+      const M = mMs(mT(x, (y + yf + yb) / 3 - .12, z), mRY(h), mRX(Math.atan2(yf - yb, 4)), mRZ(Math.atan2(yl - yr, 2))); stampD(P.boat, M, BOATPAL, 1);
+      const put = (Pp, Mm, pal) => stampD(Pp, Mm, pal, 1); for (let k = 0; k < 2; k++) { const lk = personLook(900 + k, k === 0 ? 2 : 1), lp = mP(M, [[-.0, .55, -.3], [.0, .38, .75], [.45, .38, -1.5]][k]); figure(put, { x: lp[0], y: lp[1] - (k ? .5 : 0), z: lp[2], h: h + (k === 2 ? .6 : 0) + (k === 1 ? .2 : 0), s: lk.s, pose: k ? { la: [.9, .2, 1.2], ra: [.9, .2, 1.2], ll: [1.4, 1.5], rl: [1.4, 1.5], lean: .15 } : { la: [.9, .25, .9], ra: [.9, .25, .9], lean: .05 }, pal: lk.pal, head: lk.head, coat: 0 }); } }
+    // windsock: a tapering sleeve streaming toward the south west, flapping
+    { const x = SOCK[0], z = SOCK[1], y = ground(x, z) + 5.2, n = 7, dir = [WIND[0] / 1.25, WIND[1] / 1.25], sd = [-dir[1], dir[0]]; let pr = null;
+      for (let k = 0; k <= n; k++) { const u = k / n, len = u * 2.3, r = .28 - .15 * u, droop = u * u * .75 + .08 * Math.sin(t * 5.1 - u * 5) * u, sw = .22 * Math.sin(t * 3.7 - u * 4.2) * u, cx = x + dir[0] * len + sd[0] * sw, cz = z + dir[1] * len + sd[1] * sw, cy = y - droop, ring = [];
+        for (let j = 0; j < 6; j++) { const a = j / 6 * TAU; ring.push([cx + sd[0] * Math.cos(a) * r, cy + Math.sin(a) * r, cz + sd[1] * Math.cos(a) * r]); }
+        if (pr) for (let j = 0; j < 6; j++) { const j1 = (j + 1) % 6, a = j / 6 * TAU + .5, sh = (((k - 1) >> 1) & 1 ? SH_WHITE : SH_ORANGE) * (.72 + .28 * Math.sin(a)); for (const p of [pr[j], pr[j1], ring[j1], pr[j], ring[j1], ring[j]]) dv(p[0], p[1], p[2], 0, 1, 0, sh); } pr = ring; } } }
+  const BOATPAL = [TONE(.3), TONE(.16), TONE(.1), TONE(.6)];
+
+  // ================================================================ build / frame
+  let TRIS = 0;
+  function build(B) { SD = B.d; SN = B.n; SMAX = B.max; const n0 = SN;
+    for (const c of CARS) { const d = CAR_DIM[c[0]], k = c[5] || 1; OCC.push([c[1], c[2], d[0] * k, d[1] * k, -c[3] * D2R, .55, .55]); } for (const w of WATCH) OCC.push([w[0], w[1], .12, .16, 0, .3, .3]);
+    buildLand(); buildFarSea(); buildTracks(); buildTideLines(); buildVehicles(); buildPeople(); buildProps();
+    B.n = SN; TRIS = (SN - n0) / 3; api.TRIS = TRIS; SD = null;
+    // everything frame() needs is made now, and the frame code is run across the whole shot on a scratch buffer, so
+    // that the first frames the player sees cost the same as the rest (tables built, code compiled)
+    seaInit(); laceInit(); capsInit(); canInit(); splInit(); runInit(); figInit(); propsInit(); for (const L of LOBES) if (!L.noRoll) lobeStations(L);
+    { const W = { d: new Float32Array(WARM_MAX * 12), n: 0, max: WARM_MAX }; for (let p = 0; p < WARM_N; p++) { W.n = 0; frame(W, T0 + (T1 + 3 - T0) * ((p * 37) % WARM_N) / (WARM_N - 1)); }
+      for (let p = 0; p < 20; p++) { W.n = 0; frame(W, .02 + p * .09); } }   // the splash is the heaviest second: run it too
+    return {}; }
+  const WARM_MAX = 120000, WARM_N = 48;
+  function frame(B, t) { BD = B.d; BN = B.n; BMAX = B.max; const c = camAt(t), ex = c.e[0], ey = c.e[1], ez = c.e[2];
+    seaFrame(t, ex, ey, ez); frontsFrame(t); laceFrame(t); capsFrame(t); canFrame(t, ex, ey, ez); splashFrame(t, ex, ey, ez); runnersFrame(t); propsFrame(t, ex, ey, ez);
+    B.n = BN; BD = null; }
+  const api = { build, frame, camAt, CAM, T0, T1, SKY, TRIS: 0, impact: IMP.slice() };
+  return api;
+})();
+
+
 /* Sound. Two parts:
    1. A synthesiser for everything that is not a human voice (suit, radio, KEIS, weapons).
    2. VOICE: a modular voice bank. Each crew member has events (spot, panic, hurt, calm, death, line ids);
@@ -13217,7 +14102,7 @@ function shipBegin() {
     dmap: {}, flowP: new Int16Array(SHW * SHH), flowT: 0 };
   for (const d of X.doors) X.dmap[d.d.x + d.d.z * SHW] = d;
   const wb = typeof KEI !== 'undefined' && KEI.BUILDS && KEI.BUILDS.warden;
-  X.w = { x: 13.5, z: 4.5, heading: Math.PI, spd: 0, st: 'listen', wait: 16, goal: null, flow: new Int16Array(SHW * SHH), fk: -1, lkp: [13.5, 21.5], lost: 9, stun: 0, chk: -1, lastChk: -1, sees: false, legT: 0, after: null, alert: 0,
+  X.w = { x: 13.5, z: 4.5, heading: Math.PI, spd: 0, st: WAR_OK ? 'gone' : 'listen', wait: WAR_OK ? 44 : 16, wait0: 44, upAt: [13.5, 4.5], thT: 30, dropAt: null, warned: 0, dropT: 0, goal: null, flow: new Int16Array(SHW * SHH), fk: -1, lkp: [13.5, 21.5], lost: 9, stun: 0, chk: -1, lastChk: -1, sees: false, legT: 0, after: null, alert: 0,
     rig: wb ? KEI.create(977, { build: 'warden' }) : KEI.create(977), sc: wb ? SHT.wScale : .52 };
   X.intro = { st: 0, t: 0 }; X.lampCut = 0; X.tickT = 3;
   X.bl = BLANK_AT.map(([id, x, z], i) => ({ id, x, z, heading: i ? r() * 6.28 : 2.6, staged: !i, active: i < 2, woke: 0, wokeT: 0, frozen: 1, seen: false, acc: r() * .1, stun: 0, spd: 0, cut: 0, reach: 0, rig: BLK_OK ? BLANK.create(31 + i * 7) : null }));
@@ -13265,6 +14150,8 @@ function shipStep(dt, cmd) {
   p.fireT += dt; p.hitT += dt; p.kickP *= Math.exp(-dt * 7); p.kickY *= Math.exp(-dt * 13);
   if (X.t < 5) { p.eye = 1.66; return; }                                     // the title card: nothing moves yet
   if (X.burn) return burnStep(dt, p, X);
+  X.lookMag = Math.hypot(cmd.look[0], cmd.look[1]);
+  if (X.kill) { p.vx = p.vz = 0; S.near = null; wardenStep(dt, p, X); return; }   // it has you: nothing you do now matters
   const use = !!cmd.use, useEdge = use && !X.useWas; X.useWas = use;
   X.flowT -= dt; if (X.flowT <= 0) { X.flowT = .2; shFlowP(p, X); }
   if (X.hide) {
@@ -13310,9 +14197,13 @@ function shipStep(dt, cmd) {
   // the cold: once the bus is closed the heaters come on, and a hull two years frozen ticks as it takes them
   if (X.bus) { X.tickT -= dt; if (X.tickT <= 0) { X.tickT = 1.5 + X.r() * 6; if (AU.ctx) { noise(AU.suit, now(), .018, 'bandpass', 1800 + X.r() * 2600, 9, .1 + X.r() * .14); if (X.r() < .25) shThud(.25, 90); } } }
   // what the suit makes of it: the link fills with static when something has you, and the deck tells you where it is
-  const dw = Math.hypot(w.x - p.x, w.z - p.z); let nb = 99; for (const b of X.bl) if (b.woke && b.stun <= 0) nb = Math.min(nb, Math.hypot(b.x - p.x, b.z - p.z));
+  const dw = w.st === 'gone' ? 99 : Math.hypot(w.x - p.x, w.z - p.z); let nb = 99; for (const b of X.bl) if (b.woke && b.stun <= 0) nb = Math.min(nb, Math.hypot(b.x - p.x, b.z - p.z));
   S.prox = Math.max(clamp(1 - dw / 13, 0, 1) * .75, X.det * .9, clamp(1 - nb / 5, 0, 1) * .7); S.nearest = Math.min(dw, nb);
-  if (w.spd > .3) { w.legT -= dt * Math.max(1.2, w.spd); if (w.legT <= 0) { w.legT = 1.15; const pn = clamp(((w.x - p.x) * Math.cos(p.yaw) + (w.z - p.z) * Math.sin(p.yaw)) / (dw || 1), -1, 1); if (dw < 18 && AU.ctx) sfx.legs(clamp(1 - dw / 18, 0, 1) * .75, pn); } }
+  /* The suit's motion sense: no bearing, only that something is moving and how far. It reads the overhead too. */
+  { const dm = w.st === 'gone' ? (w.ov ? Math.hypot(w.ov[0] - p.x, w.ov[1] - p.z) : 99) : dw, mv = dm < 20 && (w.st === 'gone' ? !!w.ov && w.wait < w.wait0 - 1 : w.spd > .4 || w.st === 'drop' || w.st === 'rear');
+    X.trk = clamp((X.trk || 0) + (mv ? dt * 3 : -dt * 1.2), 0, 1); if (X.trk > 0) hudDirty = true;
+    if (mv) { X.trkD = dm; X.trkT = (X.trkT || 0) - dt; if (X.trkT <= 0) { X.trkT = lerp(.2, 1.2, dm / 20); if (AU.ctx) fx('beep', { dest: AU.radio, gain: .2, rate: 1.5 }) || tone(AU.radio, now(), .04, 'sine', 1900, 0, .07); } } }
+  if (w.spd > .3 && !(w.rig && w.rig.steps)) { w.legT -= dt * Math.max(1.2, w.spd); if (w.legT <= 0) { w.legT = 1.15; const pn = clamp(((w.x - p.x) * Math.cos(p.yaw) + (w.z - p.z) * Math.sin(p.yaw)) / (dw || 1), -1, 1); if (dw < 18 && AU.ctx) sfx.legs(clamp(1 - dw / 18, 0, 1) * .75, pn); } }
   const target = clamp(.05 + S.prox * S.prox * .38 + (S.burst > 0 ? .25 : 0) + X.cut * .03, 0, 1); S.glitch = lerp(S.glitch, target, 1 - Math.exp(-dt * 8)); S.signal = 1 - S.glitch;
   X.scanT -= dt; if (X.scanT <= 0) { X.scanT = 1.3; S.scan = [[w.x, w.z]].concat(X.bl.filter(b => b.active).map(b => [b.x, b.z])); hudDirty = true; }
   shRadio(dt, p, X, dw);
@@ -13337,12 +14228,12 @@ function shFire(dt, cmd, p, X) {
       const yw = p.yaw + p.kickY, pt = p.pitch + p.kickP, cp = Math.cos(pt), o = [p.x, p.eye - .06, p.z], dir = [Math.sin(yw) * cp, Math.sin(pt), -Math.cos(yw) * cp]; p.kickP += A.kick; p.kickY += (S.rng() - .5) * .03 * A.kick / .055;
       const wide = A.beam ? 1.8 : 1, cyl = (f, rad, h) => { const dx = f.x - p.x, dz = f.z - p.z, al = dx * dir[0] + dz * dir[2]; if (al <= 0) return null; const px = dx - dir[0] * al, pz = dz - dir[2] * al, hy = o[1] + dir[1] * al; return Math.hypot(px, pz) < rad * wide && hy > 0 && hy < h ? { t: al } : null; };
       let best = null, bt = 60, hit;
-      if (shLos(p.x, p.z, w.x, w.z, false)) { hit = null; try { hit = KEI.hit ? KEI.hit(w.rig, o, dir, A.beam ? .3 : 0) : null; } catch (e) { } hit = hit || cyl(w, .42, 2.3); if (hit && hit.t < bt) { bt = hit.t; best = w; } }
+      if (w.st !== 'gone' && shLos(p.x, p.z, w.x, w.z, false)) { hit = null; try { hit = KEI.hit ? KEI.hit(w.rig, o, dir, A.beam ? .3 : 0) : null; } catch (e) { } hit = hit || cyl(w, .42, 2.3); if (hit && hit.t < bt) { bt = hit.t; best = w; } }
       for (const b of X.bl) { if (!shLos(p.x, p.z, b.x, b.z, false)) continue; hit = BLK_OK && BLANK.hit ? BLANK.hit(b.rig, o, dir) : cyl(b, .3, 2); if (!hit && A.beam) hit = cyl(b, .3, 2); if (hit && hit.t < bt) { bt = hit.t; best = b; } }
       /* Aboard, nothing is far away: a rocket has not got going by the time it arrives, and the light is at its worst for whatever catches it. */
-      if (best) { const hk = arm === 'gyrojet' ? clamp(.45 + bt * .09, .45, 1.3) : A.beam ? 1.7 : 1; p.hitT = 0; if (AU.ctx) sfx.tick(); if (best === w) { w.stun = 2.2 * hk; w.spd = 0; } else best.stun = 8 * hk; } } }
+      if (best) { const hk = arm === 'gyrojet' ? clamp(.45 + bt * .09, .45, 1.3) : A.beam ? 1.7 : 1; p.hitT = 0; if (AU.ctx) sfx.tick(); if (best === w) { if (w.st !== 'kill' && w.st !== 'drop') { w.stun = 2.2 * hk; w.spd = 0; } } else best.stun = 8 * hk; } } }
   if (cmd.ability && p.pulses > 0 && p.fireT > 1) { p.pulses--; p.fireT = 0; S.white = .6; hudDirty = true; if (AU.ctx) sfx.pulse(); shNoise(p.x, p.z, 16);
-    if (Math.hypot(w.x - p.x, w.z - p.z) < 12) w.stun = 5; for (const b of X.bl) if (Math.hypot(b.x - p.x, b.z - p.z) < 12) b.stun = 5; }
+    if (w.st !== 'gone' && w.st !== 'kill' && Math.hypot(w.x - p.x, w.z - p.z) < 12) w.stun = 5; for (const b of X.bl) if (Math.hypot(b.x - p.x, b.z - p.z) < 12) b.stun = 5; }
 }
 
 // ---------------------------------------------------------------- the Warden
@@ -13352,20 +14243,50 @@ function wGoto(w, gx, gz, spd, dt) { const k = Math.floor(gx) + Math.floor(gz) *
 function wPick(X) { const r = X.r;
   if (r() < .25 + .17 * shDone(X)) { const o = []; for (let i = 0; i < SHW * SHH; i++) { const v = X.flowP[i]; if (v >= 5 && v <= 13 && SH.rows[(i / SHW) | 0][i % SHW] === '.') o.push(i); } if (o.length) { const i = o[(r() * o.length) | 0]; return [i % SHW + .5, ((i / SHW) | 0) + .5]; } }
   const rm = SH.rooms[(r() * SH.rooms.length) | 0]; for (let k = 0; k < 24; k++) { const x = rm.x0 + ((r() * (rm.x1 - rm.x0 + 1)) | 0), z = rm.z0 + ((r() * (rm.z1 - rm.z0 + 1)) | 0); if (SH.at(x, z) === '.') return [x + .5, z + .5]; } return [13.5, 30.5]; }
+/* WHAT IT DOES NOW. It is not always on the deck with you. When it has lost you it goes up into the overhead, and you
+   hear it going over; then it comes down out of a ceiling grille somewhere along your way, and stands and listens.
+   When it sees you it rears to its full height first, which is the second you have. It looks into lockers: if it did
+   not see you go in it only puts its keys to the louvres, and if you keep still it goes away. And when it has you, you
+   see it happen. All of this needs the Warden's new clips (KEI.wardenClips); without them it behaves as it did. */
+const WAR_OK = !!(typeof KEI !== 'undefined' && KEI.wardenClips && KEI.wardenClips.drop);
+const WCL = Object.assign({ rear: 1.5, drop: 3.4, kill: 1.6, peerIn: 1.3 }, (typeof KEI !== 'undefined' && KEI.wardenClips) || {});
+function wDropCell(X, at, p) { const r = X.r, fx = Math.sin(p.yaw), fz = -Math.cos(p.yaw), near = at !== p; let best = null, bs = 1e9;
+  for (let i = 0; i < SHW * SHH; i++) { const cx = i % SHW, cz = (i / SHW) | 0; if (SH.rows[cz][cx] !== '.') continue; const x = cx + .5, z = cz + .5, v = X.flowP[i], dx = x - at.x, dz = z - at.z, d = Math.hypot(dx, dz), dp = Math.hypot(x - p.x, z - p.z);
+    if (dp < 4.5 || (near ? d > 4 : v < 5 || v > 11)) continue; if (shCeil(x, z, 0) < 2.3) continue;
+    const ahead = ((x - p.x) * fx + (z - p.z) * fz) / (dp || 1), sc = (near ? d * 3 : Math.abs(v - 7.5)) - (shLos(p.x, p.z, x, z, false) ? 3 : 0) - ahead * 2.5 + r() * 3; if (sc < bs) { bs = sc; best = [x, z]; } }
+  return best; }
+function wAloft(w, X, wait) { w.st = 'gone'; w.wait = w.wait0 = wait; w.dropAt = null; w.warned = 0; w.upAt = [w.x, w.z]; w.thT = .6; w.spd = 0; w.goal = null; w.after = null; X.det = 0; }
+function wOver(X, p, x, z, v) { if (!AU.ctx) return; const dx = x - p.x, dz = z - p.z, d = Math.hypot(dx, dz) || 1, k = v * Math.pow(clamp(1 - d / 24, 0, 1), 1.3); if (k < .02) return; const pn = clamp((dx * Math.cos(p.yaw) + dz * Math.sin(p.yaw)) / d, -1, 1), dst = panTo(pn * .7, AU.suit);
+  fx('thud', { dest: dst, gain: k * 1.3, rate: .72 + Math.random() * .2 }) || noise(dst, now(), .09, 'lowpass', 170, 1, k); if (Math.random() < .45) fx('locker', { dest: dst, gain: k * .3, rate: .5 + Math.random() * .2, at: .03 }); }
+function wardenAloft(dt, p, X) { const w = X.w, r = X.r; w.wait -= dt; w.spd = 0; w.alert = lerp(w.alert, 0, dt * 2);
+  if (X.noise) { const n = X.noise; X.noise = null; if (n.r >= 10) { const c = wDropCell(X, n, p); if (c) { w.dropAt = c; w.warned = 0; w.wait = Math.min(w.wait, 3.4); } } }   // a loud noise brings it down on the noise
+  if (!w.dropAt && w.wait < 5) { w.dropAt = wDropCell(X, p, p); if (!w.dropAt) w.wait = 3; }
+  { const a = w.upAt, b = w.dropAt, k = b ? clamp(1 - w.wait / 5, 0, 1) : 0; w.ov = b ? [lerp(a[0], b[0], k), lerp(a[1], b[1], k)] : null; }
+  w.thT -= dt; if (w.thT <= 0) { w.thT = .38 + r() * .5; if (w.ov) wOver(X, p, w.ov[0], w.ov[1], .8); }
+  if (w.dropAt && !w.warned && w.wait < 1.5) { w.warned = 1; X.fall = { x: w.dropAt[0], z: w.dropAt[1], t: 0 }; const dd = Math.hypot(w.dropAt[0] - p.x, w.dropAt[1] - p.z); if (AU.ctx && dd < 22) { const v = clamp(1 - dd / 22, 0, 1); fx('locker', { dest: AU.suit, gain: v, rate: .6 }) || shThud(v, 300); } }
+  if (w.dropAt && w.wait <= 0) { if (Math.hypot(w.dropAt[0] - p.x, w.dropAt[1] - p.z) < 3.2) { w.dropAt = null; w.wait = 2.5; w.warned = 0; return false; }   // you have walked under the grille: it picks another
+    w.x = w.dropAt[0]; w.z = w.dropAt[1]; w.heading = Math.atan2(p.x - w.x, -(p.z - w.z)); w.st = 'drop'; w.dropT = 0; w.fk = -1; w.lost = 9; w.blind = 0; X.drops = (X.drops || 0) + 1; S.burst = Math.max(S.burst, .3); }
+  return false; }
 function wardenStep(dt, p, X) {
   const w = X.w, T = SHT, r = X.r, ox = w.x, oz = w.z, dx = p.x - w.x, dz = p.z - w.z, d = Math.hypot(dx, dz) || 1e-3, hid = !!X.hide;
+  if (X.fall) { X.fall.t += dt; if (X.fall.t > 4) X.fall = null; }
+  if (w.st === 'kill') { X.kill.t += dt; w.spd = 0; w.alert = 1; if (X.kill.t >= WCL.kill) { shEnd('taken'); return true; } return false; }
+  if (w.st === 'gone') return wardenAloft(dt, p, X);
+  if (w.st === 'drop') { w.dropT += dt / WCL.drop; w.spd = 0; if (w.dropT >= 1) { w.dropT = 0; w.st = 'listen'; w.wait = 1 + r() * 1.4; } else { if (w.dropT > .7 && d < 1.2 && !hid && !p.low) { /* it has landed on you */ } else return false; } }
   if (w.stun > 0) { w.stun -= dt; w.spd = lerp(w.spd, 0, dt * 8); if (w.stun <= 0) { w.st = 'hunt'; w.lost = 0; w.lkp = [p.x, p.z]; X.det = 1; } return false; }
   const lit = p.lamp || X.power > .5, R0 = (lit ? T.seeLit : T.seeDark) * (p.low ? .5 : p.crouch ? .7 : 1), hx0 = Math.sin(w.heading), hz0 = -Math.cos(w.heading);
   w.blind = Math.max(0, (w.blind || 0) - dt);
   const sees = !hid && !(p.low && w.blind > 0) && d < R0 && ((dx * hx0 + dz * hz0) / d > -.2 || d < 2.5) && shLos(w.x, w.z, p.x, p.z, p.crouch); w.sees = sees;
   if (sees) { X.det = Math.min(1, X.det + dt * (w.st === 'hunt' ? 5 : clamp(2.1 - 1.7 * d / R0, .35, 2.1) * (p.running ? 1.5 : 1))); w.lkp = [p.x, p.z]; w.lost = 0; } else { X.det = Math.max(0, X.det - dt * (w.st === 'hunt' ? .1 : .4)); w.lost += dt; }
-  if (X.det >= 1 && w.st !== 'hunt' && w.st !== 'check') { w.st = 'hunt'; X.hunts++; S.burst = .6; if (AU.ctx) sfx.zap(); selfVoice('spot', 12); }
-  if (X.noise) { const n = X.noise; X.noise = null; if (w.st !== 'hunt' && w.st !== 'check' && Math.hypot(n.x - w.x, n.z - w.z) < n.r) { w.st = 'invest'; w.goal = [n.x, n.z]; w.lkp = [n.x, n.z]; } }
+  if (w.st === 'rear') { w.wait -= dt; w.heading += angd(Math.atan2(dx, -dz), w.heading) * Math.min(1, dt * 5); if (w.wait <= 0) w.st = 'hunt'; }
+  else if (X.det >= 1 && w.st !== 'hunt' && w.st !== 'check' && w.st !== 'drop') { X.hunts++; S.burst = .6; if (AU.ctx) sfx.zap(); selfVoice('spot', 12);
+    if (WAR_OK && d > 2.4) { w.st = 'rear'; w.wait = WCL.rear; if (AU.ctx) sfx.kei(1, clamp((-dx * Math.cos(p.yaw) - dz * Math.sin(p.yaw)) / d, -1, 1)); } else w.st = 'hunt'; }   // it rears before it comes: that is the second you have
+  if (X.noise) { const n = X.noise; X.noise = null; if (w.st !== 'hunt' && w.st !== 'check' && w.st !== 'rear' && w.st !== 'drop' && Math.hypot(n.x - w.x, n.z - w.z) < n.r) { w.st = 'invest'; w.goal = [n.x, n.z]; w.lkp = [n.x, n.z]; } }
   if (w.st === 'patrol') { if (!w.goal) w.goal = wPick(X); if (wGoto(w, w.goal[0], w.goal[1], T.wPatrol, dt)) { w.goal = null; w.st = 'listen'; w.wait = 1.5 + r() * 3; } }
-  else if (w.st === 'listen') { w.wait -= dt; w.heading += Math.sin(X.t * .9) * dt * .9; if (w.wait <= 0) { if (w.after) { w.st = 'invest'; w.goal = w.after; w.after = null; w.blind = 7; X.det = 0; } else w.st = 'patrol'; } }
+  else if (w.st === 'listen') { w.wait -= dt; w.heading += Math.sin(X.t * .9) * dt * .9; if (w.wait <= 0) { if (w.after) { w.st = 'invest'; w.goal = w.after; w.after = null; w.blind = 7; X.det = 0; } else if (WAR_OK && !sees && X.det < .2 && d > 7 && !shLos(w.x, w.z, p.x, p.z, false) && r() < .3) wAloft(w, X, 7 + r() * 8); else w.st = 'patrol'; } }
   else if (w.st === 'invest') { if (wGoto(w, w.goal[0], w.goal[1], T.wInvest, dt)) { w.st = 'search'; w.wait = 0; } }
   else if (w.st === 'hunt') {
-    if (hid && X.hide.saw) { w.st = 'check'; w.chk = X.hide.i; w.wait = 1.3; }
+    if (hid && X.hide.saw) { w.st = 'check'; w.chk = X.hide.i; w.wait = 1.3; w.arr = 0; }
     else if (!hid && (sees || w.lost < 1)) {
       if (p.low) { // it cannot follow into a crawlway: it goes to the nearest mouth and stands there, and then sometimes round to the far one
         const ms = shMouths(Math.floor(p.x), Math.floor(p.z)); let bm = -1, bd = 1e9, fm = -1, fd = -1; for (const k of ms) { const dd = Math.hypot(k % SHW + .5 - w.x, ((k / SHW) | 0) + .5 - w.z); if (dd < bd) { bd = dd; bm = k; } if (dd > fd) { fd = dd; fm = k; } }
@@ -13373,13 +14294,20 @@ function wardenStep(dt, p, X) {
       else if (X.flowP[Math.floor(w.x) + Math.floor(w.z) * SHW] <= 1) shSeek(w, p.x, p.z, T.wHunt * dt, .36, Math.min(1, dt * 8)); else shFollow(w, X.flowP, T.wHunt * dt, .36, Math.min(1, dt * 6)); }
     else if (w.lost > 7 || wGoto(w, w.lkp[0], w.lkp[1], T.wHunt, dt)) { w.st = 'search'; w.wait = 0; } }
   else if (w.st === 'search') { // where it lost you: it looks in the nearest locker, then stands and turns
-    if (!w.wait) { let bi = -1, bd = 5.5; X.lockers.forEach((l, i) => { const dd = Math.hypot(l.fx - w.lkp[0], l.fz - w.lkp[1]); if (dd < bd && i !== w.lastChk) { bd = dd; bi = i; } }); if (bi >= 0) { w.st = 'check'; w.chk = bi; w.wait = 1.3; } else w.wait = 3 + r() * 2; }
-    else { w.wait -= dt; w.heading += dt * 1.1; if (w.wait <= 0) { w.st = 'patrol'; w.goal = null; w.lastChk = -1; X.det = 0; } } }
+    if (!w.wait) { let bi = -1, bd = 5.5; X.lockers.forEach((l, i) => { const dd = Math.hypot(l.fx - w.lkp[0], l.fz - w.lkp[1]); if (dd < bd && i !== w.lastChk) { bd = dd; bi = i; } }); if (bi >= 0) { w.st = 'check'; w.chk = bi; w.wait = 1.3; w.arr = 0; } else w.wait = 3 + r() * 2; }
+    else { w.wait -= dt; w.heading += dt * 1.1; if (w.wait <= 0) { w.lastChk = -1; X.det = 0; if (WAR_OK && !sees && d > 6 && !shLos(w.x, w.z, p.x, p.z, false) && r() < .6) wAloft(w, X, 8 + r() * 9); else { w.st = 'patrol'; w.goal = null; } } } }
   else if (w.st === 'check') { const l = X.lockers[w.chk];
-    if (wGoto(w, l.fx, l.fz, T.wCheck, dt)) { w.heading += angd(Math.atan2(-l.l.face[0], l.l.face[1]), w.heading) * Math.min(1, dt * 6); w.wait -= dt; if (w.wait < .45) { l.want = 1; l.wt = .8; }
-      if (w.wait <= 0) { w.lastChk = w.chk; if (X.hide && X.hide.i === w.chk) { S.killer = w; shEnd('taken'); return true; } w.st = 'listen'; w.wait = 1.6; X.det = 0; } } }
+    if (wGoto(w, l.fx, l.fz, T.wCheck, dt)) { const mine = X.hide && X.hide.i === w.chk, knows = mine && (X.hide.saw || X.hide.stir > .5);
+      if (!w.arr) { w.arr = 1; w.wait = WAR_OK ? WCL.peerIn + 1.9 : 1.3; w.peerT = 0; } w.peerT += dt;
+      w.heading += angd(Math.atan2(-l.l.face[0], l.l.face[1]), w.heading) * Math.min(1, dt * 6); w.wait -= dt;
+      /* Its keys are at the louvres. If it watched you go in, or you move in there, the door comes open. If not, it goes. */
+      if (mine && X.lookMag > 0 && w.peerT > .5) X.hide.stir = (X.hide.stir || 0) + X.lookMag;
+      if (w.wait < .45 && (!WAR_OK || !mine || knows)) { l.want = 1; l.wt = .8; }
+      if (w.wait <= 0) { w.lastChk = w.chk; w.arr = 0; if (mine && (!WAR_OK || knows)) { S.killer = w; shEnd('taken'); return true; } w.st = 'listen'; w.wait = 1.6; X.det = 0; } }
+    else w.arr = 0; }
   w.spd = lerp(w.spd, Math.hypot(w.x - ox, w.z - oz) / dt, dt * 8); w.alert = lerp(w.alert, w.st === 'hunt' || w.st === 'check' ? 1 : X.det, dt * 3);
-  if (!hid && !p.low && d < .85) { S.killer = w; shEnd('taken'); return true; }
+  if (!hid && !p.low && d < .85) { S.killer = w; if (!WAR_OK) { shEnd('taken'); return true; }
+    w.st = 'kill'; w.spd = 0; w.heading = Math.atan2(dx, -dz); X.kill = { t: 0, at: [p.x, p.eye, p.z], fwd: [-dx / d, 0, -dz / d] }; p.vx = p.vz = 0; S.shake = 1; S.burst = 1; if (AU.ctx) { sfx.kei(1, 0); sfx.zap(); } }
   return false;
 }
 
@@ -13437,7 +14365,7 @@ function burnStep(dt, p, X) {
   if (AU.ctx && Math.floor(u * 2) !== Math.floor((u - dt) * 2)) sfx.rumble(.5 + Math.min(1, u * .15));
   if (u > 3 && shOnce('b1')) say('NICK (CAPCOM)', 'Good burn. Good burn. You are coming home.');
   S.white = clamp((u - 5.2) / 2.6, 0, 1);
-  if (u > 8.2) filmBegin();
+  if (u > 8.2) shoreBegin();
 }
 
 // ---------------------------------------------------------------- drawing the ship
@@ -13472,7 +14400,7 @@ function p2Depth(m, cam) { gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS); gl.c
 function p2Static(m, u) { gl.depthFunc(gl.LEQUAL); gl.depthMask(false); p2Draw(m); gl.depthMask(true); gl.depthFunc(gl.LESS); }
 function shipRender(dt, t, asp) {
   const p = P(), X = S.sh, w = X.w, B = R.batch; let yaw = p.yaw + p.kickY, pitch = p.pitch + p.kickP;
-  if (S.over && S.killer) { const k = S.killer, ty = Math.atan2(k.x - p.x, -(k.z - p.z)); p.yaw = yaw = yaw + angd(ty, yaw) * Math.min(1, dt * 10); p.pitch = pitch = lerp(pitch, S.over === 'cut' ? .05 : .3, dt * 6); }
+  if ((S.over || X.kill) && S.killer) { const k = S.killer, ty = Math.atan2(k.x - p.x, -(k.z - p.z)); p.yaw = yaw = yaw + angd(ty, yaw) * Math.min(1, dt * 10); p.pitch = pitch = lerp(pitch, S.over === 'cut' ? .05 : .3, dt * 6); }
   const sh = S.shake * .04, bk = p.eye / 1.66, bobY = Math.sin(p.bob * 3.4) * .035 * bk, bobX = Math.cos(p.bob * 1.7) * .022 * bk;
   const e = [p.x + Math.cos(yaw) * bobX, p.eye + bobY, p.z + Math.sin(yaw) * bobX];
   const cam = mat(yaw + (Math.random() - .5) * sh, pitch + (Math.random() - .5) * sh, e, asp, 1.2 + p.fovK * .07);
@@ -13484,8 +14412,13 @@ function shipRender(dt, t, asp) {
   for (const [s, state] of [[st.reactor, X.bus ? 2 : 1], [st.core, X.core ? 2 : 1], [st.nav, X.core === 2 ? 2 : X.core === 1 ? 1 : 0], [st.valve, X.valve ? 2 : 1], [st.burn, X.burn ? 2 : done3 ? 1 : 0], [st.dock, 0]]) if (Math.hypot(s.x + .5 - e[0], s.z + .5 - e[2]) < 22) DK.station(B, s, state, t);
   if (X.core === 1 && !X.hide) DK.core(B, V3.mad(V3.mad(V3.mad(e, cam.f, .42), cam.r, -.2), cam.up, -.27 + bobY * .5), { r: cam.r, u: cam.up, f: cam.f });
   mark(0);
-  { const dW = Math.hypot(w.x - e[0], w.z - e[2]); if (dW < 40) { const s = { x: w.x, z: w.z, heading: w.heading, speed: w.spd, scale: w.sc, stun: Math.max(0, w.stun), alert: w.alert, active: true, open: 0, dup: true, listen: (w.st === 'listen' || w.st === 'search') && w.spd < .3 ? 1 : 0, charge: 0, crouch: 0, wallL: shWall(w.x, w.z, -Math.cos(w.heading), -Math.sin(w.heading)), wallR: shWall(w.x, w.z, Math.cos(w.heading), Math.sin(w.heading)), ceil: shCeil(w.x, w.z, w.heading) };
-      if (X.det > .3 || w.st === 'hunt') s.look = Math.atan2(e[0] - w.x, -(e[2] - w.z)); KEI.update(w.rig, s, dt, flat0); KEI.emit(B, w.rig, dW > 18 ? 1 : 0); mark(w.stun > 0 ? .4 : .02 + w.alert * .1); } }
+  { const dW = Math.hypot(w.x - e[0], w.z - e[2]); if (dW < 40 && w.st !== 'gone') { const s = { x: w.x, z: w.z, heading: w.heading, speed: w.spd, scale: w.sc, stun: Math.max(0, w.stun), alert: w.alert, active: true, open: 0, dup: true, listen: (w.st === 'listen' || w.st === 'search') && w.spd < .3 ? 1 : 0, charge: 0, crouch: 0, wallL: shWall(w.x, w.z, -Math.cos(w.heading), -Math.sin(w.heading)), wallR: shWall(w.x, w.z, Math.cos(w.heading), Math.sin(w.heading)), ceil: shCeil(w.x, w.z, w.heading) };
+      if (X.det > .3 || w.st === 'hunt') s.look = Math.atan2(e[0] - w.x, -(e[2] - w.z));
+      if (WAR_OK) { s.search = w.st === 'search' || (w.st === 'listen' && w.spd < .3) ? 1 : 0; s.rear = w.st === 'rear' ? clamp(1 - w.wait / WCL.rear, .001, 1) : 0; s.drop = w.st === 'drop' ? clamp(w.dropT, .001, 1) : 0;
+        if (w.st === 'check' && w.arr) { const l = X.lockers[w.chk]; s.peer = clamp(Math.min(w.peerT / WCL.peerIn, w.wait / .6), .001, 1); s.peerAt = [l.l.x + .5 + l.l.face[0] * .38, 1.5, l.l.z + .5 + l.l.face[1] * .38]; }
+        if (X.kill) { s.kill = clamp(X.kill.t / WCL.kill, .001, 1); s.killAt = X.kill.at; s.killFwd = X.kill.fwd; } }
+      KEI.update(w.rig, s, dt, flat0); KEI.emit(B, w.rig, dW > 18 ? 1 : 0);
+      if (w.rig.steps && w.rig.steps.length) { for (const q of w.rig.steps) wOver(X, p, q.x, q.z, .55 + .6 * (q.w || 0)); w.rig.steps.length = 0; } mark(w.stun > 0 ? .4 : .02 + w.alert * .1); } }
   for (const b of X.bl) { const dB = Math.hypot(b.x - e[0], b.z - e[2]); if (dB > 34) continue;
     if (BLK_OK) { BLANK.update(b.rig, { x: b.x, z: b.z, heading: b.heading, speed: b.spd, frozen: b.frozen, reach: b.reach, cut: b.cut, look: Math.atan2(e[0] - b.x, -(e[2] - b.z)), stun: Math.max(0, b.stun) }, dt, flat0); BLANK.emit(B, b.rig, dB > 20 ? 1 : 0); }
     else { const lay = b.stun > 0; B.box(lay ? [b.x, .06, b.z] : [b.x, .95, b.z], [lay ? .9 : .16, 0, 0], [0, lay ? .04 : .95, 0], [0, 0, .03], TL.METAL, .8, 0); } mark(b.stun > 0 ? .3 : 0); }
@@ -13501,6 +14434,12 @@ function shipRender(dt, t, asp) {
         const g = Math.pow(Math.max(0, Math.sin(t * (.6 + h1 * 1.7) + h2 * 60)), 6), sz = (.006 + h3 * .008) * (1 + dd * .3), a = h1 * 6.283, ca = Math.cos(a) * sz, sa = Math.sin(a) * sz;
         const P3 = (u, v) => [x + Rv[0] * u + Uv[0] * v, y + Rv[1] * u + Uv[1] * v, z + Rv[2] * u + Uv[2] * v];
         B.tri(P3(ca, sa), P3(-sa * .8 - ca * .5, ca * .8 - sa * .5), P3(sa * .8 - ca * .5, -ca * .8 - sa * .5), TL.WHITE, .8 + 2.6 * g, 0); } }
+    /* Frost shaken out of the overhead: under the grille it is about to come through, a second and a half before it does. */
+    if (X.fall && Math.hypot(X.fall.x - e[0], X.fall.z - e[2]) < 24) { const F = X.fall, top = (typeof DECK !== 'undefined' && DECK.H ? DECK.H : 2.6) - .04;
+      for (let k = 0; k < 70; k++) { const h1 = hsh(k * 3.3, 7.1), h2 = hsh(k * 1.7, 2.9), h3 = hsh(k * 5.9, 4.3), born = h1 * 1.9, tt = F.t - born; if (tt < 0) continue; const y = top - .5 * 2.2 * tt * tt - .15 * tt; if (y < .02) continue;
+        const x = F.x + (h2 - .5) * .7 + Math.sin(tt * 3 + k) * .03, z = F.z + (h3 - .5) * .7, sz = .007 + h2 * .012, a = h3 * 6.283 + tt * (2 + h1 * 6), ca = Math.cos(a) * sz, sa = Math.sin(a) * sz;
+        const P3 = (u, v) => [x + Rv[0] * u + Uv[0] * v, y + Rv[1] * u + Uv[1] * v, z + Rv[2] * u + Uv[2] * v];
+        B.tri(P3(ca, sa), P3(-sa * .8 - ca * .5, ca * .8 - sa * .5), P3(sa * .8 - ca * .5, -ca * .8 - sa * .5), TL.WHITE, 1.4 + 1.6 * h1, 0); } }
     mark(0); }
   /* Cold gas. Opening the propellant valves dumps the line pressure into the compartment through the reliefs for a few
      seconds, and on the burn the bow jets fire across the flight deck windows to hold her nose on the line home. */
@@ -13551,6 +14490,7 @@ function shMinimap(u, x0, y0, sz, p, X) {
 }
 function p2Hud(o) {
   const { txt, radio, u, cw, mx, top, gz, p, H } = o;
+  if (S.mode === 'home' && S.home.shore) return;
   if (S.mode === 'home') { const h = S.home; if (h.t < 5.2) { hx.globalAlpha = clamp(Math.min(h.t * 1.5 - .6, (5.2 - h.t) * 1.4), 0, 1); txt('NEW YORK', cw / 2, 140, 26, 'center'); txt('MAY 17, 2014', cw / 2, 160, 15, 'center'); hx.globalAlpha = 1; } return; }
   const X = S.sh;
   if (X.t < 5.8) { hx.fillStyle = `rgba(0,0,0,${clamp((5.8 - X.t) * 1.25, 0, 1)})`; hx.fillRect(0, 0, cw * u, H); hudDirty = true;   // the card is on black; then the dark lifts off the ship
@@ -13560,7 +14500,7 @@ function p2Hud(o) {
   if (S.over) return;
   if (X.hide) { // the locker door: louvres across the view
     hx.fillStyle = '#000'; const gap = 5 * u, pitch = 15 * u, y0 = H * .30, y1 = H * .62; hx.fillRect(0, 0, cw * u, y0); hx.fillRect(0, y1, cw * u, H - y1); for (let y = y0; y < y1; y += pitch) hx.fillRect(0, y + gap, cw * u, pitch - gap);
-    txt('E  LEAVE', cw / 2, 262, 13, 'center'); radio(232); return; }
+    txt(X.w.st === 'check' && X.w.arr && X.w.chk === X.hide.i ? 'KEEP STILL' : 'E  LEAVE', cw / 2, 262, 13, 'center'); radio(232); return; }
   txt(garbleText(S.crew.short, gz), mx, top, 13, 'left', C_BLU); if (S.mode === 'ship') crewVitals(txt, mx, top + 13, gz, true, true);
   const sig = Math.round(S.signal * 100); txt(garbleText(sig < 25 ? 'LINK LOST' : `LINK ${sig}%`, gz), cw - mx, top, 13, 'right', C_BLU); const cabT = Math.round(-71 + (X.bus ? Math.min(14, (X.t - (X.busAt || X.t)) / 16) : 0)); txt(garbleText(`CABIN ${cabT} C`, gz), cw - mx, top + 12, 11, 'right', C_BLU); if (S.micOn) txt('MIC OPEN', cw - mx, top + 24, 11, 'right');
   const nx = shNext(X), dNx = nx ? X.flowP[nx.s.x + nx.s.z * SHW] : -1;
@@ -13570,6 +14510,7 @@ function p2Hud(o) {
   hx.fillStyle = 'rgba(236,236,230,.25)'; hx.fillRect(mx * u, 245 * u, 70 * u, 3 * u); hx.fillStyle = '#ececE6'; hx.fillRect(mx * u, 245 * u, 70 * u * p.stam, 3 * u);
   if (X.cut) txt(`CUT ${X.cut} OF 3`, mx, 241, 12, 'left', C_RED);
   txt(`ROUNDS ${p.ammo}`, cw - mx, 189, 14, 'right', p.ammo ? C_AMB : C_RED); if (p.pulses > 0) txt(`PULSE ${p.pulses}  [Q]`, cw - mx, 174, 14, 'right', C_AMB);
+  if (X.trk > 0) { hx.globalAlpha = clamp(X.trk * 2, 0, 1); txt(`MOTION ${Math.max(1, Math.round(X.trkD))} M`, cw - mx, 160, 11, 'right', C_AMB); hx.globalAlpha = 1; }
   shMinimap(u, cw - mx - 54, 195, 54, p, X);
   if (S.near) { txt(`HOLD E  ${S.near.label}`, cw / 2, 176, 14, 'center'); if (p.hold > 0 && S.near.id !== 'hide') { hx.fillStyle = 'rgba(236,236,230,.25)'; hx.fillRect((cw / 2 - 50) * u, 182 * u, 100 * u, 4 * u); hx.fillStyle = '#fff'; hx.fillRect((cw / 2 - 50) * u, 182 * u, 100 * u * p.hold, 4 * u); } }
   else { hx.fillStyle = 'rgba(255,255,255,.7)'; hx.fillRect((cw / 2 - .5) * u, 143.5 * u, u, u); }
@@ -13581,6 +14522,46 @@ function p2Hud(o) {
    The burn takes three years off the clock. There is a helmet no longer, and there is air, and for the first time
    since the pod left Odyssey there is sound that is not inside your own head: a city street, a band, and paper
    coming down. You ride it in an open car. Everybody waves. One of them does not. */
+/* THE WAY HOME. After the burn the picture goes white, and comes back as a camera in the air off a beach: the capsule
+   under its canopy, the last seconds of the descent, the splash, and the shot settling onto exactly the framing of the
+   first frame of the recovery film, which then comes up through it. SHORE (shore.js) is the whole scene; here it is
+   only given a clock, a camera, a 4:3 gate and a sound. The static part is built while the screen is white. */
+const SHORE_OK = typeof SHORE !== 'undefined' && !!SHORE.frame && !!SHORE.build;
+function shoreBegin() {
+  if (!SHORE_OK) return filmBegin();
+  try { p2Ensure(); if (!R.shore) { const B = makeBatch(Math.max(700000, (SHORE.TRIS || 0) * 3 + 80000)); SHORE.build(B); R.shore = mkMesh(B.d.subarray(0, B.n * STRIDE), gl.STATIC_DRAW); R.shore.n = B.n; } } catch (e) { return filmBegin(); }
+  const p = P(); S.mode = 'home'; S.lines = []; S.white = 1; S.shake = 0; S.glitch = 0; S.prox = 0; S.near = null; S.over = null; p.kickP = p.kickY = 0;
+  S.home = { shore: 1, t: SHORE.T0, cut: 0, done: 0, hit: 0 }; try { const v = $('filmV'); v.preload = 'auto'; if (v.readyState < 2) v.load(); } catch (e) { }
+  if (document.pointerLockElement) document.exitPointerLock(); shoreAudio(true); hudDirty = true; }
+const SHORE_HOLD = 1.1;                                   // seconds the settled frame is held before the film comes up. Over the last half second the lens starts in, as the film's own first shot does, so the two are moving the same way when one becomes the other
+function shoreStep(dt) { const h = S.home; h.t += dt; S.white = Math.max(0, S.white - dt * .55);
+  if (!h.hit && h.t >= 0) { h.hit = 1; shoreSplash(); }
+  if (!h.cut && h.t >= SHORE.T1 + SHORE_HOLD) { h.cut = 1; shoreAudio(false); filmBegin(true); } }
+function shoreRender(dt, t, asp) {
+  const h = S.home, B = R.batch, A = SHORE.CAM.asp || 828 / 576; if (h.cut && !h.done) h.t += dt;
+  const off = { glitch: 0, breath: 0, nosig: 0, fade: 0, white: 0, visor: 0, grain: 0, sat: 0, hudOn: false, box: A }; if (h.done) { gl.bindFramebuffer(gl.FRAMEBUFFER, R.fbo); gl.viewport(0, 0, R.sw, R.sh); gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); return off; }
+  const c = SHORE.camAt(h.t), vw = Math.min(R.sw, Math.round(R.sh * A)), vh = Math.min(R.sh, Math.round(R.sw / A)), vx = (R.sw - vw) >> 1, vy = (R.sh - vh) >> 1, push = clamp((h.t - (SHORE.T1 + SHORE_HOLD - .55)) / 1.3, 0, 1), cam = mat(c.yaw, c.pitch, c.e, A, c.fov * (1 - .13 * push * push)), k = SHORE.SKY === undefined ? .76 : SHORE.SKY; sway[0] = sway[1] = 0;
+  B.reset(); SHORE.frame(B, h.t);
+  gl.bindBuffer(gl.ARRAY_BUFFER, R.dyn.b); gl.bufferSubData(gl.ARRAY_BUFFER, 0, B.d.subarray(0, B.n * STRIDE));
+  gl.bindFramebuffer(gl.FRAMEBUFFER, R.fbo); gl.viewport(0, 0, R.sw, R.sh); gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.SCISSOR_TEST); gl.scissor(vx, vy, vw, vh); gl.viewport(vx, vy, vw, vh); gl.clearColor(k, k, k, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  const u = p2World(cam, t, 0, [0, 0, 1]); p2Lights(u, [], c.e); gl.depthFunc(gl.LESS); gl.depthMask(true);
+  gl.bindVertexArray(R.shore.vao); gl.drawArrays(gl.TRIANGLES, 0, R.shore.n); gl.bindVertexArray(R.dyn.vao); gl.drawArrays(gl.TRIANGLES, 0, B.n);
+  gl.disable(gl.SCISSOR_TEST); gl.viewport(0, 0, R.sw, R.sh);
+  return { glitch: 0, breath: 0, nosig: 0, fade: clamp((h.t - SHORE.T0) * .7, 0, 1), white: S.white * .9, visor: 0, grain: .6 * clamp((SHORE.T1 + SHORE_HOLD + .8 - h.t) / 1.5, .25, 1), sat: 0, hudOn: false, box: A }; }
+/* Its sound goes straight to the output: there is no suit and no radio any more. Wind off the sea, the surf as slow
+   swells of noise, and the beat of the camera aircraft's own rotor, which is what footage like this always has under it. */
+const SHORE_AU = { g: null, nodes: [] };
+function shoreAudio(on) { if (!AU.ctx) return; const C = AU.ctx, t = C.currentTime, H = SHORE_AU;
+  if (!on) { if (H.g) { H.g.gain.cancelScheduledValues(t); H.g.gain.setTargetAtTime(0, t, .5); const ns = H.nodes, g = H.g; H.nodes = []; H.g = null; setTimeout(() => { for (const n of ns) { try { n.stop(); } catch (e) { } } try { g.disconnect(); } catch (e) { } }, 2600); } return; }
+  if (H.g) return; H.g = C.createGain(); H.g.gain.value = 0; H.g.gain.setTargetAtTime(.8, t, 1.2); H.g.connect(AU.master);
+  const src = (type, f, q, v) => { const s = C.createBufferSource(); s.buffer = AU.nb; s.loop = true; const fl = C.createBiquadFilter(); fl.type = type; fl.frequency.value = f; fl.Q.value = q; const g = C.createGain(); g.gain.value = v; s.connect(fl); fl.connect(g); g.connect(H.g); s.start(t, Math.random()); H.nodes.push(s); return { fl, g }; };
+  H.wind = src('bandpass', 420, .5, .16); H.surf = src('lowpass', 900, .4, .1); H.rot = src('lowpass', 150, .8, 0);
+  const lfo = C.createOscillator(); lfo.type = 'sine'; lfo.frequency.value = 11.5; const lg = C.createGain(); lg.gain.value = .11; lfo.connect(lg); lg.connect(H.rot.g.gain); H.rot.g.gain.value = .12; lfo.start(t); H.nodes.push(lfo); }
+function shoreAudioFrame() { const H = SHORE_AU; if (!AU.ctx || !H.g || !S.home) return; const t = AU.ctx.currentTime, x = S.home.t;
+  H.surf.g.gain.setTargetAtTime(.07 + .09 * Math.pow(.5 + .5 * Math.sin(x * .83 + 1), 2.2), t, .3); H.surf.fl.frequency.setTargetAtTime(500 + 900 * (.5 + .5 * Math.sin(x * .83 + 1.6)), t, .4); H.wind.fl.frequency.setTargetAtTime(380 + 140 * Math.sin(x * .31), t, .5); }
+function shoreSplash() { if (!AU.ctx) return; const t = now(), d = SHORE_AU.g || AU.master;
+  fx('boom', { dest: d, gain: 1.1, rate: .7 }) || noise(d, t, .5, 'lowpass', 160, 1, 1.0); noise(d, t, 1.8, 'bandpass', 1500, .5, .5, 500); noise(d, t + .25, 2.6, 'highpass', 2600, .5, .22); fx('hiss', { dest: d, gain: .5, rate: .8, at: .15 }); }
 function homeBegin() {
   const p = P(); if (!PAR_OK) { S.home = { t: 0, z: 0, gl: 0 }; S.white = 0; return end('home'); }
   p2Ensure(); if (!R.parade) { const B = makeBatch(900000); R.paradeInfo = PARADE.build(B) || {}; R.parade = p2Chunked(B, 16); }
@@ -13590,6 +14571,7 @@ function homeBegin() {
   homeAudio(true); hudDirty = true;
 }
 function homeStep(dt, cmd) {
+  if (S.home.shore) return shoreStep(dt);
   const p = P(), h = S.home; h.t += dt; p.yaw = clamp(p.yaw + cmd.look[0], -2.5, 2.5); p.pitch = clamp(p.pitch - cmd.look[1], -.7, .8);
   h.v = lerp(h.v, h.t > 2 ? 4.3 * (1 - .55 * h.duck) : 0, dt * .8); h.z += h.v * dt; S.white = Math.max(0, S.white - dt * .5);
   h.ct += dt * (1 - .93 * h.duck);                                             // the street's own clock: it runs down as the car comes level
@@ -13599,6 +14581,7 @@ function homeStep(dt, cmd) {
   const endZ = PARADE.LEN - 22; if (h.z > endZ) { S.white = clamp((h.z - endZ) / 14, 0, 1); if (h.z > endZ + 15) { homeAudio(false); end('home'); } }
 }
 function homeRender(dt, t, asp) {
+  if (S.home.shore) return shoreRender(dt, t, asp);
   const p = P(), h = S.home, B = R.batch, z = -h.z, st = PARADE.SEAT, jog = Math.sin(h.t * 7.3) * .004 * h.v;
   const e = [st[0], st[1] + jog, z + st[2]], cam = mat(p.yaw, p.pitch, e, asp, 1.1); sway[0] = sway[1] = 0;
   B.reset(); PARADE.car(B, z, h.t); PARADE.escort(B, z, h.t); PARADE.crowd(B, z, h.ct); const nA = B.n;
@@ -13628,7 +14611,7 @@ function homeAudio(on) {
   if (!A.real) { src('bandpass', 520, .5, .5, .11); src('bandpass', 1300, .7, .32, .17); src('highpass', 3400, .5, .1, .23); src('bandpass', 880, 1.2, .2, .07); }
   A.next = t + 1.2; A.bar = 0; AU.hiss.gain.setTargetAtTime(0, t, .3); AU.stat.gain.setTargetAtTime(0, t, .3); AU.droneG.gain.setTargetAtTime(0, t, .3);
 }
-function homeAudioFrame() {
+function homeAudioFrame() { if (S.home && S.home.shore) return shoreAudioFrame();
   const A = HOME_AU, h = S.home; if (!AU.ctx || !A.g || !h) return; const C = AU.ctx, t = C.currentTime;
   AU.stat.gain.setTargetAtTime(h.duck * .05, t, .05); AU.droneG.gain.setTargetAtTime(h.duck * .12, t, .2);
   A.lp.frequency.setTargetAtTime(16000 * Math.pow(.012, h.duck), t, .08); A.g.gain.setTargetAtTime(S.over ? 0 : .9 * (1 - h.duck * .8), t, .15);
@@ -13731,7 +14714,7 @@ void main(){ vec2 p=vUv*2.-1.; vec3 rd=normalize(uF+uR*p.x*uTan*uAsp+uU*p.y*uTan
  c+=uHaze*(.35+.65*exp(-max(rd.y,0.)*4.))*(.85+.3*fb(rd.xy*4.+rd.z*3.));
  o=vec4(c*tj,1.); }`;
 const FS_POST = `#version 300 es
-precision highp float; in vec2 vUv; uniform sampler2D uScene,uHud; uniform vec2 uSRes,uORes,uSway; uniform float uTime,uGlitch,uBreath,uNoSig,uFade,uFlashW,uHudOn,uVisor,uGrain,uSat; out vec4 o;
+precision highp float; in vec2 vUv; uniform sampler2D uScene,uHud; uniform vec2 uSRes,uORes,uSway; uniform float uTime,uGlitch,uBreath,uNoSig,uFade,uFlashW,uHudOn,uVisor,uGrain,uSat,uBox; out vec4 o;
 ${GLSL_NOISE}
 float h(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
 void main(){ vec2 p=vUv*2.-1.; float t=uTime, gz=uGlitch*mix(.45,1.,uGlitch); float ft=floor(t*24.);   // quiet links stay quiet; only a dying one tears
@@ -13763,6 +14746,7 @@ void main(){ vec2 p=vUv*2.-1.; float t=uTime, gz=uGlitch*mix(.45,1.,uGlitch); fl
  c+=uFlashW;
  float rim=smoothstep(.965,1.,sd)*vis; float helm=.012+.07*smoothstep(1.,1.025,sd)*smoothstep(1.11,1.03,sd)+h(floor(gl_FragCoord.xy/2.))*.012;
  vec3 outc=max(c,0.)*chroma*hk+hudc*(1.-uNoSig*.6); outc=mix(outc,vec3(helm),rim)*uFade;
+ if(uBox>0.){ float ra=uORes.x/uORes.y; vec2 hb2=ra>uBox?vec2(uBox/ra,1.):vec2(1.,ra/uBox); vec2 q=abs(vUv-.5)*2.; if(q.x>hb2.x||q.y>hb2.y) outc=vec3(0.); }
  o=vec4(outc,1.); }`;
 function prog(vs, fs) {
   const p = gl.createProgram();
@@ -13833,6 +14817,7 @@ const KEI_VARI = [
 /* The burrower takes the place of the two sprinters where its model is present. */
 const BUR_OK = typeof BURROW !== 'undefined' && !!BURROW.create;
 if (BUR_OK) KEI_VARI.splice(KEI_VARI.findIndex(v => v.id === 'lancer'), 2, { id: 'burrower', w: .27, sc: 1, fat: 1, hp: 3, spd: 1, lit: 1, bur: 1 });
+const walkVid = seed => { const r = mulberry(seed * 31 + 7), L = KEI_VARI.filter(v => !v.bur); let t = r() * L.reduce((a, v) => a + v.w, 0); for (const v of L) { t -= v.w; if (t <= 0) return v.id; } return L[0].id; };   // one that stands on a ridge has to be one that stands
 function pickVari(r) { let t = r() * KEI_VARI.reduce((s, v) => s + v.w, 0); for (const v of KEI_VARI) { t -= v.w; if (t <= 0) return v; } return KEI_VARI[0]; }
 function mkFoe(kind, x, z, crew, seed, vid) { const f = { kind, x, z, crew, stun: 0, active: false, hp: 2, lit: 0, heading: Math.PI, spd: 0, seed: seed * 7 + (kind === 'kei' ? 11 : 3), alert: 0, open: 0, vsc: 1, vfat: 1 };
   if (kind === 'kei') { const v = (vid && KEI_VARI.find(q => q.id === vid)) || pickVari(mulberry(f.seed * 17 + 3)); f.v = v; f.hp = v.hp; f.vsc = v.sc; f.vfat = v.fat;
@@ -14405,10 +15390,11 @@ function clearView(ax, ay, az, bx, by, bz) { const d = Math.hypot(bx - ax, bz - 
 function watchStep(dt, p) {
   const D = S.dir || (S.dir = { t: 9, n: 0, sd0: 0 }), cell = Math.floor(p.x / CS) + Math.floor(p.z / CS) * MW, sd = W.shipDist[cell]; if (sd > D.sd0) D.sd0 = sd; if (sd >= 0) { if (D.ls !== undefined && sd < D.ls) D.t -= (D.ls - sd) * .75; D.ls = D.ls === undefined ? sd : Math.min(D.ls, sd); }   // ground covered counts as time: run and they come sooner
   if (S.tracers) while (S.tracers.length && S.t - S.tracers[0].t0 > .7) S.tracers.shift();
-  for (let i = S.foes.length - 1; i >= 0; i--) { const f = S.foes[i]; if (f.kind !== 'kei' || !f.flee || f.stun > 0) continue; const fd = Math.hypot(f.x - p.x, f.z - p.z); f.fleeT = (f.fleeT || 0) + dt; if (fd > 42 || (f.fleeT > 5 && !los(f.x, f.z, p.x, p.z))) { S.foes.splice(i, 1); D.t = Math.max(D.t, 24 + S.rng() * 20); } }
+  for (let i = S.foes.length - 1; i >= 0; i--) { const f = S.foes[i]; if (f.kind !== 'kei' || !f.flee || f.stun > 0) continue; const fd = Math.hypot(f.x - p.x, f.z - p.z); f.fleeT = (f.fleeT || 0) + dt; if (fd > 42 || (f.fleeT > 5 && !los(f.x, f.z, p.x, p.z))) { S.foes.splice(i, 1); D.t = Math.max(D.t, 20 + S.rng() * 18); } }
+  burDirector(dt, p, D, sd);
   const w = S.watch;
   if (!w) { D.t -= dt; if (D.t > 0 || S.climb || S.stage >= 3 || S.over) return;
-    let wild = 0; for (const f of S.foes) if (f.kind === 'kei' && !f.kin && !f.lock) wild++;
+    let wild = 0; for (const f of S.foes) if (f.kind === 'kei' && !f.kin && !f.lock && !f.bur) wild++;
     const prog = D.sd0 > 0 && sd >= 0 ? 1 - sd / D.sd0 : 0, allow = S.stage >= 1 ? 3 : prog > .45 ? 2 : 1; if (wild >= allow) { D.t = 4; return; }
     /* Where it stands has to be somewhere you can actually see from where you are: up the valley side, clear of the
        ground between, and best of all on the skyline with nothing behind it but the sky. A few dozen places are tried
@@ -14422,7 +15408,7 @@ function watchStep(dt, p) {
       if (Math.hypot(en[0] - x, en[1] - z) > 34) continue;
       const sc = Math.abs(d - 56) * .6 + (sky ? 0 : 12) + (esd > sd + 6 && !first ? 30 : 0) + (inView > .6 ? 22 : inView < -.2 ? 18 : 0) - Math.min(14, y + 3 - ey) + S.rng() * 6; if (sc < bs) { bs = sc; best = { x, z, en }; } }
     if (!best) { D.t = 2.5; return; }
-    const f = first ? al.chaser : mkFoe('kei', best.x, best.z, -1, 40 + D.n * 3, D.n <= 1 ? 'stalker' : undefined); f.x = best.x; f.z = best.z; f.heading = Math.atan2(p.x - f.x, -(p.z - f.z)); f.vsc0 = f.vsc; f.vsc *= 1.4;
+    const f = first ? al.chaser : mkFoe('kei', best.x, best.z, -1, 40 + D.n * 3, D.n <= 1 ? 'stalker' : walkVid(40 + D.n * 3)); f.x = best.x; f.z = best.z; f.heading = Math.atan2(p.x - f.x, -(p.z - f.z)); f.vsc0 = f.vsc; f.vsc *= 1.4;
     S.watch = { f, q: best, st: 0, t: 0, seen: 0, x0: best.x, z0: best.z, algo: first ? al : null }; D.last = best; D.n++;
     // whoever is beside you sees it too, and shows you where
     { let nb = null, nd = 30; for (const g of S.foes) if (g.kind === 'crew' && g.alive !== false && !g.down && g !== al) { const gd = Math.hypot(g.x - p.x, g.z - p.z); if (gd < nd) { nd = gd; nb = g; } }
@@ -14437,7 +15423,7 @@ function watchStep(dt, p) {
   else if (w.st === 2) { if (w.t > w.delay) { w.st = 3; w.t = 0; w.hide = 0; f.x = w.x0; f.z = w.z0; if (AU.ctx) sfx.legs(.5, clamp(dx / d, -1, 1)); } }
   else { // and then it comes down the slope at a run
     const al = w.algo && w.algo.alive !== false ? w.algo : null, gx = al ? al.x : w.q.en[0], gz = al ? al.z : w.q.en[1], ex = gx - f.x, ez = gz - f.z, el = Math.hypot(ex, ez); f.heading += angd(Math.atan2(ex, -ez), f.heading) * Math.min(1, dt * 8);
-    if (al ? el < 5 || w.t > 12 : el < 1 || w.t > 6) { if (f.vsc0) f.vsc = f.vsc0; f.active = true; f.spd = 8; S.foes.push(f); S.watch = null; D.t = 55 + S.rng() * 30;
+    if (al ? el < 5 || w.t > 12 : el < 1 || w.t > 6) { if (f.vsc0) f.vsc = f.vsc0; f.active = true; f.spd = 8; S.foes.push(f); S.watch = null; D.t = 48 + S.rng() * 26;
       if (al) { f.on = .01; f.kin = true; al.ang = Math.atan2(al.z - ROLE_POS.algo[1], al.x - ROLE_POS.algo[0]); } else { f.x = gx; f.z = gz; } return; }
     const m = Math.min(el, 9.5 * dt); f.x += ex / el * m; f.z += ez / el * m; if (f.vsc0) f.vsc = lerp(f.vsc, f.vsc0, Math.min(1, dt * 1.5)); }
   f.spd = lerp(f.spd, Math.hypot(f.x - ox, f.z - oz) / dt, dt * 8);
@@ -14447,7 +15433,21 @@ function watchStep(dt, p) {
    key slides out of sight, the ground carries the sound of it up through your boots, and it comes up out of the ground
    where it last knew you to be. Keep moving and it misses, and for a second or two all of it is above ground and can
    be shot. Three hits and the key lies down for good. */
-const BUR = { cruise: 4.3, prowl: 2.7, under: 6.9, orbit: 12, reach: 1.35 };
+const BUR = { cruise: 4.3, prowl: 2.7, under: 6.9, orbit: 12, reach: 1.4 };
+/* When they come. None until you have covered some ground; then one, somewhere ahead or to the side where you can see
+   the whole of its run in; at the pad, two. The first time, whoever is beside you sees the ground move before you do. */
+function burDirector(dt, p, D, sd) {
+  if (!BUR_OK || S.climb || S.stage >= 3 || S.over || S.cine) return;
+  let n = 0; for (let i = S.foes.length - 1; i >= 0; i--) { const f = S.foes[i]; if (!f.bur) continue; if (f.deadT !== undefined) { if (f.deadT > 20 && Math.hypot(f.x - p.x, f.z - p.z) > 70) S.foes.splice(i, 1); continue; } if (!f.lock) n++; }
+  const prog = D.sd0 > 0 && sd >= 0 ? 1 - sd / D.sd0 : 0; if (D.bt === undefined) D.bt = 14; if (prog < .16 && S.stage < 1) return;
+  D.bt -= dt; if (D.bt > 0 || n >= (S.stage >= 1 ? 2 : 1)) return;
+  const fx = Math.sin(p.yaw), fz = -Math.cos(p.yaw); let best = null, bs = 1e9;
+  for (let k = 0; k < 40; k++) { const a = S.rng() * 6.283, r = 36 + S.rng() * 20, q = nearPass(p.x + Math.cos(a) * r, p.z + Math.sin(a) * r), dx = q[0] - p.x, dz = q[1] - p.z, d = Math.hypot(dx, dz); if (d < 30 || d > 62 || !los(p.x, p.z, q[0], q[1])) continue;
+    const fd = S.flow[Math.floor(q[0] / CS) + Math.floor(q[1] / CS) * MW]; if (!(fd >= 0)) continue; const inView = (dx * fx + dz * fz) / d, sc = Math.abs(inView - .75) * 30 + Math.abs(d - 46) * .4 + S.rng() * 5; if (sc < bs) { bs = sc; best = q; } }
+  if (!best) { D.bt = 3; return; }
+  const f = mkFoe('kei', best[0], best[1], -1, 70 + (D.bn = (D.bn || 0) + 1) * 5, 'burrower'); f.active = true; f.dep = 1; f.cd = 5 + S.rng() * 3; f.heading = Math.atan2(p.x - f.x, -(p.z - f.z)) + f.side * 1.1; S.foes.push(f); D.bt = 42 + S.rng() * 26;
+  if (D.bn === 1) { let nb = null, nd = 30; for (const g of S.foes) if (g.kind === 'crew' && g.alive !== false && !g.down) { const gd = Math.hypot(g.x - p.x, g.z - p.z); if (gd < nd) { nd = gd; nb = g; } }
+    if (nb) { nb.pointYaw = Math.atan2(f.x - nb.x, -(f.z - nb.z)); crewGest(nb, 'point', 4); crewLine(nb.role, 'The ground. Something is moving IN the ground.'); } else selfVoice('spot', 25); } }
 function burTurn(f, want, rate, dt) { if (f.av > 0) { want = f.avH; rate = 3.4; } f.heading += clamp(angd(want, f.heading), -rate * dt, rate * dt); }
 function burStep(f, dt, p, fd, touch) {
   const rig = f.rig, tg = f.lock && f.lock.alive !== false ? f.lock : p, dx = tg.x - f.x, dz = tg.z - f.z, d = Math.hypot(dx, dz) || 1e-3, ox = f.x, oz = f.z;
@@ -14466,9 +15466,12 @@ function burStep(f, dt, p, fd, touch) {
     else { const off = clamp((d - R) / 5, -1, 1), want = toT + f.side * (Math.PI / 2) * (1 - Math.max(0, off)) + (off < 0 ? f.side * -off * .6 : 0); burTurn(f, want, 1.7, dt); spd = d > 30 ? BUR.cruise * 1.25 : look > .8 && d < R + 3 ? BUR.prowl : BUR.cruise; }
     if (f.cd <= 0 && see && d < (f.lock ? 26 : 15)) { f.bs = 'dive'; f.bt = 0; }
   }
-  else if (f.bs === 'dive') { depT = 1; const lead = (BURROW.BREACH_T || 1.6) * (BURROW.BREACH_HIT === undefined ? .5 : BURROW.BREACH_HIT) * (tg !== p ? .3 : S.burN ? .5 : 0), ax = tg.x + (tg.vx || 0) * lead - f.x, az = tg.z + (tg.vz || 0) * lead - f.z, ad = Math.hypot(ax, az);
+  else if (f.bs === 'dive') { depT = 1; const Ts = (BURROW.BREACH_T || 1.6) * (BURROW.BREACH_HIT === undefined ? .5 : BURROW.BREACH_HIT), rch = BURROW.REACH || 1.4;
+    /* It aims at where you will be when the blow lands, but short of it: by enough that a walk is caught (the blow falls about a
+       metre behind a walking man, inside its reach) and a run is not. Change direction, run, or be in the air. The first of a run is aimed at where you stand. */
+    const lead = Ts * (tg !== p ? .3 : S.burN ? clamp(1 - 1.1 / (3.4 * Ts), .3, .85) : 0), ax = tg.x + (tg.vx || 0) * lead - f.x, az = tg.z + (tg.vz || 0) * lead - f.z, ad = Math.hypot(ax, az);
     burTurn(f, Math.atan2(ax, -az), f.dep > .7 ? 3.2 : 1.6, dt); spd = f.dep > .55 ? BUR.under : BUR.cruise;
-    if (f.dep > .9 && ad < 1.7) { f.bs = 'breach'; f.bt = 0; f.br = 0; f.struck = 0; if (ad > .3) f.heading = Math.atan2(ax, -az); if (tg === p) S.burN = (S.burN || 0) + 1; }   // it leads you by half the time the blow takes: standing or walking it has you, running or in the air it does not. The first one of a run is aimed at where you are, so anyone moving sees what it does before it costs anything
+    if (f.dep > .9 && ad < rch + .3) { f.bs = 'breach'; f.bt = 0; f.br = 0; f.struck = 0; if (ad > .3) f.heading = Math.atan2(ax, -az); if (tg === p) S.burN = (S.burN || 0) + 1; }
     else if (f.bt > 5) { f.bs = 'cruise'; f.bt = 0; f.cd = 2 + S.rng() * 2; f.side = -f.side; } }
   else if (f.bs === 'breach') { depT = 0; const T = BURROW.BREACH_T || 1.6, H = BURROW.BREACH_HIT === undefined ? .5 : BURROW.BREACH_HIT, b0 = f.br; f.br = Math.min(1, f.br + dt / T);
     if (b0 < H && f.br >= H) { const sp = rig.strike || [f.x + Math.sin(f.heading) * 1.4, 0, f.z - Math.cos(f.heading) * 1.4], sx = p.x - sp[0], sz = p.z - sp[2], sd = Math.hypot(sx, sz); f.struck = 1;
@@ -14796,7 +15799,7 @@ function shadowMat(c) { const f = V3.mul(SUN, -1), r = V3.norm(V3.cross(f, [0, 1
 const cineAlt = t => t < DES_T ? 1500 * Math.pow(1 - t / DES_T, 2.3) + 9 : 9;
 let lastYaw = 0, sway = [0, 0], hudT = 0, tPrev = 0, acc = 0, menuT = 0;
 function render(dt, now) {
-  const inGame = S && (screen === 'play' || screen === 'pause' || screen === 'ending' || screen === 'cine'); const t = now / 1000;
+  const inGame = S && (screen === 'play' || screen === 'pause' || screen === 'ending' || screen === 'cine' || (screen === 'film' && S.mode === 'home' && S.home && S.home.shore)); const t = now / 1000;   // under the film as it comes up, the beach is still being drawn
   if (inGame && S.mode && !S.cine) return finishFrame(dt, t, true, S.mode === 'ship' ? shipRender(dt, t, R.sw / R.sh) : homeRender(dt, t, R.sw / R.sh));
   let cam, cab = null, glitch = .1, breath = 0, nosig = 0, fade = 1, white = 0, visor = 1, grain = 1, sceneOn = true, showShip = true, hudOn = inGame && screen !== 'ending';
   const frozen = inGame && S.freeze > 0 && !S.over && !S.cine; const asp = R.sw / R.sh; let flash = 0, pp = null, haze = .035, sunI = .7, sat = 1;
@@ -14900,7 +15903,7 @@ function finishFrame(dt, t, inGame, o) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, cv.width, cv.height); gl.disable(gl.DEPTH_TEST); gl.useProgram(R.post.p); const u = R.post.u;
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, R.sceneTex); gl.uniform1i(u.uScene, 0); gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, R.hudTex); gl.uniform1i(u.uHud, 1); gl.activeTexture(gl.TEXTURE0);
   gl.uniform2f(u.uSRes, R.sw, R.sh); gl.uniform2f(u.uORes, cv.width, cv.height); gl.uniform2f(u.uSway, sway[0], sway[1]); gl.uniform1f(u.uTime, t % 1000); gl.uniform1f(u.uGlitch, o.glitch); gl.uniform1f(u.uBreath, o.breath); gl.uniform1f(u.uNoSig, o.nosig);
-  gl.uniform1f(u.uFade, o.fade); gl.uniform1f(u.uFlashW, o.white); gl.uniform1f(u.uHudOn, o.hudOn ? 1 : 0); gl.uniform1f(u.uVisor, o.visor); gl.uniform1f(u.uGrain, o.grain); gl.uniform1f(u.uSat, o.sat);
+  gl.uniform1f(u.uFade, o.fade); gl.uniform1f(u.uFlashW, o.white); gl.uniform1f(u.uHudOn, o.hudOn ? 1 : 0); gl.uniform1f(u.uVisor, o.visor); gl.uniform1f(u.uBox, o.box || 0); gl.uniform1f(u.uGrain, o.grain); gl.uniform1f(u.uSat, o.sat);
   gl.bindVertexArray(R.empty); gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 function frame(now) {
@@ -14946,15 +15949,16 @@ const FILM_CARDS = [
   'Commander Baker lives in seclusion.\nHe has never spoken publicly about the mission.',
   'Flight Director Nicholas Stewart resigned.\nHe says he remembers nothing from before 2012.',
   'NASA cancelled every crewed flight beyond the Moon.\nOdyssey 9 remains classified.' ];
-function filmBegin() {
-  if (document.pointerLockElement) document.exitPointerLock(); const v = $('filmV'), card = $('filmCard'); let done = false, raf = 0, carded = false;
+function filmBegin(over) {
+  if (document.pointerLockElement) document.exitPointerLock(); const v = $('filmV'), card = $('filmCard'), scr = $('film'), DIS = over ? .45 : .7; let done = false, raf = 0, carded = false, solid = !over;   // the film's first shot starts pushing in at once, so over the beach it comes up fast: nearly a cut
+  scr.style.background = over ? 'transparent' : '';   // over a rendered shot the film comes up through it; once it is fully up the screen behind goes black again
   if (typeof homeAudio === 'function') homeAudio(false); if (AU.ctx && AU.master) { const t = AU.ctx.currentTime; AU.master.gain.cancelScheduledValues(t); AU.master.gain.setTargetAtTime(0, t, .4); }
   card.classList.remove('on'); card.textContent = ''; v.style.opacity = 0; try { v.currentTime = 0; } catch (e) { } v.volume = clamp(SET.vol * 1.3, 0, 1); show('film');
-  const fin = () => { if (done) return; done = true; cancelAnimationFrame(raf); try { v.pause(); } catch (e) { } removeEventListener('keydown', key); if (AU.ctx && AU.master) AU.master.gain.setTargetAtTime(AU.vol, AU.ctx.currentTime, .3); S.over = 'home'; S.overT = 0; showEnd(); };
-  const cards = () => { if (done || carded) return; carded = true; cancelAnimationFrame(raf); v.style.opacity = 0; let i = 0;
+  const fin = () => { if (done) return; done = true; scr.style.background = ''; cancelAnimationFrame(raf); try { v.pause(); } catch (e) { } removeEventListener('keydown', key); if (AU.ctx && AU.master) AU.master.gain.setTargetAtTime(AU.vol, AU.ctx.currentTime, .3); S.over = 'home'; S.overT = 0; showEnd(); };
+  const cards = () => { if (done || carded) return; carded = true; cancelAnimationFrame(raf); v.style.opacity = 0; scr.style.background = ''; if (S && S.home) S.home.done = 1; let i = 0;
     const next = () => { if (done) return; if (i >= FILM_CARDS.length) return fin(); card.textContent = FILM_CARDS[i++]; card.classList.add('on'); setTimeout(() => { card.classList.remove('on'); setTimeout(next, 1500); }, 5400); }; setTimeout(next, 1100); };
   const tick = () => { if (done || carded) return; const t = v.currentTime, d = v.duration || 47.4, g = Math.max(0, 1 - t / 2.8);
-    v.style.opacity = Math.max(0, Math.min(1, t / .7, (d - .12 - t) / 2.6)).toFixed(3); v.style.filter = g > 0 ? `grayscale(${g.toFixed(3)}) contrast(${(1 + .14 * g).toFixed(3)})` : 'none'; raf = requestAnimationFrame(tick); };
+    v.style.opacity = Math.max(0, Math.min(1, t / DIS, (d - .12 - t) / 2.6)).toFixed(3); if (!solid && t > DIS + .1) { solid = true; scr.style.background = ''; if (S && S.home) S.home.done = 1; } v.style.filter = g > 0 ? (over ? `grayscale(${g.toFixed(3)}) contrast(${(1 - .06 * g).toFixed(3)}) brightness(${(1 + .07 * g).toFixed(3)})` : `grayscale(${g.toFixed(3)}) contrast(${(1 + .14 * g).toFixed(3)})`) : 'none'; raf = requestAnimationFrame(tick); };
   const key = e => { if (e.code === 'Escape') fin(); }; addEventListener('keydown', key); v.onended = cards; v.onerror = cards;
   const pr = v.play(); if (pr && pr.catch) pr.catch(() => cards()); tick();
 }
@@ -15049,7 +16053,7 @@ function refreshFace(id) { const i = CREW_IDS.indexOf(id); if (i < 0) return; gl
   for (const [lay, open] of [[TL.FACE + i, false], [TL.FACE_OPEN + i, true]]) gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, lay, 256, 256, 1, gl.RGBA, gl.UNSIGNED_BYTE, faceLayer(id, open));
   gl.generateMipmap(gl.TEXTURE_2D_ARRAY); const box = $('crew'); if (box) { box.innerHTML = ''; buildSelect(); } }
 try { initGL(); buildMapCanvas(); loadPhotos(refreshFace); NASA_IMG.onload = () => { try { const c = document.createElement('canvas'); c.width = c.height = TS; const x = c.getContext('2d'); x.fillStyle = '#ecebe6'; x.fillRect(0, 0, TS, TS); const w = NASA_IMG.naturalWidth, h = NASA_IMG.naturalHeight, k = TS * .97 / Math.max(w, h); x.imageSmoothingQuality = 'high'; x.drawImage(NASA_IMG, (TS - w * k) / 2, (TS - h * k) / 2, w * k, h * k); gl.bindTexture(gl.TEXTURE_2D_ARRAY, R.tex); gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, TL.NASA, TS, TS, 1, gl.RGBA, gl.UNSIGNED_BYTE, c); gl.generateMipmap(gl.TEXTURE_2D_ARRAY); } catch (e) { } hudDirty = true; }; NASA_IMG.src = document.querySelector('.brand img').src; if (document.fonts && document.fonts.load) document.fonts.load('500 16px "IBM Plex Mono"').then(() => { hudDirty = true; }).catch(() => { }); buildSelect(); bindUI(); requestAnimationFrame(frame); } catch (e) { document.body.insertAdjacentHTML('beforeend', `<pre style="position:fixed;left:8px;bottom:8px;color:#fff;z-index:9">${String(e.message || e)}</pre>`); throw e; }
-window.__dbg = { R, W, SET, cine(dt) { cineStep(dt); }, get S() { return S; }, startRun, show, step, ship(i) { startRun(i || 0, 'ship'); }, home() { filmBegin(); }, parade() { homeBegin(); }, tp(x, z) { P().x = x; P().z = z; }, set screen(v) { screen = v; }, get screen() { return screen; } };
+window.__dbg = { R, W, SET, cine(dt) { cineStep(dt); }, get S() { return S; }, startRun, show, step, ship(i) { startRun(i || 0, 'ship'); }, home() { shoreBegin(); }, film() { filmBegin(); }, parade() { homeBegin(); }, tp(x, z) { P().x = x; P().z = z; }, set screen(v) { screen = v; }, get screen() { return screen; } };
 
 
 </script>
