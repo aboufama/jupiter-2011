@@ -4906,7 +4906,7 @@ const passAt = (cx, cz) => cx >= 0 && cz >= 0 && cx < MW && cz < MH && W.pass[cz
     W.rocks.push({ x, z, rad, sy: .55 + r() * .5, rot: r() * 6.28, seed: n, block: inside && rad > 1.1 }); }
   for (const k of W.rocks) if (k.block) { const c0 = Math.floor((k.x - k.rad) / CS), c1 = Math.floor((k.x + k.rad) / CS), z0 = Math.floor((k.z - k.rad) / CS), z1 = Math.floor((k.z + k.rad) / CS); for (let cz = z0; cz <= z1; cz++) for (let cx = c0; cx <= c1; cx++) if (Math.hypot((cx + .5) * CS - k.x, (cz + .5) * CS - k.z) < k.rad + .4 && passAt(cx, cz)) W.pass[cz * MW + cx] = 2; }
   // the pod you came down in, and the ship, are both solid
-  for (let cz = 0; cz < MH; cz++) for (let cx = 0; cx < MW; cx++) if (Math.hypot((cx + .5) * CS - START.x, (cz + .5) * CS - START.z) < 2.4) W.pass[cz * MW + cx] = 0;
+  for (let cz = 0; cz < MH; cz++) for (let cx = 0; cx < MW; cx++) if (Math.hypot((cx + .5) * CS - START.x, (cz + .5) * CS - START.z) < 3.2) W.pass[cz * MW + cx] = 0;
   for (let cz = 0; cz < MH; cz++) for (let cx = 0; cx < MW; cx++) if (Math.hypot((cx + .5) * CS - SHIP.x, (cz + .5) * CS - SHIP.z) < 3.9) W.pass[cz * MW + cx] = 0;
   // distance-to-ship field; any boulder that cuts the valley is unblocked
   const bfs = () => { const f = new Int16Array(MW * MH).fill(-1); const s = Math.floor(SHIP.x / CS) + Math.floor((SHIP.z + 6) / CS) * MW; const q = [s]; f[s] = 0; for (let h = 0; h < q.length; h++) { const i = q[h], x = i % MW, z = (i / MW) | 0; for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const nx = x + dx, nz = z + dz; if (!passAt(nx, nz)) continue; const j = nx + nz * MW; if (f[j] < 0) { f[j] = f[i] + 1; q.push(j); } } } return f; };
@@ -5002,1070 +5002,936 @@ const SHIP_POINTS = (() => { const G = typeof GEAR !== 'undefined' && GEAR.SHIP;
   return { panel: { x: SHIP.x + d[0] * 5.4, z: SHIP.z + d[1] * 5.4 }, ladder: { x: SHIP.x, z: SHIP.z + 5.1 }, top: G.porch - .15, lz0: 5.1, lz1: 4.43 }; })();
 
 
-/* pod.js : EP-2, the single-stage crewed lunar escape pod of Odyssey 9.
-   Needs prims.js (V3, TL, makeBatch) and world.js (WL). Defines one global, POD. No DOM access, no randomness.
+/* pod.js : EP-2, the impact lifeboat of Odyssey 9.   Needs prims.js (V3, TL, makeBatch); uses WL (world.js) when defined.
+   Defines one global, POD. No DOM, no clock, no Math.random.
 
-   Five astronauts rode this down. It is a squat 15-sided pressure can on four crushable landing legs, with an
-   ablative base shield, one throttleable descent engine plus four trim bells, four RCS quads, a flat-faced hatch
-   bay with the hatch swung open on two hinges, a grated porch and three steps down to the regolith, exposed
-   propellant plumbing and cable raceways, two strapped-on spheres, a finned radiator, cut-off umbilicals hanging
-   out of the disconnect panel, and an S-band dish deployed off the upper deck.
+   THE VEHICLE. A hard lander: one solid retro burn, then she free-falls the last stretch and HITS. Everything is built
+   round that single touchdown.
+     - a low bell-shaped pressure cabin (five couches in a fan) seated in a twelve-sided impact platform;
+     - six Surveyor-style crush legs: an A-frame on a torque-tube hinge at the keel, a wide dished pad on a ball joint, and
+       a folding brace up to the deck edge whose upper half is a honeycomb stroke cartridge. On impact the A-frame swings
+       up, the pads skid outward and the cartridges telescope;
+     - a segmented ring of sacrificial aluminium honeycomb under the keel that takes over when the legs are half stroked
+       and is left mashed flat on the regolith;
+     - one solid retro motor on the axis, its bell down the middle of the honeycomb ring;
+     - nitrogen spheres in the open corner bays, four cold-gas thruster quads on outriggers at the shoulder, a corrugated
+       shoulder, quilted blankets on the barrel, a flat hatch bay with a pyro-bolted plug hatch, a porch and a hinged
+       ladder, the latch ring that held her to the mothership, cut umbilicals, a dish, a whip and a strobe.
 
-   LOCAL FRAME (what every number below is in): y 0 is the plane the footpads rest on, +Y up, the hatch faces -Z,
-   +X is to the right of someone standing outside looking at the hatch. exterior() maps that frame into the world
-   through a basis tilted to the four footpads' own ground heights, so the pod leans on uneven terrain.
+   LOCAL FRAME. Rigid with the cabin. +Y up, the egress hatch faces -Z. y = 0 is the plane the footpads rest on in the
+   DEFAULT REST STATE (crush .85). The pads move in this frame as the legs stroke: with every leg at crush c the pad
+   soles are at y = POD.padY(c) = -0.80 * (0.85 - c)   (-0.68 standing tall, 0 at rest, +0.12 bottomed out).
 
-   POD.exterior(B, x, y, z, heading, groundY)  -> appends the landed pod to B in WORLD space. (x,z) footprint centre.
-   POD.interior(B, t)                          -> appends the view from inside, in LOCAL space, camera at the origin
-                                                  looking down -Z. t = seconds of descent (sways the hoses and straps).
-   POD.DIM                                     -> the dimensions other code needs to place the player and the camera.
+   POD.exterior(B, x, y, z, heading, groundY, st)   the pod at rest after the crash, in WORLD space, leaning on the
+                                                    ground under its pads; every pad and the honeycomb find their own ground.
+   POD.flight(B, o, st)                             rigid body for the cinematic. o = { p:[x,y,z], yaw, pitch, roll }.
+                                                    world = T(p) * Ry(yaw) * Rx(pitch) * Rz(roll): yaw like a heading
+                                                    (0 = hatch faces -Z, positive turns it toward +X), positive pitch
+                                                    raises the hatch side, positive roll drops the +X side.
+   POD.interior(B, t, st)                           the player's station, LOCAL space, camera at the origin looking down -Z.
+   POD.frame(x, y, z, heading, groundY, st)         the basis exterior() uses: { o, ex, ey, ez } (world = o + ex*x + ey*y + ez*z)
+   POD.padY(crush)                                  see above.
+   POD.DIM                                          dimensions (all in the local frame above).
+   st (exterior, flight): { legs, crush (number or one per leg), hatch, eng, dmg }, all optional.
+                          legs 0 stowed .. 1 down and locked; crush 0 standing tall .. 1 bottomed out; hatch 0 shut .. 1 swung
+                          open; eng 0..1 the glow of the motor lining (no flame); dmg 0 factory fresh .. 1 as she lies.
+                          Defaults: exterior { legs:1, crush:.85, hatch:1, eng:0, dmg:1 }, flight { legs:0, crush:0, hatch:0, eng:0, dmg:0 }.
+   st (interior):         { q:[fire, attitude, legs, brace] each 0..1, alarm 0..1, alt metres, lit 0..1 }, all optional.
+                          q[0] lifts the guard and throws the retro switch (its lamp lights at 1), q[1] holds the hand controller
+                          over, q[2] turns and pulls the leg T-handle (six lock lamps), q[3] throws the brace lever (LOCK lamp,
+                          straps stop swinging); alarm flashes the master caution; alt drives the tape and the readout;
+                          lit is the bus: at 0 every lamp is dead and the cabin floods are down to a fifth.
 */
 const POD = (() => {
-  const TAU = 6.283185307, PI = Math.PI;
-  const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
-  // small seeded PRNG (mulberry32) - everything that looks irregular comes from one of these, never Math.random
+  const TAU = 6.283185307179586, PI = Math.PI, RAD = PI / 180;
+  const clamp = (v, a, b) => v < a ? a : v > b ? b : v, lerp = (a, b, t) => a + (b - a) * t;
+  const ease = t => { t = clamp(t, 0, 1); return t * t * (3 - 2 * t); };
   const rnd = seed => { let a = (seed | 0) * 1664525 + 1013904223 | 0; return () => { a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; };
-  const HULL = typeof WL !== 'undefined' ? WL.HULL : TL.WHITE;   // panelled hull sheet
-  const CRATE = typeof WL !== 'undefined' ? WL.CRATE : TL.METAL; // stencilled plate
+  const h3 = (i, j, s) => { let h = Math.imul(i | 0, 374761393) + Math.imul(j | 0, 668265263) + Math.imul(s | 0, 1440662683) | 0; h = Math.imul(h ^ h >>> 13, 1274126177); return ((h ^ h >>> 16) >>> 0) / 4294967296; };
+  const _W = typeof WL !== 'undefined' ? WL : null;
+  const HULL = _W ? _W.HULL : TL.WHITE, CRATE = _W ? _W.CRATE : TL.METAL, REGO = _W ? _W.REGO : TL.METAL;
+  const NASA_L = TL.NASA !== undefined ? TL.NASA : TL.PATCH;
+  const WH = TL.WHITE, SU = TL.SUIT, DK = TL.DARK, ME = TL.METAL, VI = TL.VISOR;
 
-  /* ----------------------------------------------------------------------- dimensions */
-  const R = 1.70;                 // body circumradius
+  /* ------------------------------------------------------------------------------------------------ dimensions */
+  const STROKE = 0.80, C_REST = 0.85;                       // pad travel in the cabin frame, crush at rest
+  const KEEL = 0.30, DECK = 0.96;                           // impact platform: keel plate and deck
+  const RF = 1.62, WF = 0.515, RB = 1.66, WB = 0.3635;      // leg faces and corner bays of the twelve-sided platform
+  const H0 = 0.62, HMIN = 0.20, RBT = 1.58, RBB = 1.42, RBI = 0.66;   // honeycomb ring: free height, solid height, radii
+  const HIPR = 1.72, HIPY = 0.36, LLEG = 1.28, LCOL = 0.80, LUG = 0.10, PADH = 0.13, PADR = 0.38;
+  const UX = 1.70, UY = 0.99, LINK = 0.574, STRUT0 = 0.73, STRUT1 = 0.446, A_STOW = 80 * RAD;
+  const NLEG = 6, LEGA = [30, 90, 150, 210, 270, 330].map(d => d * RAD);
+  const ZF = -1.60;                                         // the flat face of the hatch bay
+  const HX = 0, HY = 1.44, HHW = 0.34, HHH = 0.42, HRAD = 0.13;       // hatch opening
+  const Y_Q0 = 1.22, Y_Q1 = 2.16, Y_SH = 2.42, Y_COL = 2.905, Y_RING = 3.16, R_B0 = 1.56, R_B1 = 1.30, R_COL = 0.775;
+  const bellR = y => y <= Y_SH ? R_B0 - (y - DECK) * (R_B0 - R_B1) / (Y_SH - DECK) : R_B1 - (y - Y_SH) * (R_B1 - R_COL) / (Y_COL - Y_SH);
+  const padY = c => -STROKE * (C_REST - c);
+  const phiOf = c => Math.asin(clamp((HIPY - padY(c) - PADH) / LLEG, -0.4, 0.97));
+  const PAD_REST = HIPR + LLEG * Math.cos(phiOf(C_REST));
+  const UR = a => [Math.sin(a), 0, -Math.cos(a)], UT = a => [Math.cos(a), 0, Math.sin(a)];
+
+  /* ------------------------------------------------------------------------------------------------ transforms
+     12 numbers: the three basis columns then the origin. */
+  const mmul = (A, B) => { const r = new Array(12); for (let c = 0; c < 4; c++) { const x = B[c * 3], y = B[c * 3 + 1], z = B[c * 3 + 2], t = c === 3 ? 1 : 0;
+    r[c * 3] = A[0] * x + A[3] * y + A[6] * z + t * A[9]; r[c * 3 + 1] = A[1] * x + A[4] * y + A[7] * z + t * A[10]; r[c * 3 + 2] = A[2] * x + A[5] * y + A[8] * z + t * A[11]; } return r; };
+  const mT = (x, y, z) => [1, 0, 0, 0, 1, 0, 0, 0, 1, x, y, z];
+  const mRX = a => { const c = Math.cos(a), s = Math.sin(a); return [1, 0, 0, 0, c, s, 0, -s, c, 0, 0, 0]; };
+  const mRY = a => { const c = Math.cos(a), s = Math.sin(a); return [c, 0, s, 0, 1, 0, -s, 0, c, 0, 0, 0]; };      // same sense as V3.rotY
+  const mRZ = (a, x, y) => { const c = Math.cos(a), s = Math.sin(a); return [c, s, 0, -s, c, 0, 0, 0, 1, x || 0, y || 0, 0]; };
+  const mAz = a => { const s = Math.sin(a), c = Math.cos(a); return [s, 0, -c, 0, 1, 0, c, 0, s, 0, 0, 0]; };          // sector frame: x radial, y up, z tangent
+  const mAbout = (R, p) => mmul(mT(p[0], p[1], p[2]), mmul(R, mT(-p[0], -p[1], -p[2])));
+  const mAxis = (ax, a) => { const [x, y, z] = V3.norm(ax), c = Math.cos(a), s = Math.sin(a), t = 1 - c;
+    return [t * x * x + c, t * x * y + s * z, t * x * z - s * y, t * x * y - s * z, t * y * y + c, t * y * z + s * x, t * x * z + s * y, t * y * z - s * x, t * z * z + c, 0, 0, 0]; };
+  const mBasis = (o, ex, ey, ez) => [ex[0], ex[1], ex[2], ey[0], ey[1], ey[2], ez[0], ez[1], ez[2], o[0], o[1], o[2]];
+  const mApply = (m, p) => [m[9] + m[0] * p[0] + m[3] * p[1] + m[6] * p[2], m[10] + m[1] * p[0] + m[4] * p[1] + m[7] * p[2], m[11] + m[2] * p[0] + m[5] * p[1] + m[8] * p[2]];
+  const M_ID = mT(0, 0, 0);
+
+  /* copy a prebuilt part (a Float32Array of vertices in part space) into B through a rigid transform.
+     ss scales shade, es scales emissive. This is the whole per-frame cost of the rigid parts. */
+  function emit(B, P, m, ss, es) {
+    let cnt = P.length / 12 | 0; if (B.n + cnt > B.max) { cnt = B.max - B.n; cnt -= cnt % 3; } if (cnt <= 0) return;
+    if (ss === undefined) ss = 1; if (es === undefined) es = 1;
+    const m0 = m[0], m1 = m[1], m2 = m[2], m3 = m[3], m4 = m[4], m5 = m[5], m6 = m[6], m7 = m[7], m8 = m[8], ox = m[9], oy = m[10], oz = m[11];
+    const d = B.d;
+    if (!d) { for (let k = 0, e = cnt * 12; k < e; k += 12) { const x = P[k], y = P[k + 1], z = P[k + 2], nx = P[k + 6], ny = P[k + 7], nz = P[k + 8];
+      B.v([ox + m0 * x + m3 * y + m6 * z, oy + m1 * x + m4 * y + m7 * z, oz + m2 * x + m5 * y + m8 * z], P[k + 3], P[k + 4], P[k + 5], [m0 * nx + m3 * ny + m6 * nz, m1 * nx + m4 * ny + m7 * nz, m2 * nx + m5 * ny + m8 * nz], P[k + 9] * ss, P[k + 10] * es); } return; }
+    let o = B.n * 12;
+    for (let k = 0, e = cnt * 12; k < e; k += 12, o += 12) {
+      const x = P[k], y = P[k + 1], z = P[k + 2], nx = P[k + 6], ny = P[k + 7], nz = P[k + 8];
+      d[o] = ox + m0 * x + m3 * y + m6 * z; d[o + 1] = oy + m1 * x + m4 * y + m7 * z; d[o + 2] = oz + m2 * x + m5 * y + m8 * z;
+      d[o + 3] = P[k + 3]; d[o + 4] = P[k + 4]; d[o + 5] = P[k + 5];
+      d[o + 6] = m0 * nx + m3 * ny + m6 * nz; d[o + 7] = m1 * nx + m4 * ny + m7 * nz; d[o + 8] = m2 * nx + m5 * ny + m8 * nz;
+      d[o + 9] = P[k + 9] * ss; d[o + 10] = P[k + 10] * es; d[o + 11] = 0;
+    }
+    B.n += cnt;
+  }
+
+  /* ------------------------------------------------------------------------------------------------ build helpers
+     Everything below writes into the current build batch G. part(fn) runs fn against a scratch batch and returns
+     what it wrote as a Float32Array; bake(part, m) stamps a part into G through a transform. */
+  let G = null; const POOL = [];
+  let depth = 0;
+  const part = fn => { const keep = G; if (!POOL[depth]) POOL[depth] = makeBatch(depth ? 12000 : 60000); G = POOL[depth]; G.reset(); depth++; fn(); depth--; const p = G.d.slice(0, G.n * 12); G = keep; return p; };
+  const bake = (p, m) => emit(G, p, m || M_ID, 1, 1);
+  const put = (x, y, z, u, v, l, nx, ny, nz, s, e) => { const g = G; if (g.n >= g.max) return; const d = g.d, o = g.n * 12; d[o] = x; d[o + 1] = y; d[o + 2] = z; d[o + 3] = u; d[o + 4] = v; d[o + 5] = l; d[o + 6] = nx; d[o + 7] = ny; d[o + 8] = nz; d[o + 9] = s; d[o + 10] = e || 0; d[o + 11] = 0; g.n++; };
+  const Q = (a, b, c, d, lay, sh, em, uv) => G.quad(a, b, c, d, lay, sh, em || 0, uv);
+  const T = (a, b, c, lay, sh, em) => G.tri(a, b, c, lay, sh, em || 0);
+  const seg = (a, b, r0, r1, sides, lay, sh, caps, em) => G.seg(a, b, r0, r1, sides, lay, sh, em || 0, !!caps);
+  const ball = (c, r, lay, sh, sg, rg, em) => G.ball(c, [r, 0, 0], [0, r, 0], [0, 0, r], lay, sh, em || 0, sg || 8, rg || 5);
+  const box = (c, hx, hy, hz, lay, sh, em) => G.box(c, [hx, 0, 0], [0, hy, 0], [0, 0, hz], lay, sh, em || 0);
+  const UV0 = [0, 0, 1, 1];
+  // a proud fastener: a four-sided pyramid frustum, 30 vertices; stud() is the cheap 12-vertex version
+  const stud = (p, n, r, h, lay, sh) => { const a = V3.perp(n), b = V3.cross(n, a), t = V3.mad(p, n, h);
+    for (let k = 0; k < 4; k++) { const c0 = Math.cos(k * PI / 2 + .6), s0 = Math.sin(k * PI / 2 + .6), c1 = Math.cos((k + 1) * PI / 2 + .6), s1 = Math.sin((k + 1) * PI / 2 + .6);
+      G.tri(V3.add(p, V3.add(V3.mul(a, c0 * r), V3.mul(b, s0 * r))), V3.add(p, V3.add(V3.mul(a, c1 * r), V3.mul(b, s1 * r))), t, lay, sh * (.8 + .15 * k), 0); } };
+  const bolt = (p, n, r, h, lay, sh) => G.seg(p, V3.mad(p, n, h), r, r * .86, 5, lay, sh, 0, true);
+  const pipe = (pts, r, sides, lay, sh, joints) => { for (let i = 0; i + 1 < pts.length; i++) seg(pts[i], pts[i + 1], r, r, sides, lay, sh, i === 0 || i === pts.length - 2);
+    if (joints !== false) for (let i = 1; i + 1 < pts.length; i++) ball(pts[i], r * 1.15, lay, sh * 1.05, 5, 3); };
+
+  /* surface of revolution about +Y. prof = [[r, y], ...] listed so that walking along it keeps the outside on the
+     right-hand side going up (flip:true for the other sense). Normals are smooth round the axis; along the profile
+     they are per band (hard edges) unless sm. skip(i, j) drops a cell, shf(i, j) multiplies its shade. */
+  function lathe(prof, a0, a1, n, lay, sh, o) {
+    o = o || {}; const nb = prof.length - 1, fl = o.flip ? -1 : 1, uv = o.uv || UV0, em = o.em || 0, bn = [], cum = [0], vn = []; let tot = 0;
+    for (let j = 0; j < nb; j++) { const dr = prof[j + 1][0] - prof[j][0], dy = prof[j + 1][1] - prof[j][1], l = Math.hypot(dr, dy) || 1; bn.push([dy / l * fl, -dr / l * fl]); tot += l; cum.push(tot); }
+    for (let j = 0; j <= nb; j++) { const a = bn[Math.max(0, j - 1)], b = bn[Math.min(nb - 1, j)], x = a[0] + b[0], y = a[1] + b[1], l = Math.hypot(x, y) || 1; vn.push([x / l, y / l]); }
+    for (let i = 0; i < n; i++) {
+      const aa = a0 + (a1 - a0) * i / n, ab = a0 + (a1 - a0) * (i + 1) / n; let sa = Math.sin(aa), ca = Math.cos(aa), sb = Math.sin(ab), cb = Math.cos(ab);
+      let na = sa, nca = ca, nb2 = sb, ncb = cb; if (o.facet) { const am = (aa + ab) / 2; na = nb2 = Math.sin(am); nca = ncb = Math.cos(am); }
+      const ua = uv[0] + (uv[2] - uv[0]) * i / n, ub = uv[0] + (uv[2] - uv[0]) * (i + 1) / n;
+      for (let j = 0; j < nb; j++) {
+        if (o.skip && o.skip(i, j)) continue;
+        const p = prof[j], q = prof[j + 1], n0 = o.sm ? vn[j] : bn[j], n1 = o.sm ? vn[j + 1] : bn[j], s = o.shf ? sh * o.shf(i, j) : sh;
+        const v0 = uv[1] + (uv[3] - uv[1]) * cum[j] / tot, v1 = uv[1] + (uv[3] - uv[1]) * cum[j + 1] / tot;
+        const e0 = typeof em === 'function' ? em(j) : em, e1 = typeof em === 'function' ? em(j + 1) : em;
+        put(sa * p[0], p[1], -ca * p[0], ua, v0, lay, na * n0[0], n0[1], -nca * n0[0], s, e0);
+        put(sb * p[0], p[1], -cb * p[0], ub, v0, lay, nb2 * n0[0], n0[1], -ncb * n0[0], s, e0);
+        put(sb * q[0], q[1], -cb * q[0], ub, v1, lay, nb2 * n1[0], n1[1], -ncb * n1[0], s, e1);
+        put(sa * p[0], p[1], -ca * p[0], ua, v0, lay, na * n0[0], n0[1], -nca * n0[0], s, e0);
+        put(sb * q[0], q[1], -cb * q[0], ub, v1, lay, nb2 * n1[0], n1[1], -ncb * n1[0], s, e1);
+        put(sa * q[0], q[1], -ca * q[0], ua, v1, lay, na * n1[0], n1[1], -nca * n1[0], s, e1);
+      }
+    }
+  }
+  const CYL = (a, r, y) => [Math.sin(a) * r, y, -Math.cos(a) * r];
+  /* tufted insulation blanket on a surface of revolution r = rOf(y): every cell is a low four-sided pyramid, flat
+     shaded, so the quilting holds as hard facets even where the lamp burns the cloth white. */
+  function quilt(rOf, a0, a1, y0, y1, nu, nv, amp, seed, lay, sh, skip, shf) {
+    const sl = (rOf(y1) - rOf(y0)) / (y1 - y0), il = 1 / Math.hypot(1, sl), K = .75;
+    const C = (i, j) => { const a = a0 + (a1 - a0) * i / nu, y = y0 + (y1 - y0) * j / nv; return [a, rOf(y) + amp * .3 * (h3(i, j, seed) - .5), y]; };
+    for (let j = 0; j < nv; j++) for (let i = 0; i < nu; i++) {
+      if (skip && skip(i, j)) continue;
+      const am = a0 + (a1 - a0) * (i + .5 + .3 * (h3(i, j, seed + 1) - .5)) / nu, ym = y0 + (y1 - y0) * (j + .5 + .3 * (h3(i, j, seed + 2) - .5)) / nv;
+      const c = [C(i, j), C(i + 1, j), C(i + 1, j + 1), C(i, j + 1)], ctr = [am, rOf(ym) + amp * (.75 + .6 * h3(i, j, seed + 3)), ym];
+      const s = sh * (.95 + .1 * h3(i, j, seed + 4)) * (shf ? shf(i, j) : 1), u = (i * .37) % .7, v = (j * .29) % .7;
+      // vertex: position on the wall, normal leaned away from the cell centre (ku along the wall, kv up it) so the cell shades as a pillow
+      const V = (p, ku, kv, uu, vv) => { const sa = Math.sin(p[0]), ca = Math.cos(p[0]), nx = sa * il + ca * ku + sa * sl * il * kv, ny = -sl * il + il * kv, nz = -ca * il + sa * ku - ca * sl * il * kv, l = Math.hypot(nx, ny, nz);
+        put(sa * p[1], p[2], -ca * p[1], uu, vv, lay, nx / l, ny / l, nz / l, s, 0); };
+      const KU = [-K, K, K, -K], KV = [-K, -K, K, K], UU = [u, u + .25, u + .25, u], VV = [v + .25, v + .25, v, v];
+      for (let k = 0; k < 4; k++) { const k1 = (k + 1) & 3; V(c[k], KU[k], KV[k], UU[k], VV[k]); V(c[k1], KU[k1], KV[k1], UU[k1], VV[k1]); V(ctr, 0, 0, u + .125, v + .125); }
+    }
+  }
+  /* crinkled foil over a flat panel: o corner, du and dv edges. Pinned at the border, random in the field, two flat
+     triangles a cell with very different shades: that is what makes foil read as foil. */
+  function foil(o, du, dv, nu, nv, amp, seed, lay, sh, vr) {
+    const n = V3.norm(V3.cross(du, dv)), P = (i, j) => { const e = (i === 0 || j === 0 || i === nu || j === nv) ? 0 : amp * (h3(i, j, seed) * 1.3 - .3);
+      return [o[0] + du[0] * i / nu + dv[0] * j / nv + n[0] * e, o[1] + du[1] * i / nu + dv[1] * j / nv + n[1] * e, o[2] + du[2] * i / nu + dv[2] * j / nv + n[2] * e]; };
+    for (let j = 0; j < nv; j++) for (let i = 0; i < nu; i++) { const a = P(i, j), b = P(i + 1, j), c = P(i + 1, j + 1), d = P(i, j + 1), s0 = sh * (1 - vr + 2 * vr * h3(i, j, seed + 7)), s1 = sh * (1 - vr + 2 * vr * h3(i, j, seed + 9));
+      const uv = [[.1, .1], [.2, .1], [.2, .2]];
+      if ((i + j) & 1) { G.tri(a, b, c, lay, s0, 0, uv); G.tri(a, c, d, lay, s1, 0, uv); } else { G.tri(a, b, d, lay, s0, 0, uv); G.tri(b, c, d, lay, s1, 0, uv); } }
+  }
+  // rounded rectangle outline, counter-clockwise from the right-hand side, 4 * (n + 1) points of [a, b]
+  const rrect = (cx, cy, hw, hh, rad, n) => { const P = []; for (const [sx, sy, a0] of [[1, 1, 0], [-1, 1, PI / 2], [-1, -1, PI], [1, -1, PI * 1.5]]) for (let k = 0; k <= n; k++) { const a = a0 + k / n * PI / 2; P.push([cx + sx * (hw - rad) + Math.cos(a) * rad, cy + sy * (hh - rad) + Math.sin(a) * rad]); } return P; };
+  // outlines live in a plane given by pt(a, b, depth) -> [x, y, z]
+  const UVM = [.14, .14, .23, .23], UVH = [.04, .79, .2, .95];   // a clean cell of the metal sheet, a clean patch of the hull sheet
+  const ringFace = (pt, Pi, Po, d, lay, sh, em) => { const n = Pi.length; for (let k = 0; k < n; k++) { const k1 = (k + 1) % n; Q(pt(Po[k][0], Po[k][1], d), pt(Po[k1][0], Po[k1][1], d), pt(Pi[k1][0], Pi[k1][1], d), pt(Pi[k][0], Pi[k][1], d), lay, sh, em, lay === HULL ? UVH : UVM); } };
+  const wallOf = (pt, P, d0, d1, lay, sh, em, P1) => { const n = P.length, R = P1 || P; for (let k = 0; k < n; k++) { const k1 = (k + 1) % n; Q(pt(P[k][0], P[k][1], d0), pt(P[k1][0], P[k1][1], d0), pt(R[k1][0], R[k1][1], d1), pt(R[k][0], R[k][1], d1), lay, sh * (.82 + .3 * Math.abs(Math.sin(k * 2.4))), em, lay === HULL ? UVH : UVM); } };
+  const fanOf = (pt, P, c, d, lay, sh, em, uvs) => { const n = P.length; for (let k = 0; k < n; k++) { const k1 = (k + 1) % n; G.tri(pt(c[0], c[1], d), pt(P[k][0], P[k][1], d), pt(P[k1][0], P[k1][1], d), lay, sh, em || 0, uvs ? [[.5, .5], [.5 + (P[k][0] - c[0]) * uvs, .5 - (P[k][1] - c[1]) * uvs], [.5 + (P[k1][0] - c[0]) * uvs, .5 - (P[k1][1] - c[1]) * uvs]] : undefined); } };
+  // a small stencilled plate: white enamel with dark bars where the lettering runs
+  const placard = (pt, a, b, w, h, d, rows) => { Q(pt(a - w, b + h, d), pt(a + w, b + h, d), pt(a + w, b - h, d), pt(a - w, b - h, d), WH, .78, 0);
+    for (let i = 0; i < rows; i++) { const y = b + h * (.62 - 1.24 * (i + .5) / rows), ww = w * (.82 - .25 * h3(i, rows, a * 100 | 0)); Q(pt(a - w * .84, y + h * .32 / rows, d + .002), pt(a - w * .84 + ww * 2, y + h * .32 / rows, d + .002), pt(a - w * .84 + ww * 2, y - h * .32 / rows, d + .002), pt(a - w * .84, y - h * .32 / rows, d + .002), DK, 1.1, 0); } };
+
+  /* ================================================================================================ PARTS */
+
+  /* ---------------------------------------------------------------- impact platform: the twelve-sided keel box */
+  const PV = []; for (let k = 0; k < 6; k++) { const a = k * 60 * RAD, r = UR(a), t = UT(a); PV.push([RB * r[0] - WB * t[0], RB * r[2] - WB * t[2], a - Math.atan2(WB, RB)], [RB * r[0] + WB * t[0], RB * r[2] + WB * t[2], a + Math.atan2(WB, RB)]); }
+
+  // one leg face, sector frame (x out, y up, z along the face)
+  const FACE_LEG = part(() => {
+    const x = RF;
+    Q([x, DECK, WF], [x, DECK, -WF], [x, KEEL, -WF], [x, KEEL, WF], DK, 1.0);                       // structure behind the blankets
+    box([x + .014, DECK - .032, 0], .014, .032, WF, ME, 1.5); box([x + .014, KEEL + .03, 0], .014, .03, WF, ME, 1.15);   // deck and keel rails
+    box([x + .022, .63, 0], .022, .27, .075, ME, 1.35);                                             // the spoke end: the leg loads go in here
+    for (const s of [-1, 1]) {
+      foil([x + .006, KEEL + .06, s > 0 ? .075 : -(WF - .056)], [0, 0, WF - .131], [0, DECK - KEEL - .124, 0], 4, 4, .032, 40 + s, ME, .78, .45);
+      box([x + .052, HIPY + .012, s * .25], .056, .07, .016, ME, 1.5); seg([HIPR, HIPY, s * .25 - .028], [HIPR, HIPY, s * .25 + .028], .064, .064, 6, ME, 1.1, false);   // hinge lug for the torque tube
+      box([UX - .035, UY - .012, s * .105], .075, .042, .013, ME, 1.55);                            // brace bracket ear on the deck edge
+      stud([x + .028, DECK - .03, s * .3], [1, 0, 0], .015, .012, ME, 1.7); stud([x + .044, .50 + (s > 0 ? .2 : 0), s * .04], [1, 0, 0], .014, .012, ME, 1.7);
+    }
+    seg([UX, UY, -.13], [UX, UY, .13], .017, .017, 4, ME, 1.2, false);
+    box([x + .03, DECK + .012, 0], .06, .012, .14, ME, 1.25);
+  });
+  // an open corner bay with a nitrogen sphere in it
+  const BAY_TANK = part(() => {
+    const x = RB, xb = 1.13, wi = .33, xc = 1.385, yc = .635, r = .25;
+    Q([xb, DECK, wi], [xb, DECK, -wi], [xb, KEEL, -wi], [xb, KEEL, wi], DK, 1.25);
+    for (const s of [-1, 1]) { Q([x, DECK, s * WB], [xb, DECK, s * wi], [xb, KEEL, s * wi], [x, KEEL, s * WB], DK, s > 0 ? 1.9 : 1.5);
+      box([x + .008, .63, s * (WB - .022)], .012, .33, .022, ME, 1.4);
+      for (let i = 0; i < 2; i++) stud([x + .02, .45 + i * .36, s * (WB - .022)], [1, 0, 0], .013, .01, ME, 1.7); }
+    Q([x, KEEL + .001, -WB], [x, KEEL + .001, WB], [xb, KEEL + .001, wi], [xb, KEEL + .001, -wi], DK, 1.6);
+    Q([x, DECK - .001, WB], [x, DECK - .001, -WB], [xb, DECK - .001, -wi], [xb, DECK - .001, wi], DK, 1.1);
+    box([x + .008, DECK - .025, 0], .012, .025, WB, ME, 1.5); box([x + .008, KEEL + .025, 0], .012, .025, WB, ME, 1.2);
+    // the sphere: two welded hemispheres, a girth band, bosses, saddle straps
+    bake(part(() => { const pr = []; for (let i = 0; i <= 6; i++) pr.push([Math.sin(i / 6 * PI) * r, -Math.cos(i / 6 * PI) * r]); lathe(pr, -15 * RAD, 195 * RAD, 7, WH, .62, { sm: true }); }), mT(xc, yc, 0));
+    seg([xc, yc - .013, 0], [xc, yc + .013, 0], r + .006, r + .006, 10, ME, 1.0, false);
+    seg([xc, yc + r - .02, 0], [xc, yc + r + .035, 0], .05, .04, 6, ME, 1.4, false); seg([xc, yc - r + .02, 0], [xc, yc - r - .03, 0], .045, .035, 6, ME, 1.1, false);
+    for (const s of [-1, 1]) for (let i = 0; i < 4; i++) { const a0 = (-70 + i * 42) * RAD, a1 = (-70 + (i + 1) * 42) * RAD, rr = (Math.sqrt(r * r - .12 * .12) + .008) / Math.cos(21 * RAD);   // straps
+      Q([xc + Math.cos(a0) * rr, yc + Math.sin(a0) * rr, s * .12 - .017], [xc + Math.cos(a0) * rr, yc + Math.sin(a0) * rr, s * .12 + .017], [xc + Math.cos(a1) * rr, yc + Math.sin(a1) * rr, s * .12 + .017], [xc + Math.cos(a1) * rr, yc + Math.sin(a1) * rr, s * .12 - .017], DK, 2.0); }
+    // feed line up into the deck, a valve block and its drain
+    pipe([[xc, yc + r + .03, 0], [xc, DECK - .05, 0], [xb + .03, DECK - .04, .22]], .014, 4, ME, 1.6, false);
+    box([xb + .05, .80, .22], .04, .05, .05, ME, 1.2); seg([xb + .05, .75, .22], [xb + .05, KEEL, .24], .011, .011, 4, ME, 1.4, false);
+    // X brace across the mouth of the bay
+    seg([x + .012, KEEL + .05, -WB + .04], [x + .012, DECK - .05, WB - .04], .014, .014, 4, ME, 1.65, false);
+    seg([x + .03, KEEL + .05, WB - .04], [x + .03, DECK - .05, -WB + .04], .014, .014, 4, ME, 1.5, false);
+    box([x + .022, .63, 0], .022, .03, .03, ME, 1.2);
+  });
+  // the closed bays: under the porch (front) and the service panel (rear)
+  const bayPanel = () => { const x = RB;
+    Q([x, DECK, WB], [x, DECK, -WB], [x, KEEL, -WB], [x, KEEL, WB], HULL, .95, 0, [.02, .72, .24, .96]);
+    box([x + .008, DECK - .025, 0], .012, .025, WB, ME, 1.5); box([x + .008, KEEL + .025, 0], .012, .025, WB, ME, 1.2);
+    for (const s of [-1, 1]) { box([x + .008, .63, s * (WB - .022)], .012, .33, .022, ME, 1.4); for (let i = 0; i < 2; i++) stud([x + .02, .45 + i * .36, s * (WB - .022)], [1, 0, 0], .013, .01, ME, 1.7); } };
+  const BAY_PORCH = part(() => { const x = RB; bayPanel();
+    box([x + .01, .60, -.05], .01, .17, .2, ME, 1.2); box([x + .022, .60, -.05], .004, .14, .17, WH, .72);       // access door
+    for (const [a, b] of [[-.22, .74], [.12, .74], [-.22, .46], [.12, .46]]) stud([x + .026, b, a], [1, 0, 0], .013, .01, ME, 1.7);
+    box([x + .03, .60, .09], .012, .02, .035, DK, 1.6);                                                              // its latch
+    placard((a, b, d) => [x + .003 + d, b, a], .25, .78, .07, .045, 0, 3);
+  });
+  const BAY_SERV = part(() => { const x = RB; bayPanel();
+    box([x + .07, .68, -.12], .07, .17, .15, ME, 1.0);                                                               // battery: a finned can
+    for (let i = 0; i < 5; i++) box([x + .15, .68, -.12 + (i - 2) * .06], .02, .16, .007, ME, i & 1 ? 1.6 : 1.25);
+    box([x + .012, .62, .2], .012, .2, .11, ME, 1.45);                                                               // ground-service connector plate
+    for (let i = 0; i < 3; i++) { const y = .76 - i * .14; seg([x + .02, y, .2], [x + .075, y, .2], .04, .036, 6, ME, 1.1, true); seg([x + .075, y, .2], [x + .09, y, .2], .028, .028, 5, DK, 1.4, false); }
+    placard((a, b, d) => [x + .003 + d, b, a], .2, .42, .08, .03, 0, 2);
+  });
+
+  /* ---------------------------------------------------------------- windows: a bolted frame standing proud of the blankets */
+  const WINDOW = part(() => {      // canonical: x out of the hull, y up the wall, z along it
+    const pt = (a, b, d) => [d, b, a], Po = rrect(0, 0, .29, .32, .10, 2), Pm = rrect(0, 0, .255, .285, .08, 2), Pi = rrect(0, 0, .18, .225, .06, 2), Pg = rrect(0, 0, .18, .225, .06, 2);
+    wallOf(pt, Po, -.03, .058, ME, 1.25, 0, Pm);          // chamfered skirt
+    ringFace(pt, Pi, Pm, .058, ME, 1.6);                 // the frame face
+    wallOf(pt, Pi, .058, .012, DK, 1.6);                 // reveal down to the glass
+    fanOf(pt, Pg, [0, 0], .012, VI, 1.6, 0, 1.6);        // outer pane
+    for (let k = 0; k < 12; k++) { const a = k / 12 * TAU + .26, c = Math.cos(a), s = Math.sin(a), m = 1 / Math.max(Math.abs(c) / .218, Math.abs(s) / .255); stud([.058, s * m, c * m], [1, 0, 0], .015, .013, ME, 1.2); }
+    box([.075, .345, 0], .05, .007, .27, ME, 1.4);       // glare shield over the pane
+  });
+
+  /* ---------------------------------------------------------------- cold-gas thruster quad on its outrigger (sector frame) */
+  const QC = [1.60, 2.55, 0], QN = [[0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+  const RCSQ = part(() => {
+    seg([bellR(Y_SH) + .02, Y_SH + .01, 0], [QC[0] - .05, QC[1], 0], .032, .028, 6, ME, 1.4, false);
+    for (const s of [-1, 1]) seg([bellR(2.59) - .01, 2.59, s * .17], [QC[0] - .05, QC[1] + .01, s * .03], .014, .014, 4, ME, 1.55, false);
+    box(QC, .062, .062, .062, ME, 1.0); box([QC[0] + .066, QC[1], 0], .006, .045, .045, DK, 1.8);
+    for (const d of QN) { seg(V3.mad(QC, d, .06), V3.mad(QC, d, .178), .022, .054, 7, ME, 1.3, false); seg(V3.mad(QC, d, .07), V3.mad(QC, d, .174), .016, .047, 7, DK, 1.0, false); }
+    pipe([[bellR(2.5) + .02, 2.50, .05], [QC[0] - .2, QC[1] - .02, .05], [QC[0] - .07, QC[1] + .02, .05]], .010, 4, ME, 1.7, false);
+    box([bellR(Y_SH) + .035, Y_SH + .02, 0], .03, .05, .07, ME, 1.2);
+  });
+
+  /* ---------------------------------------------------------------- the legs (each part in its own joint frame) */
+  // A-frame: origin on the hinge line, +X out along the leg, +Y its top side, Z the hinge axis
+  const AFRAME = part(() => {
+    seg([0, 0, -.49], [0, 0, .49], .040, .040, 6, ME, 1.45, true);                                  // torque tube
+    box([.045, 0, 0], .075, .062, .085, ME, 1.25);                                                  // root forging
+    seg([.10, 0, 0], [LLEG - .09, 0, 0], .066, .05, 8, SU, 1.3, false);                             // main beam in its thermal wrap
+    seg([.16, 0, 0], [.21, 0, 0], .074, .072, 8, ME, 1.2, false);
+    for (const s of [-1, 1]) seg([.0, 0, s * .44], [LCOL - .04, -.012, s * .06], .027, .024, 5, WH, .82, false);     // stays
+    seg([.40, -.006, -.235], [.40, -.006, .235], .016, .016, 4, WH, .7, false);                     // tie between the stays
+    seg([LCOL - .055, 0, 0], [LCOL + .055, 0, 0], .088, .088, 8, ME, 1.05, false); seg([LCOL - .055, 0, 0], [LCOL - .075, 0, 0], .088, .06, 8, ME, .8, false); seg([LCOL + .055, 0, 0], [LCOL + .075, 0, 0], .088, .056, 8, ME, 1.4, false);   // collar
+    box([LCOL, LUG - .025, 0], .035, .06, .022, ME, 1.5);                                           // lug the brace pins to
+    seg([LLEG - .10, 0, 0], [LLEG - .02, 0, 0], .056, .074, 8, ME, 1.15, false);                    // socket housing
+  });
+  // footpad: origin at the ball centre, +Y its axis, sole at y = -PADH
+  const PAD = part(() => {
+    const R = PADR, NS = 13;
+    lathe([[R + .008, -.052], [R - .005, -.035], [.30, -.092], [.115, -.078], [.085, .03], [0, .05]], 0, TAU, NS, ME, 1.18, { flip: true, shf: (i, j) => j === 0 ? 1.4 : j === 2 ? .8 + .1 * (i & 1) : 1, uv: [0, .03, 4, .09] });   // the dish, seen from above
+    lathe([[.34, -PADH], [R - .01, -.105], [R + .008, -.052]], 0, TAU, NS, ME, .95, { uv: [0, .03, 4, .09] });        // rolled edge of the crush sole
+    for (let i = 0; i < NS; i++) { const a0 = i / NS * TAU, a1 = (i + 1) / NS * TAU; G.tri([0, -PADH, 0], CYL(a1, .34, -PADH), CYL(a0, .34, -PADH), ME, .62, 0, [[.5, .5], [.5 + Math.sin(a1) * 1.7, .5 + Math.cos(a1) * 1.7], [.5 + Math.sin(a0) * 1.7, .5 + Math.cos(a0) * 1.7]]); }
+    for (let k = 0; k < 6; k++) { const a = k / 6 * TAU, c = Math.sin(a), s = -Math.cos(a), t = [-s * .008, 0, c * .008];   // gussets from hub to dish
+      const p0 = [c * .08, .02, s * .08], p1 = [c * .08, -.07, s * .08], p2 = [c * .29, -.088, s * .29], p3 = [c * .18, -.045, s * .18];
+      Q(V3.add(p0, t), V3.add(p3, t), V3.add(p2, t), V3.add(p1, t), ME, 1.55, 0, [.14, .14, .23, .23]); Q(V3.sub(p0, t), V3.sub(p1, t), V3.sub(p2, t), V3.sub(p3, t), ME, 1.0, 0, [.14, .14, .23, .23]); Q(V3.sub(p0, t), V3.sub(p2, t), V3.add(p2, t), V3.add(p0, t), ME, 1.7, 0, [.14, .14, .23, .23]); }
+  });
+  // stroke cartridge: origin at the deck bracket pin, +X toward the knee
+  const CART = part(() => {
+    box([.022, 0, 0], .032, .03, .058, ME, 1.4);
+    seg([.05, 0, 0], [.075, 0, 0], .05, .082, 8, ME, 1.2, false);
+    seg([.075, 0, 0], [.385, 0, 0], .082, .082, 10, DK, 2.6, false);                                // the can
+    seg([.20, 0, 0], [.226, 0, 0], .089, .089, 10, ME, 1.25, false);                                // band clamp
+    seg([.385, 0, 0], [.405, 0, 0], .092, .092, 10, ME, 1.55, true); seg([.405, 0, 0], [.435, 0, 0], .062, .055, 8, ME, 1.1, false);   // gland nut
+    box([.21, .086, 0], .06, .006, .03, WH, .8);                                                    // data plate
+  });
+  // piston rod: origin at the knee pin, +X back toward the cartridge
+  const ROD = part(() => {
+    seg([.03, 0, 0], [.335, 0, 0], .036, .036, 7, WH, .95, false);
+    for (let i = 0; i < 2; i++) seg([.10 + i * .10, 0, 0], [.118 + i * .10, 0, 0], .0372, .0372, 7, DK, 1.3, false);   // witness bands: count what is left showing
+    seg([-.005, 0, 0], [.04, 0, 0], .05, .042, 6, ME, 1.2, true);
+  });
+  // lock link: origin at the knee pin, +X toward the collar lug
+  const LINKP = part(() => {
+    seg([0, 0, -.075], [0, 0, .075], .02, .02, 4, ME, 1.2, true);
+    for (const s of [-1, 1]) { seg([0, 0, s * .055], [LINK, 0, s * .048], .019, .019, 5, WH, .85, false); box([LINK - .02, 0, s * .048], .04, .026, .007, ME, 1.5); }
+    seg([.06, 0, 0], [.17, 0, 0], .05, .05, 7, ME, 1.0, false); seg([.17, 0, 0], [.19, 0, 0], .05, .03, 7, ME, 1.3, false);     // downlock sleeve
+    seg([.10, 0, 0], [.125, 0, 0], .056, .056, 7, DK, 2.0, false);
+    seg([LINK, 0, -.07], [LINK, 0, .07], .015, .015, 4, ME, 1.1, false);
+  });
+
+  /* ---------------------------------------------------------------- small shared pieces */
+  // a lathed shape about an arbitrary axis: run lathe() in a scratch part, stamp it through m (+Y of the lathe -> m's Y column)
+  const latheAt = (m, prof, n, lay, sh, o) => bake(part(() => lathe(prof, 0, TAU, n, lay, sh, o)), m);
+  const M_FWD = mRX(-PI / 2), M_AFT = mRX(PI / 2);         // lathe axis onto -Z (out of the hatch face) / onto +Z
+  const ptF = (a, b, d) => [a, b, ZF - d];                   // a point on the hatch-bay face, d metres proud of it
+  const HWIN = [HX, 1.63];                                   // porthole in the hatch
+
+  /* ---------------------------------------------------------------- hatch door (cabin frame, closed) */
+  const HINGE = [-.445, 0, ZF - .062];
+  const DOOR = part(() => {
+    const Po = rrect(HX, HY, HHW - .012, HHH - .012, HRAD - .01, 2), Pi = rrect(HX, HY, HHW - .075, HHH - .075, HRAD - .06, 2);
+    // outside: a dished skin inside a stiff rim
+    fanOf(ptF, Pi, [HX, HY], .03, HULL, 1.0, 0); ringFace(ptF, Pi, Po, .046, HULL, 1.13);
+    wallOf(ptF, Pi, .046, .03, ME, 1.0); wallOf(ptF, Po, .046, -.04, ME, 1.25);
+    latheAt(mmul(mT(HWIN[0], HWIN[1], ZF - .03), M_FWD), [[.158, 0], [.146, .022], [.10, .022], [.10, .006]], 12, ME, 1.55);
+    latheAt(mmul(mT(HWIN[0], HWIN[1], ZF - .03), M_FWD), [[.10, .006], [0, .006]], 12, VI, 1.5);
+    for (let k = 0; k < 10; k++) { const a = k / 10 * TAU; stud([HWIN[0] + Math.cos(a) * .124, HWIN[1] + Math.sin(a) * .124, ZF - .052], [0, 0, -1], .012, .01, ME, 1.2); }
+    // rotary latch handle and its stencil
+    latheAt(mmul(mT(HX, 1.25, ZF - .03), M_FWD), [[.075, 0], [.066, .02], [0, .02]], 8, ME, 1.25);
+    seg([HX - .10, 1.25, ZF - .095], [HX + .10, 1.25, ZF - .095], .014, .014, 6, DK, 2.4, true); seg([HX, 1.25, ZF - .07], [HX, 1.25, ZF - .095], .016, .016, 5, ME, 1.2, false);
+    placard(ptF, HX, 1.385, .10, .022, .032, 1);
+    for (const sx of [-1, 1]) { const ax = HX + sx * .15; T(ptF(ax, 1.25 + .035, .0315), ptF(ax + sx * .05, 1.25, .0315), ptF(ax, 1.25 - .035, .0315), DK, 1.4); }
+    // hinge arms
+    for (const y of [1.2, 1.69]) { box([-.385, y, ZF - .062], .075, .028, .012, ME, 1.4); seg([HINGE[0], y - .055, HINGE[2]], [HINGE[0], y + .055, HINGE[2]], .023, .023, 6, ME, 1.15, true); }
+    // inside: seal, gearbox, six latch rods and their rollers
+    const zi = ZF + .04, Ps = rrect(HX, HY, HHW - .05, HHH - .05, HRAD - .04, 2);
+    fanOf((a, b, d) => [a, b, zi + d], Ps, [HX, HY], 0, SU, .85, 0); ringFace((a, b, d) => [a, b, zi + d], Po, Ps, 0, DK, 2.3);
+    box([HX, 1.27, zi + .028], .085, .06, .028, ME, 1.3); seg([HX - .13, 1.27, zi + .07], [HX + .13, 1.27, zi + .07], .013, .013, 5, WH, .9, true);
+    for (const [a, b] of [[-.27, 1.14], [.27, 1.14], [-.27, 1.74], [.27, 1.74]]) { seg([HX, 1.27, zi + .02], [HX + a, b, zi + .02], .009, .009, 3, ME, 1.6, false); box([HX + a, b, zi + .02], .028, .028, .02, ME, 1.15); }
+    latheAt(mmul(mT(HWIN[0], HWIN[1], zi), M_AFT), [[.15, 0], [.14, .016], [.10, .016]], 12, ME, 1.4);
+    latheAt(mmul(mT(HWIN[0], HWIN[1], zi), M_AFT), [[.10, .004], [0, .004]], 12, VI, 1.2);
+  });
+
+  /* ---------------------------------------------------------------- egress ladder: hung from the porch lip, built hanging straight down */
+  const LAD_H = [0, .925, -2.10], LAD_L = 1.06;
+  const LADDER = part(() => {
+    for (const s of [-1, 1]) { seg([s * .27, LAD_H[1], LAD_H[2]], [s * .27, LAD_H[1] - LAD_L, LAD_H[2]], .021, .021, 5, WH, .85, false);
+      box([s * .27, LAD_H[1] - LAD_L - .012, LAD_H[2] - .03], .05, .012, .07, ME, 1.2); }
+    for (let i = 0; i < 4; i++) { const y = LAD_H[1] - .16 - i * .255; box([0, y, LAD_H[2]], .27, .011, .032, ME, i & 1 ? 1.55 : 1.35); }
+    seg([-.31, LAD_H[1], LAD_H[2]], [.31, LAD_H[1], LAD_H[2]], .016, .016, 4, ME, 1.1, false);
+  });
+
+  /* ---------------------------------------------------------------- dish mast, whip, loose blanket (each turns about its root when she is damaged) */
+  const MAST_O = CYL(165 * RAD, bellR(2.66), 2.66), WHIP_O = CYL(205 * RAD, .84, 2.895), FLAP_A = 165 * RAD;
+  const MAST = part(() => {
+    const o = MAST_O, top = [o[0] + .05, 3.74, o[2] + .16], n = V3.norm([.12, .74, .66]);
+    box([o[0], o[1] + .02, o[2]], .07, .05, .07, ME, 1.2);
+    seg(o, top, .03, .022, 6, WH, .85, true); seg([o[0] - .02, o[1] + .05, o[2] + .16], V3.lerp(o, top, .45), .014, .014, 4, ME, 1.6, true);
+    
+    const ex = V3.perp(n), ez = V3.cross(ex, n), dc = V3.mad(top, n, .05), m = mBasis(dc, ex, n, ez);
+    bake(part(() => { lathe([[0, 0], [.10, .014], [.19, .052], [.27, .105]], 0, TAU, 10, WH, .9, { sm: true });
+      lathe([[.27, .105], [.16, .025], [0, -.012]], 0, TAU, 10, ME, 1.0, { sm: true, flip: true });
+      for (let k = 0; k < 3; k++) { const a = k / 3 * TAU + .4; seg(CYL(a, .255, .10), [0, .30, 0], .007, .007, 3, ME, 1.7, false); }
+      seg([0, .25, 0], [0, .33, 0], .034, .022, 6, ME, 1.2, true); }), m);
+  });
+  const WHIP = part(() => { const o = WHIP_O; box([o[0], o[1] + .03, o[2]], .04, .04, .04, ME, 1.2); seg([o[0], o[1] + .06, o[2]], [o[0], o[1] + .16, o[2]], .02, .016, 5, DK, 2.2, false);
+    seg([o[0], o[1] + .16, o[2]], [o[0] + .02, 4.24, o[2] + .05], .011, .004, 4, ME, 1.7, true); });
+  const QUILT_SH = [1, 1.07, .93, 1.04, .97, 1.08, .94, 1.02, 1.06, .95, 1.03, .98], QAMP = .02;
+  const FLAP = part(() => quilt(bellR, 135 * RAD, 165 * RAD, Y_Q0, Y_Q1, 4, 5, QAMP, 11, SU, 1.2, null, () => QUILT_SH[4]));
+
+  /* ---------------------------------------------------------------- retro motor: what glows when she burns */
+  const NZ = [[.16, .185], [.105, .14], [.10, .10], [.17, 0], [.25, -.10], [.32, -.185], [.37, -.245], [.40, -.27]];
+  const GLOW = part(() => {
+    const em = [1, 1, .9, .62, .45, .34, .27, .22];
+    lathe(NZ.map(p => [p[0] - .012, p[1] - .004]), 0, TAU, 12, WH, .17, { sm: true, em: j => em[j] });     // white layer, so the lining can burn white hot
+    lathe([[.095, .115], [0, .115]], 0, TAU, 12, WH, .12, { em: 1.3 });                            // the throat itself
+  });
+
+  /* ================================================================================================ THE CABIN AND PLATFORM (one rigid part) */
+  const JETS = [];
+  const MKS = {}; let mkn = 0, mkl = ''; const MK = n => { if (mkl) MKS[mkl] = G.n - mkn; mkl = n; mkn = G.n; };
+  const BODY = part(() => {
+    MK('platform');
+    /* --- platform --- */
+    for (let k = 0; k < 6; k++) { bake(FACE_LEG, mAz(LEGA[k])); bake(k === 0 ? BAY_PORCH : k === 3 ? BAY_SERV : BAY_TANK, mAz(k * 60 * RAD)); }
+    for (let e = 0; e < 12; e++) {
+      const a = PV[e], b = PV[(e + 1) % 12], t = V3.norm([b[0] - a[0], 0, b[1] - a[1]]), l = Math.hypot(b[0] - a[0], b[1] - a[1]), nr = [t[2], 0, -t[0]], mx = (a[0] + b[0]) / 2, mz = (a[1] + b[1]) / 2;
+      Q(CYL(a[2], 1.5, DECK), CYL(b[2], 1.5, DECK), [b[0], DECK, b[1]], [a[0], DECK, a[1]], ME, 1.05 + .12 * (e & 1), 0, [.15, .15, .23, .23]);        // deck
+      G.box([mx - nr[0] * .014, DECK + .017, mz - nr[2] * .014], V3.mul(t, l / 2), [0, .017, 0], V3.mul(nr, .012), ME, 1.65);                           // deck edge lip
+      Q([a[0], KEEL, a[1]], [b[0], KEEL, b[1]], CYL(b[2], .60, KEEL), CYL(a[2], .60, KEEL), DK, 1.5);                                                   // keel plate
+    }
+    for (let k = 0; k < 6; k++) { const a = LEGA[k]; G.box(CYL(a, 1.13, KEEL - .045), V3.mul(UR(a), .49), [0, .045, 0], V3.mul(UT(a), .05), ME, 1.15); }          // keel spokes
+    lathe([[RBT + .035, KEEL - .06], [RBT + .035, KEEL]], 0, TAU, 24, ME, 1.55, { uv: [0, .03, 12, .09] });                                          // honeycomb retaining ring
+    for (let k = 0; k < 12; k++) stud(CYL((k + .5) / 12 * TAU, RBT + .035, KEEL - .03), UR((k + .5) / 12 * TAU), .014, .01, ME, 1.8);
+
+    MK('bell: flange,');
+    /* --- bell: flange, bare rings, blankets, shoulder, collar --- */
+    const dog = i => i < 2 || i > 45, win = (i, j) => j >= 1 && j <= 3 && (i === 7 || i === 8 || i === 15 || i === 16 || i === 31 || i === 32 || i === 39 || i === 40);
+    lathe([[1.635, DECK], [1.635, DECK + .055], [bellR(DECK + .06), DECK + .06]], 0, TAU, 36, ME, 1.5, { uv: [0, .03, 12, .09] });
+    for (let k = 0; k < 24; k++) stud(CYL((k + .5) / 24 * TAU, 1.612, DECK + .05), [0, 1, 0], .016, .013, ME, 1.9);
+    const hsh = (i, j) => .94 + .12 * h3(i, j, 3);
+    const dog2 = i => i < 1 || i > 22;
+    lathe([[bellR(DECK + .06), DECK + .06], [bellR(Y_Q0), Y_Q0]], 0, TAU, 24, HULL, 1.0, { uv: [0, .76, 12, .96], skip: dog2, shf: hsh });
+    lathe([[bellR(Y_Q1), Y_Q1], [bellR(Y_SH - .035), Y_SH - .035]], 0, TAU, 24, HULL, 1.05, { uv: [0, .76, 12, .98], skip: dog2, shf: hsh });
+    for (let k = 3; k < 46; k += 4) { const a = (k + .5) * 7.5 * RAD; stud(CYL(a, bellR(1.12), 1.12), UR(a), .013, .01, ME, 1.5); }
+    quilt(bellR, 0, TAU, Y_Q0, Y_Q1, 48, 5, QAMP, 11, SU, 1.2, (i, j) => dog(i) || win(i, j) || (i >= 18 && i <= 21), i => QUILT_SH[(i >> 2) % 12]);
+    // blanket bindings: top and bottom hems and the taped seams between panels
+    for (const y of [Y_Q0, Y_Q1]) lathe([[bellR(y) + .02, y - .022], [bellR(y) + .02, y + .022]], 0, TAU, 24, SU, .6, { skip: i => i < 1 || i > 22 });
+    for (let k = 1; k < 12; k++) { const a = k * 30 * RAD, w = .9 * RAD, o = QAMP * 1.45; Q(CYL(a - w, bellR(Y_Q1) + o, Y_Q1), CYL(a + w, bellR(Y_Q1) + o, Y_Q1), CYL(a + w, bellR(Y_Q0) + o, Y_Q0), CYL(a - w, bellR(Y_Q0) + o, Y_Q0), SU, .6);
+      for (let i = 0; i < 3; i++) { const y = Y_Q0 + .14 + i * .33; stud(CYL(a, bellR(y) + o, y), UR(a), .013, .009, ME, 1.7); } }
+    // the bare pressure wall under the loose blanket: skin, two frames, three stringers
+    lathe([[bellR(Y_Q0), Y_Q0], [bellR(Y_Q1), Y_Q1]], 135 * RAD, 165 * RAD, 4, HULL, .8, { uv: [.02, .76, .98, .98] });
+    for (const y of [1.52, 1.86]) lathe([[bellR(y), y - .016], [bellR(y) + .018, y - .016], [bellR(y) + .018, y + .016], [bellR(y), y + .016]], 135 * RAD, 165 * RAD, 4, ME, 1.3);
+    for (const d of [142.5, 157.5]) G.box(CYL(d * RAD, bellR(1.69) + .006, 1.69), V3.mul(V3.norm([UR(d * RAD)[0], .18, UR(d * RAD)[2]]), .012), V3.mul(V3.norm([-UR(d * RAD)[0] * .178, 1, -UR(d * RAD)[2] * .178]), .46), V3.mul(UT(d * RAD), .012), ME, 1.1);
+    // ring frame between barrel and shoulder
+    lathe([[R_B1 + .004, Y_SH - .035], [R_B1 + .045, Y_SH - .035], [R_B1 + .045, Y_SH + .015], [R_B1 + .005, Y_SH + .035]], 0, TAU, 36, ME, 1.5, { uv: [0, .03, 12, .09], skip: (i, j) => j === 0 && false });
+    // shoulder: corrugated shingles in twelve gores, battens between them
+    const corr = (r0, y0, r1, y1, a0, a1, n, dep, lay, sh) => { for (let i = 0; i < 2 * n; i++) { const aa = a0 + (a1 - a0) * i / (2 * n), ab = a0 + (a1 - a0) * (i + 1) / (2 * n), da = (i & 1) ? dep : 0, db = (i & 1) ? 0 : dep;
+      Q(CYL(aa, r1 - da * r1 / r0, y1), CYL(ab, r1 - db * r1 / r0, y1), CYL(ab, r0 - db, y0), CYL(aa, r0 - da, y0), lay, sh * ((i & 1) ? .72 : 1.12), 0, [.14, .14, .23, .23]); } };
+    const sn = a => V3.norm([UR(a)[0] * .68, .73, UR(a)[2] * .68]);
+    for (let k = 0; k < 12; k++) { const a0 = (k * 30 + 1.4) * RAD, a1 = (k * 30 + 28.6) * RAD, ab = k * 30 * RAD, w = 1.4 * RAD;
+      corr(R_B1 + .005, Y_SH + .035, R_COL, Y_COL + .01, a0, a1, 5, .03, ME, .82);
+      Q(CYL(ab - w, R_COL + .012, Y_COL + .017), CYL(ab + w, R_COL + .012, Y_COL + .017), CYL(ab + w, R_B1 + .017, Y_SH + .043), CYL(ab - w, R_B1 + .017, Y_SH + .043), ME, 1.45, 0, [.14, .14, .23, .23]);
+      for (let i = 0; i < 2; i++) { const f = .25 + i * .45; stud(CYL(ab, lerp(R_B1 + .017, R_COL + .012, f), lerp(Y_SH + .043, Y_COL + .017, f)), sn(ab), .014, .011, ME, 1.8); } }
+    // docking collar and the latch ring that held her to the ship
+    lathe([[.815, Y_COL], [.815, Y_COL + .04], [.70, Y_COL + .04], [.70, Y_RING]], 0, TAU, 20, ME, 1.3, { uv: [0, .03, 5, .09] });
+    lathe([[.70, Y_RING], [.80, Y_RING], [.80, 3.215], [.775, 3.236], [.60, 3.236], [.60, 3.10]], 0, TAU, 20, ME, 1.6, { uv: [0, .03, 5, .09], shf: (i, j) => j === 4 ? .45 : j === 3 ? 1.05 : 1 });
+    lathe([[.60, 3.10], [.36, 3.135], [0, 3.156]], 0, TAU, 12, ME, .7, { sm: true });
+    seg([-.3, 3.165, 0], [.3, 3.165, 0], .016, .016, 4, ME, 1.5, false); seg([0, 3.165, -.3], [0, 3.165, .3], .016, .016, 4, ME, 1.5, false); seg([0, 3.15, 0], [0, 3.20, 0], .05, .04, 6, ME, 1.2, true);
+    for (let k = 0; k < 12; k++) stud(CYL((k + .5) / 12 * TAU, .69, 3.236), [0, 1, 0], .018, .016, ME, 1.25);
+    for (let k = 0; k < 6; k++) { const a = k * 60 * RAD, r = UR(a), t = UT(a);                       // capture latches, hooks thrown open
+      G.box(CYL(a, .735, 3.262), V3.mul(r, .055), [0, .026, 0], V3.mul(t, .04), ME, 1.25); G.box(CYL(a, .80, 3.30), V3.mul(V3.norm([r[0], .5, r[2]]), .014), V3.mul(V3.norm([-r[0] * .5, 1, -r[2] * .5]), .05), V3.mul(t, .022), ME, 1.6); }
+    for (const d of [90, 210, 330]) seg(CYL(d * RAD, .65, 3.236), CYL(d * RAD, .65, 3.34), .024, .008, 5, ME, 1.5, false);          // guide pins
+    for (const d of [30, 90, 210, 270, 330]) { const a = d * RAD; G.box(CYL(a, .708, 3.05), V3.mul(UR(a), .008), [0, .09, 0], V3.mul(UT(a), .02), ME, 1.05); }   // collar stiffeners
+    // umbilical plate on the collar: two connectors and what is left of the lines to the ship
+    bake(part(() => { box([.715, 3.045, 0], .016, .075, .15, ME, 1.5);
+      for (const s of [-1, 1]) seg([.73, 3.06, s * .075], [.80, 3.06, s * .075], .04, .036, 6, ME, 1.1, true);
+      pipe([[.80, 3.06, .075], [.87, 3.03, .08], [.93, 2.92, .10], [1.04, 2.80, .13], [1.10, 2.775, .15]], .018, 5, DK, 2.3, false);
+      for (let k = 0; k < 3; k++) seg([1.10, 2.775, .15], [1.15 + .02 * k, 2.76 + .03 * (k - 1), .15 + .04 * (k - 1)], .005, .003, 3, ME, 1.8, false);
+      pipe([[.80, 3.06, -.075], [.86, 3.04, -.08], [.90, 2.97, -.085]], .018, 5, DK, 2.0, false);
+      for (let k = 0; k < 3; k++) seg([.90, 2.97, -.085], [.93 + .015 * k, 2.94 - .01 * k, -.085 + .03 * (k - 1)], .005, .003, 3, ME, 1.8, false); }), mAz(150 * RAD));
+
+    MK('hatch bay: a f');
+    /* --- hatch bay: a flat-faced fairing over the hatch, carrying the emblem --- */
+    const DW = .46, DY1 = 2.58, zh = y => -Math.sqrt(Math.max(.04, bellR(y) * bellR(y) - DW * DW)) + .04;
+    const rectF = (x0, x1, y0, y1, sh, uv) => Q([x0, y1, ZF], [x1, y1, ZF], [x1, y0, ZF], [x0, y0, ZF], HULL, sh, 0, uv);
+    const Ph = rrect(HX, HY, HHW, HHH, HRAD, 3), Pf = rrect(HX, HY, HHW + .07, HHH + .07, HRAD + .07, 3);
+    rectF(-DW, HX - HHW, DECK, 1.90, 1.0, [.03, .77, .2, .97]); rectF(HX + HHW, DW, DECK, 1.90, .96, [.28, .77, .45, .97]);
+    rectF(HX - HHW, HX + HHW, HY + HHH, 1.90, 1.02, [.53, .78, .72, .82]); rectF(HX - HHW, HX + HHW, DECK, HY - HHH, .92, [.53, .9, .72, .96]);
+    for (let q = 0; q < 4; q++) { const sx = q === 0 || q === 3 ? 1 : -1, sy = q < 2 ? 1 : -1, c = ptF(HX + sx * HHW, HY + sy * HHH, 0); for (let k = 0; k < 3; k++) T(c, ptF(Ph[q * 4 + k][0], Ph[q * 4 + k][1], 0), ptF(Ph[q * 4 + k + 1][0], Ph[q * 4 + k + 1][1], 0), HULL, .98); }
+    rectF(-DW, DW, 1.90, DY1, 1.04, [.03, .03, .22, .22]);
+    Q(ptF(-DW, 1.90, .002), ptF(DW, 1.90, .002), ptF(DW, 1.888, .002), ptF(-DW, 1.888, .002), DK, 1.6);                                               // panel break
+    for (const s of [-1, 1]) {
+      const ys = [DECK, 1.45, 1.95, Y_SH, DY1];
+      for (let i = 0; i < 4; i++) Q([s * DW, ys[i + 1], ZF], [s * DW, ys[i + 1], zh(ys[i + 1])], [s * DW, ys[i], zh(ys[i])], [s * DW, ys[i], ZF], HULL, s > 0 ? .86 : .78, 0, [.03, .78, .2, .96]);
+      T([s * DW, DY1, ZF], [s * DW, 2.72, -.80], [s * DW, DY1, zh(DY1)], HULL, .82);
+      box([s * (DW - .014), 1.78, ZF - .006], .014, .82, .006, ME, 1.5);                                                                              // edge straps
+      for (let i = 0; i < 6; i++) stud([s * (DW - .014), 1.04 + i * .29, ZF - .012], [0, 0, -1], .013, .01, ME, 1.8);
+      // EVA rails either side of the emblem
+      seg([s * .405, 1.97, ZF - .075], [s * .405, 2.51, ZF - .075], .015, .015, 6, ME, 1.75, true);
+      for (const y of [1.99, 2.49]) seg([s * .405, y, ZF], [s * .405, y, ZF - .075], .012, .012, 4, ME, 1.3, false);
+    }
+    Q([-DW, DY1, ZF], [DW, DY1, ZF], [DW, 2.72, -.80], [-DW, 2.72, -.80], HULL, 1.1, 0, [.28, .03, .47, .22]);                                         // brow
+    box([0, DY1 + .012, ZF + .02], DW, .012, .03, ME, 1.45);
+    // frame ring, sixteen pyro bolts and their firing harness
+    ringFace(ptF, Ph, Pf, .03, ME, 1.45); wallOf(ptF, Pf, .03, 0, ME, 1.05); wallOf(ptF, Ph, .03, -.30, DK, 1.9);
+    { const Pb = rrect(HX, HY, HHW + .036, HHH + .036, HRAD + .036, 3), Pw = rrect(HX, HY, HHW + .092, HHH + .092, HRAD + .092, 2);
+      for (let k = 0; k < 16; k++) { const p = Pb[k]; if (k & 1) { seg(ptF(p[0], p[1], .03), ptF(p[0], p[1], .075), .021, .021, 6, DK, 2.3, false); stud(ptF(p[0], p[1], .075), [0, 0, -1], .02, .014, ME, 1.7); } else stud(ptF(p[0], p[1], .03), [0, 0, -1], .019, .016, ME, 1.25); }
+      for (let k = 0; k < 12; k++) seg(ptF(Pw[k][0], Pw[k][1], .009), ptF(Pw[(k + 1) % 12][0], Pw[(k + 1) % 12][1], .009), .007, .007, 3, DK, 2.6, false);
+      box([.2, 1.925, ZF - .012], .05, .016, .012, DK, 2.2); }
+    for (const y of [1.2, 1.69]) box([-.468, y, ZF - .03], .02, .05, .03, ME, 1.25);                                                                  // hinge brackets
+    // emblem plate
+    box([0, 2.24, ZF - .007], .325, .325, .007, ME, 1.35);
+    Q(ptF(-.3, 2.54, .0155), ptF(.3, 2.54, .0155), ptF(.3, 1.94, .0155), ptF(-.3, 1.94, .0155), NASA_L, 1.15, .04, [1, 0, 0, 1]);
+    for (const [a, b] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) bolt(ptF(a * .313, 2.24 + b * .313, .014), [0, 0, -1], .008, .006, ME, 1.1);
+    // egress flood on the brow, still burning
+    box([0, 2.645, -1.50], .09, .04, .06, ME, 1.15); Q([-.075, 2.655, -1.562], [.075, 2.655, -1.562], [.075, 2.615, -1.562], [-.075, 2.615, -1.562], WH, .8, 1.2);
+    // what shows of the cabin through the open hatch: deck, the motor well cover on the axis, two couches on their stroking struts
+    lathe([[0, 1.0], [1.5, 1.0]], 0, TAU, 8, DK, 1.5, { flip: true });
+    lathe([[.44, 1.0], [.44, 1.36], [.34, 1.5], [0, 1.54]], 0, TAU, 8, SU, .5, { shf: (i, j) => j === 1 ? .7 : 1 });
+    for (const d of [-44, 44]) bake(part(() => {            // sector frame: head toward the axis, feet to the wall
+      const u = V3.norm([-1, .42, 0]), n = [.387, .922, 0];
+      G.box([.80, 1.36, 0], V3.mul(u, .36), V3.mul(n, .035), [0, 0, .24], SU, .5); G.box([.50, 1.535, 0], V3.mul(u, .09), V3.mul(n, .05), [0, 0, .13], DK, 2.6);
+      G.box([1.19, 1.20, 0], [.13, -.06, 0], [.012, .03, 0], [0, 0, .22], SU, .42);
+      for (const s of [-1, 1]) { seg([.62, 1.02, s * .2], [.60, 1.40, s * .2], .022, .022, 4, ME, 1.3, false); seg([.61, 1.12, s * .2], [.605, 1.26, s * .2], .036, .036, 5, DK, 2.4, false);
+        Q(V3.mad([.56, 1.50, s * .07 - .025], n, .037), V3.mad([.56, 1.50, s * .07 + .025], n, .037), V3.mad([.98, 1.32, s * .1 + .025], n, .037), V3.mad([.98, 1.32, s * .1 - .025], n, .037), SU, 1.0); }
+      seg([1.05, 1.02, 0], [1.02, 1.24, 0], .022, .022, 4, ME, 1.3, false);
+    }), mAz(d * RAD));
+    box([-.2, 1.9, 1.0], .1, .05, .02, ME, .9); Q([-.27, 1.93, .978], [-.13, 1.93, .978], [-.13, 1.87, .978], [-.27, 1.87, .978], WH, .5, .5);       // emergency lamp on the far wall
+
+    MK('windows, racew');
+    /* --- windows, raceways, quads, equipment --- */
+    const TAUW = Math.atan((R_B0 - R_B1) / (Y_SH - DECK));
+    for (const d of [60, 120, 240, 300]) bake(WINDOW, mmul(mAz(d * RAD), mRZ(TAUW, bellR(1.70), 1.70)));
+    for (const d of [90, 270]) bake(part(() => {                                                          // cable raceway up the barrel and over the shoulder
+      const p0 = [bellR(1.03) + .026, 1.03, 0], p1 = [bellR(2.37) + .026, 2.37, 0], c = V3.lerp(p0, p1, .5), u = V3.norm(V3.sub(p1, p0)), n = [u[1], -u[0], 0], hl = V3.dist(p0, p1) / 2;
+      G.box(c, V3.mul(n, .026), V3.mul(u, hl), [0, 0, .05], ME, 1.2);
+      for (let i = 0; i < 4; i++) G.box(V3.lerp(p0, p1, .08 + i * .28), V3.mul(n, .032), V3.mul(u, .016), [0, 0, .058], ME, 1.65);
+      pipe([[R_B1 + .06, Y_SH, .02], [R_B1 + .03, Y_SH + .07, .02], [R_COL + .05, Y_COL + .03, .015]], .022, 5, ME, 1.25, false); pipe([[R_B1 + .06, Y_SH, -.03], [R_B1 + .03, Y_SH + .07, -.03], [R_COL + .05, Y_COL + .03, -.02]], .014, 4, DK, 2.4, false);
+    }), mAz(d * RAD));
+    for (const d of [45, 135, 225, 315]) { const m = mAz(d * RAD); bake(RCSQ, m); for (const n of QN) JETS.push({ p: mApply(m, V3.mad(QC, n, .178)), dir: mApply(m, n) }); }
+    bake(part(() => {                                                                                     // avionics box and its louvred radiator (rear)
+      const x = bellR(1.62) + .085; box([x, 1.62, 0], .09, .27, .23, ME, 1.25);
+      for (let i = 0; i < 6; i++) G.box([x + .10, 1.41 + i * .084, 0], [.016, .008, 0], [-.005, .026, 0], [0, 0, .20], ME, i & 1 ? 1.7 : 1.45);
+      for (const s of [-1, 1]) { box([x + .095, 1.62, s * .215], .012, .255, .012, ME, 1.1); for (const y of [1.39, 1.85]) stud([x + .107, y, s * .215], [1, 0, 0], .012, .01, ME, 1.8); }
+      pipe([[x - .02, 1.89, .12], [x - .05, 2.05, .12], [bellR(2.36) + .01, 2.36, .1]], .016, 5, DK, 2.2, false);
+    }), mAz(180 * RAD));
+    // strobe beacon on the shoulder
+    { const o = CYL(-24 * RAD, bellR(2.70), 2.69); seg(o, [o[0], o[1] + .2, o[2]], .02, .016, 5, ME, 1.4, false); seg([o[0], o[1] + .2, o[2]], [o[0], o[1] + .225, o[2]], .04, .04, 6, ME, 1.2, true); ball([o[0], o[1] + .26, o[2]], .038, WH, .7, 6, 4, .9); }
+
+    MK('retro motor: a');
+    /* --- retro motor: aft dome, throat and bell (the lit lining is the separate GLOW part) --- */
+    lathe([[.60, KEEL], [.44, .235], [.16, .185]], 0, TAU, 12, ME, .8, { sm: true, flip: true });
+    lathe(NZ, 0, TAU, 12, ME, .6, { sm: true, flip: true, shf: (i, j) => 1.3 - j * .09 });
+    for (const j of [3, 5]) lathe([[NZ[j][0] + .002, NZ[j][1] + .014], [NZ[j][0] + .026, NZ[j][1] - .004], [NZ[j][0] + .008, NZ[j][1] - .012]], 0, TAU, 12, ME, 1.1, { flip: true, skip: (i, jj) => jj === 1 });
+    lathe([[.40, -.27], [.418, -.255]], 0, TAU, 12, ME, 1.2, {});
+    for (let k = 0; k < 4; k++) { const a = (k * 90 + 45) * RAD; seg(CYL(a, .45, KEEL), CYL(a, .2, .07), .012, .012, 4, ME, 1.4, false); }       // nozzle stays
+
+    MK('porch at the f');
+    /* --- porch at the front corner --- */
+    for (let i = 0; i < 6; i++) box([0, DECK + .0, -1.70 - i * .068], .40, .011, .022, ME, i & 1 ? 1.5 : 1.3);
+    for (const s of [-1, 1]) { box([s * .415, DECK - .012, -1.87], .017, .035, .235, ME, 1.55); seg([s * .36, KEEL + .1, -1.665], [s * .36, DECK - .04, -2.06], .02, .02, 5, WH, .8, true);
+      box([s * .27, LAD_H[1], -2.085], .03, .04, .02, ME, 1.3); }
+    box([0, DECK - .012, -2.095], .43, .035, .017, ME, 1.4);
+    // one tall handrail on the side the door does not swing over
+    pipe([[.415, DECK, -2.06], [.415, 1.86, -2.06], [.43, 1.95, -1.80], [.455, 1.82, -1.61]], .017, 6, ME, 1.7);
+    seg([.415, 1.42, -2.06], [.455, 1.42, -1.61], .012, .012, 4, ME, 1.5, false);
+    MK('');
+  });
+  const BODY_N = BODY.length / 12;
+
+  /* ================================================================================================ honeycomb ring (rebuilt only when it changes) */
+  const NA = 6, BEL = makeBatch(3600), BKEY = new Float32Array(6 * (NA + 1) * 2 + 1).fill(1e9); let BELP = new Float32Array(0);
+  const BCS = []; for (let k = 0; k < 6; k++) for (let j = 0; j <= NA; j++) { const a = (k * 60 - 26.5 + 53 * j / NA) * RAD; BCS.push([Math.sin(a), -Math.cos(a)]); }
+  function belly(glf, dmg) {
+    const key = new Float32Array(BKEY.length); let same = true;
+    for (let i = 0; i < BCS.length; i++) { const s = BCS[i][0], c = BCS[i][1]; for (let q = 0; q < 2; q++) { const r = q === 0 ? RBB : RBI, v = Math.round(clamp(glf(s * r, c * r), KEEL - H0, KEEL - HMIN) * 500) / 500; key[i * 2 + q] = v; if (v !== BKEY[i * 2 + q]) same = false; } }
+    key[key.length - 1] = Math.round(dmg * 8); if (key[key.length - 1] !== BKEY[key.length - 1]) same = false;
+    if (same) return BELP;
+    BKEY.set(key); const keep = G; G = BEL; G.reset();
+    const wsh = lerp(1.4, 1.1, dmg), PIN = .2;
+    for (let k = 0; k < 6; k++) {
+      const cols = [];
+      for (let j = 0; j <= NA; j++) { const i = k * (NA + 1) + j, s = BCS[i][0], c = BCS[i][1], yo = key[i * 2], yi = key[i * 2 + 1];
+        const Lc = Math.min(H0 - .015, (H0 - (KEEL - yo)) / .7), tc = .3 * Lc, yc = yo + tc, rc = lerp(RBT, RBB, (H0 - Lc) / H0), Bm = Math.min(.17, .45 * Lc), b1 = Bm * (.5 + .9 * h3(j, k, 5)), b2 = Bm * (.7 + .9 * h3(j, k, 6));
+        const P = (r, y) => [s * r, y, c * r];
+        cols.push({ top: P(RBT, KEEL), c: P(rc, yc), m: [P(rc + b1, yc - .22 * tc), P(rc + .3 * b1, yc - .5 * tc), P(rc + b2, yc - .78 * tc), P(rc + .5 * b2, yo)], tip: P(rc + .22 + .34 * h3(j, k, 8), yo + .012 + .1 * h3(j, k, 13) * h3(j, k, 14)), in: P(RBI, yi), it: P(RBI - .04, KEEL), Lc, u: (k * 60 + 53 * j / NA) * RAD * RBT / PIN });
+      }
+      for (let j = 0; j < NA; j++) { const A = cols[j], B2 = cols[j + 1];
+        Q(A.top, B2.top, B2.c, A.c, ME, wsh * (j & 1 ? .84 : 1.05), 0, [A.u, .035, B2.u, .09]);                     // the uncrushed core, seen edge on: ribbon ends
+        if (j === 1 || j === 4) { const f = .12, g = .30, o = 1.012, L = (p, q, t) => [(p[0] + (q[0] - p[0]) * t) * o, p[1] + (q[1] - p[1]) * t, (p[2] + (q[2] - p[2]) * t) * o];   // retaining strap
+          Q(L(A.top, B2.top, f), L(A.top, B2.top, g), L(A.c, B2.c, g), L(A.c, B2.c, f), ME, 1.8, 0, UVM); }
+        if (A.Lc > .02 || B2.Lc > .02) {                                                                                 // the mash: core folded up on itself and squeezed out sideways
+          let pa = A.c, pb = B2.c; for (let q = 0; q < 4; q++) { Q(pa, pb, B2.m[q], A.m[q], ME, [1.5, .42, 1.35, .38][q] * (.75 + .5 * h3(j * 4 + q, k, 3)), 0, UVM); pa = A.m[q]; pb = B2.m[q]; }
+          if (dmg > .3 && A.Lc > .15 && h3(j, k, 12) > .45) { const f = .1 + .3 * h3(j, k, 15), r0 = V3.lerp(A.c, B2.c, f), r1 = V3.lerp(A.c, B2.c, f + .5), t1 = V3.lerp(A.tip, B2.tip, f + .15), t2 = V3.lerp(A.tip, B2.tip, f + .32);   // a face sheet torn off and laid out on the ground
+            Q(r0, r1, t2, t1, ME, 1.1 + .6 * h3(j, k, 16), 0, UVM); } }
+        Q(A.m[3], B2.m[3], B2.in, A.in, ME, .55, 0, [A.u * .5, 3.4, B2.u * .5, 0]);                                     // underside: open cells
+        Q(A.in, B2.in, B2.it, A.it, DK, 1.5 - .5 * dmg, 0);                                                              // flame liner round the bell
+      }
+      for (const e of [0, NA]) { const A = cols[e], pts = [A.top, A.c, A.m[0], A.m[1], A.m[2], A.m[3], A.in, A.it], ctr = [(A.top[0] + A.in[0]) / 2, (KEEL + A.c[1]) / 2, (A.top[2] + A.in[2]) / 2];
+        for (let q = 0; q < pts.length; q++) { const p = pts[q], p2 = pts[(q + 1) % pts.length]; G.tri(ctr, p, p2, ME, .95, 0, [[.5 / PIN, .06], [Math.hypot(p[0], p[2]) / PIN, .06], [Math.hypot(p2[0], p2[2]) / PIN, .06]]); } }
+    }
+    BELP = G.d.subarray(0, G.n * 12); G = keep; return BELP;
+  }
+
+  /* ================================================================================================ putting her together */
+  const SECT = LEGA.map(mAz);
+  const DMG_C = [.10, .14, .05, -.10, -.17, -.06];          // how unevenly she came down, per leg, at full damage
+  const DEF_EXT = { legs: 1, crush: C_REST, hatch: 1, eng: 0, dmg: 1 }, DEF_FLT = { legs: 0, crush: 0, hatch: 0, eng: 0, dmg: 0 };
+  const num = (v, d) => typeof v === 'number' && v === v ? v : d;
+  function state(st, def) {
+    st = st || def; const S = { legs: clamp(num(st.legs, def.legs), 0, 1), hatch: clamp(num(st.hatch, def.hatch), 0, 1), eng: clamp(num(st.eng, def.eng), 0, 1), dmg: clamp(num(st.dmg, def.dmg), 0, 1), cr: new Array(NLEG), lean: num(st.lean, .07) };
+    const c = st.crush === undefined ? def.crush : st.crush;
+    if (Array.isArray(c) || (c && c.length)) for (let i = 0; i < NLEG; i++) S.cr[i] = clamp(num(c[i % c.length], def.crush), 0, 1);
+    else { const c0 = clamp(num(c, def.crush), 0, 1), k = S.dmg * Math.min(1, c0 / .5); for (let i = 0; i < NLEG; i++) S.cr[i] = clamp(c0 + DMG_C[i] * k, 0, 1); }
+    return S;
+  }
+  // one leg. glf(x, z) = local height of the ground under local (x, z), or null in flight.
+  function leg(B, M, i, S, glf) {
+    const MS = mmul(M, SECT[i]), e = ease(S.legs), sa0 = Math.sin(LEGA[i]), ca0 = -Math.cos(LEGA[i]);
+    let phi = phiOf(S.cr[i]), tr = 0, tt = 0;
+    if (glf) {
+      for (let it = 0; it < 4; it++) { const r = HIPR + LLEG * Math.cos(phi); phi = Math.asin(clamp((HIPY - glf(sa0 * r, ca0 * r) - PADH) / LLEG, -.4, .97)); }
+      const r = HIPR + LLEG * Math.cos(phi), tx = Math.cos(LEGA[i]), tz = Math.sin(LEGA[i]);
+      tr = clamp(Math.atan((glf(sa0 * (r + .25), ca0 * (r + .25)) - glf(sa0 * (r - .25), ca0 * (r - .25))) / .5), -.3, .3);
+      tt = clamp(Math.atan((glf(sa0 * r + tx * .25, ca0 * r + tz * .25) - glf(sa0 * r - tx * .25, ca0 * r - tz * .25)) / .5), -.3, .3);
+    }
+    const al = lerp(A_STOW, -phi, e), ca = Math.cos(al), sa = Math.sin(al);
+    emit(B, AFRAME, mmul(MS, mRZ(al, HIPR, HIPY)));
+    // brace: cartridge from the deck bracket to the knee, lock link from the knee to the collar lug
+    const cx = HIPR + LCOL * ca - LUG * sa, cy = HIPY + LCOL * sa + LUG * ca, dx = cx - UX, dy = cy - UY, d = Math.hypot(dx, dy) || 1e-6;
+    const sl = e >= 1 ? clamp(d - LINK, STRUT1, STRUT0) : STRUT0; let kx, ky;
+    if (d >= sl + LINK - 1e-4) { kx = UX + dx / d * sl; ky = UY + dy / d * sl; }
+    else { const a = clamp((sl * sl - LINK * LINK + d * d) / (2 * d), -sl, sl), h = Math.sqrt(Math.max(0, sl * sl - a * a)); let px = -dy / d, py = dx / d; if (py - px < 0) { px = -px; py = -py; } kx = UX + dx / d * a + px * h; ky = UY + dy / d * a + py * h; }
+    const th = Math.atan2(ky - UY, kx - UX);
+    emit(B, CART, mmul(MS, mRZ(th, UX, UY))); emit(B, ROD, mmul(MS, mRZ(th + PI, kx, ky))); emit(B, LINKP, mmul(MS, mRZ(Math.atan2(cy - ky, cx - kx), kx, ky)));
+    // pad on its ball joint: flat on its own ground when down, folded sole-out against the beam when stowed
+    const bx = HIPR + LLEG * ca, by = HIPY + LLEG * sa, wob = S.dmg * e * (h3(i, 7, 1) - .5) * .12;
+    emit(B, PAD, mmul(MS, mmul(mRZ(lerp(A_STOW, tr, e), bx, by), mRX(-tt * e + wob))));
+    if (S.dmg > .3 && e >= 1 && (i & 1)) emit(B, PAD_DUST, mmul(MS, mmul(mRZ(tr, bx, by), mRX(-tt + wob))));
+  }
+  const PAD_DUST = part(() => { G.ball([.05, -.082, .03], [.21, 0, .04], [0, .034, 0], [-.03, 0, .17], REGO, 1.15, 0, 8, 4); G.ball([-.16, -.07, -.1], [.09, 0, 0], [0, .03, 0], [0, 0, .11], REGO, 1.0, 0, 6, 3); });
+
+  function emitPod(B, M, S, glf, gpl) {
+    emit(B, BODY, M);
+    emit(B, GLOW, M, 1 + S.eng * .8, S.eng * 3.2);
+    // hatch: swings out on its hinge; blown hard enough to sag when she is wrecked
+    const hm = mAbout(mmul(mRY(-S.hatch * 118 * RAD), mRZ(-S.dmg * S.hatch * .05)), [HINGE[0], 1.2, HINGE[2]]);
+    emit(B, DOOR, mmul(M, hm));
+    // ladder: hangs from the porch lip, its feet find the ground
+    const lg = (glf || gpl)(0, LAD_H[2] - .5), lb = Math.asin(clamp((LAD_H[1] - .03 - lg) / LAD_L, .42, .978));
+    emit(B, LADDER, mmul(M, mAbout(mmul(mRX(PI / 2 - lb), mRZ(S.dmg * .06)), LAD_H)));
+    // dish mast knocked over, whip bent, one blanket torn loose along three edges
+    emit(B, MAST, mmul(M, mAbout(mAxis([.8, 0, -.55], S.dmg * .62), MAST_O)));
+    emit(B, WHIP, mmul(M, mAbout(mAxis([.3, 0, .9], S.dmg * .33), WHIP_O)));
+    const fo = CYL(FLAP_A, bellR(1.7) + .012, 1.7), fa = V3.sub(CYL(FLAP_A, bellR(Y_Q1), Y_Q1), CYL(FLAP_A, bellR(Y_Q0), Y_Q0));
+    emit(B, FLAP, mmul(M, mAbout(mmul(mAxis(fa, -S.dmg * 1.05), mAxis(UR(FLAP_A), S.dmg * .14)), fo)));
+    for (let i = 0; i < NLEG; i++) leg(B, M, i, S, glf);
+    emit(B, belly(glf || gpl, S.dmg), M);
+  }
+  // the plane the pads define in the cabin frame (flight): least squares through the six sole heights
+  function padPlane(S) {
+    let g0 = 0, gx = 0, gz = 0; const R = PAD_REST;
+    for (let i = 0; i < NLEG; i++) { const p = padY(S.cr[i]); g0 += p / NLEG; gx += p * Math.sin(LEGA[i]) / (3 * R); gz += p * -Math.cos(LEGA[i]) / (3 * R); }
+    return (x, z) => g0 + gx * x + gz * z;
+  }
+  function frame(cx, cy, cz, heading, gyFn, st) {
+    const S = state(st, DEF_EXT), Gf = typeof gyFn === 'function' ? gyFn : () => cy, ex0 = V3.rotY([1, 0, 0], heading || 0), ez0 = V3.rotY([0, 0, 1], heading || 0), R = PAD_REST;
+    let c0 = 0, ta = 0, tb = 0;
+    for (let i = 0; i < NLEG; i++) { const lx = Math.sin(LEGA[i]) * R, lz = -Math.cos(LEGA[i]) * R, q = Gf(cx + ex0[0] * lx + ez0[0] * lz, cz + ex0[2] * lx + ez0[2] * lz) - padY(S.cr[i]); c0 += q / NLEG; ta += q * lx / (3 * R * R); tb += q * lz / (3 * R * R); }
+    const tl = Math.hypot(ta, tb); if (tl > S.lean) { ta *= S.lean / tl; tb *= S.lean / tl; }
+    const ey = V3.norm([-ta * ex0[0] - tb * ez0[0], 1, -ta * ex0[2] - tb * ez0[2]]), ez = V3.norm(V3.sub(ez0, V3.mul(ey, V3.dot(ez0, ey)))), ex = V3.cross(ey, ez), o = [cx, c0, cz];
+    const glf = (x, z) => (Gf(o[0] + ex[0] * x + ez[0] * z, o[2] + ex[2] * x + ez[2] * z) - o[1] - ex[1] * x - ez[1] * z) / ey[1];
+    // she cannot sit lower than the solid height of the honeycomb allows
+    let lift = 0; for (let i = 0; i < BCS.length; i++) for (const r of [RBB, RBI]) lift = Math.max(lift, glf(BCS[i][0] * r, BCS[i][1] * r) - (KEEL - HMIN));
+    if (lift > 0) { o[0] += ey[0] * lift; o[1] += ey[1] * lift; o[2] += ey[2] * lift; }
+    return { o, ex, ey, ez, S, glf };
+  }
+  function exterior(B, x, y, z, heading, groundY, st) {
+    const f = frame(x, y, z, heading, groundY, st);
+    emitPod(B, mBasis(f.o, f.ex, f.ey, f.ez), f.S, f.glf, null);
+  }
+  function flight(B, o, st) {
+    o = o || {}; const p = o.p || [0, 0, 0], S = state(st, DEF_FLT);
+    const M = mmul(mT(p[0], p[1], p[2]), mmul(mRY(o.yaw || 0), mmul(mRX(o.pitch || 0), mRZ(-(o.roll || 0)))));
+    emitPod(B, M, S, null, padPlane(S));
+  }
+
+  /* ================================================================================================ INTERIOR
+     View space: the camera is the player's eye, at the origin, looking down -Z (out through the bell wall) with about
+     1.15 rad of vertical field. The couch faces a window casting in the canted wall; a console box wraps the window:
+     two side panels standing 7 cm off the wall and a sloping belt under the sill.
+       left panel    tape altimeter, altitude readout, the agency plate; suit hose socket
+       right panel   master caution over the annunciator matrix, the attitude ball, the event timer
+       belt          brace quadrant, retro FIRE switch under its guard, leg T-handle and its six lock lamps
+       right hand    attitude controller on its pedestal
+     The cabin floods are baked into emissive (cabLight), because the only real light in here is the helmet lamp down
+     the view axis: shade is kept low so that lamp cannot burn the panels out. */
+  const I_CA = 1 / Math.hypot(1, .178), I_SA = .178 * I_CA, I_CANT = [0, I_CA, I_SA];                 // the wall leans in over the crew
+  const gsn = (e, u) => V3.norm(V3.sub(e, V3.mul(u, V3.dot(e, u))));
+  // a flat face of the station: f(a, b, d) = a to the crew's right, b up the face, d proud of it (toward the crew)
+  const face = (O, eu, ev) => { let n = V3.norm(V3.cross(eu, ev)); if (V3.dot(n, O) > 0) n = V3.mul(n, -1);
+    const f = (a, b, d) => { d = d || 0; return [O[0] + eu[0] * a + ev[0] * b + n[0] * d, O[1] + eu[1] * a + ev[1] * b + n[1] * d, O[2] + eu[2] * a + ev[2] * b + n[2] * d]; };
+    f.n = n; f.u = eu; f.v = ev; f.at = (a, b, d) => mBasis(f(a, b, d), eu, n, V3.cross(eu, n)); return f; };   // at(): x along a, y proud, z down the face
+  const I_EUR = [.848, 0, .530], I_EUL = [.848, 0, -.530], I_EVB = [0, .791, -.611], I_HR = [.31, -.193, -.56], I_HL = [-.31, -.193, -.56];
+  const F_WIN = face([0, .065, -.585], [1, 0, 0], I_CANT);
+  const F_BC = face([0, -.193, -.56], [1, 0, 0], I_EVB), F_BL = face(I_HL, I_EUL, gsn(I_EVB, I_EUL)), F_BR = face(I_HR, I_EUR, gsn(I_EVB, I_EUR));
+  const F_SL = face(I_HL, I_EUL, gsn(I_CANT, I_EUL)), F_SR = face(I_HR, I_EUR, gsn(I_CANT, I_EUR));
+  const I_L1 = V3.norm([-.45, .75, .5]), I_L2 = V3.norm([.7, -.1, .55]), I_EK = .27, I_SK = .30;
+  // turn authored shade into (a little shade, baked flood light as emissive). Self-lit vertices are left alone.
+  function cabLight(d, n0, n1, amb) {
+    for (let o = n0 * 12, e = n1 * 12; o < e; o += 12) { if (d[o + 10] > 0) continue;
+      let nx = d[o + 6], ny = d[o + 7], nz = d[o + 8]; if (nx * d[o] + ny * d[o + 1] + nz * d[o + 2] > 0) { nx = -nx; ny = -ny; nz = -nz; }
+      const a = nx * I_L1[0] + ny * I_L1[1] + nz * I_L1[2], b = nx * I_L2[0] + ny * I_L2[1] + nz * I_L2[2], s = d[o + 9];
+      d[o + 10] = s * I_EK * amb * (.42 + .75 * (a > 0 ? a : 0) + .28 * (b > 0 ? b : 0)); d[o + 9] = s * I_SK; } }
+  const PD = .004;                                                                                     // sub-panels stand this proud of the box
+  const fq = (f, a0, b0, a1, b1, d, lay, sh, em, uv) => G.quad(f(a0, b1, d), f(a1, b1, d), f(a1, b0, d), f(a0, b0, d), lay, sh, em || 0, uv || (lay === ME ? UVM : undefined));
+  const fplate = (f, a0, b0, a1, b1, d0, d1, lay, sh) => { fq(f, a0, b0, a1, b1, d1, lay, sh);
+    Q(f(a0, b1, d0), f(a1, b1, d0), f(a1, b1, d1), f(a0, b1, d1), lay, sh * .9, 0, UVM); Q(f(a0, b0, d1), f(a1, b0, d1), f(a1, b0, d0), f(a0, b0, d0), lay, sh * .9, 0, UVM);
+    Q(f(a0, b1, d1), f(a0, b1, d0), f(a0, b0, d0), f(a0, b0, d1), lay, sh * .9, 0, UVM); Q(f(a1, b1, d0), f(a1, b1, d1), f(a1, b0, d1), f(a1, b0, d0), lay, sh * .9, 0, UVM); };
+  // rectangular bezel: a frame t wide standing h proud round a window whose own face sits at dr
+  const fbezel = (f, a, b, hw, hh, t, h, dr, layF, shF, layW, shW) => {
+    const o = [[a - hw - t, b - hh - t], [a + hw + t, b - hh - t], [a + hw + t, b + hh + t], [a - hw - t, b + hh + t]], i = [[a - hw, b - hh], [a + hw, b - hh], [a + hw, b + hh], [a - hw, b + hh]];
+    for (let k = 0; k < 4; k++) { const k1 = (k + 1) & 3;
+      Q(f(o[k][0], o[k][1], h), f(o[k1][0], o[k1][1], h), f(i[k1][0], i[k1][1], h), f(i[k][0], i[k][1], h), layF, shF, 0, UVM);
+      Q(f(o[k][0], o[k][1], 0), f(o[k1][0], o[k1][1], 0), f(o[k1][0], o[k1][1], h), f(o[k][0], o[k][1], h), layF, shF * .85, 0, UVM);
+      Q(f(i[k][0], i[k][1], h), f(i[k1][0], i[k1][1], h), f(i[k1][0], i[k1][1], dr), f(i[k][0], i[k][1], dr), layF, shF * .6, 0, UVM); }
+    if (layW !== undefined) fq(f, a - hw, b - hh, a + hw, b + hh, dr, layW, shW); };
+  const circ = (a, b, r, n) => { const P = []; for (let k = 0; k < n; k++) { const t = k / n * TAU; P.push([a + Math.cos(t) * r, b + Math.sin(t) * r]); } return P; };
+  // n points evenly spaced by arc length round a closed outline
+  const along = (P, N) => { const L = [0], out = []; for (let k = 0; k < P.length; k++) { const a = P[k], b = P[(k + 1) % P.length]; L.push(L[k] + Math.hypot(b[0] - a[0], b[1] - a[1])); }
+    for (let i = 0, k = 0; i < N; i++) { const s = (i + .5) / N * L[P.length]; while (L[k + 1] < s) k++; const a = P[k], b = P[(k + 1) % P.length], u = (s - L[k]) / (L[k + 1] - L[k] || 1); out.push([a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u]); } return out; };
+  const sqr = (a, b, h, n) => circ(0, 0, 1, n).map(p => { const m = h / Math.max(Math.abs(p[0]), Math.abs(p[1])); return [a + p[0] * m, b + p[1] * m]; });
+  // round gauge: bezel ring, black face, scale and a needle at frac of its sweep
+  const fdial = (f, a, b, r, frac, nt) => {
+    latheAt(f.at(a, b, 0), [[r + .009, 0], [r + .009, PD + .009], [r + .001, PD + .009], [r - .003, PD + .002]], 12, WH, .38);
+    fanOf(f, circ(a, b, r - .002, 12), [a, b], PD + .002, DK, .8);
+    for (let k = 0; k <= nt; k++) { const t = (225 - 270 * k / nt) * RAD, c = Math.cos(t), s = Math.sin(t), w = k % 2 ? .0011 : .0019, r0 = r * (k % 2 ? .78 : .66), r1 = r * .93, d = PD + .003;
+      Q(f(a + c * r1 + s * w, b + s * r1 - c * w, d), f(a + c * r1 - s * w, b + s * r1 + c * w, d), f(a + c * r0 - s * w, b + s * r0 + c * w, d), f(a + c * r0 + s * w, b + s * r0 - c * w, d), WH, 2.6); }
+    const t = (225 - 270 * frac) * RAD, c = Math.cos(t), s = Math.sin(t), d = PD + .006;
+    T(f(a + c * r * .86, b + s * r * .86, d), f(a + s * .0045 - c * .008, b - c * .0045 - s * .008, d), f(a - s * .0045 - c * .008, b + c * .0045 - s * .008, d), WH, 3.2);
+    stud(f(a, b, PD + .005), f.n, .005, .004, ME, 1.6); };
+  const ftog = (f, a, b, up, d) => { const p = f(a, b, d === undefined ? PD : d), n = f.n, v = f.v; stud(p, n, .0085, .005, ME, 2.2);
+    seg(V3.mad(p, n, .003), V3.add(p, V3.add(V3.mul(n, .024), V3.mul(v, up * .012))), .0032, .005, 4, ME, 3.4, true); };
+  const fwick = (f, a, b) => { const p0 = f(a, b - .014, PD), p1 = f(a, b + .014, PD), q0 = V3.mad(p0, f.n, .021), q1 = V3.mad(p1, f.n, .021); seg(p0, q0, .002, .002, 3, ME, 2.6, false); seg(p1, q1, .002, .002, 3, ME, 2.6, false); seg(q0, q1, .002, .002, 3, ME, 2.6, false); };
+  const frot = (f, a, b, ang) => { latheAt(f.at(a, b, PD), [[.022, 0], [.02, .006], [.013, .008], [.012, .024], [0, .024]], 8, DK, 3.2);
+    const c = Math.cos(ang), s = Math.sin(ang); Q(f(a + c * .012 + s * .002, b + s * .012 - c * .002, PD + .0245), f(a + c * .012 - s * .002, b + s * .012 + c * .002, PD + .0245), f(a - s * .002, b + c * .002, PD + .0245), f(a + s * .002, b - c * .002, PD + .0245), WH, 3);
+    for (let k = 0; k < 5; k++) { const t = (30 + k * 30) * RAD; stud(f(a + Math.cos(t) * .03, b + Math.sin(t) * .03, PD), f.n, .0028, .0015, WH, 2.6); } };
+  const SEG7 = [0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F];
+  // one seven-segment numeral (n < 0 blank). Lit segments are emissive em, the rest show as ghosts.
+  const fdig = (f, a, b, w, h, n, d, em) => { const t = w * .3, g = t * .3, bits = n < 0 ? 0 : SEG7[n], R = [[-w + g, h - t, w - g, h], [w - t, g, w, h - g], [w - t, -h + g, w, -g], [-w + g, -h, w - g, -h + t], [-w, -h + g, -w + t, -g], [-w, g, -w + t, h - g], [-w + g, -t / 2, w - g, t / 2]];
+    for (let k = 0; k < 7; k++) { const r = R[k], on = (bits >> k & 1) && em > .02, x0 = r[1] * .14, x1 = r[3] * .14;
+      G.quad(f(a + r[0] + x1, b + r[3], d), f(a + r[2] + x1, b + r[3], d), f(a + r[2] + x0, b + r[1], d), f(a + r[0] + x0, b + r[1], d), WH, on ? .5 : .1, on ? em : .01, UVM); } };
+  const flamp = (f, a, b, hw, hh, d, em) => { if (em > .01) G.quad(f(a - hw, b + hh, d), f(a + hw, b + hh, d), f(a + hw, b - hh, d), f(a - hw, b - hh, d), WH, .4, em, UVM); };
+  const I_CW = []; for (let r = 0; r < 4; r++) for (let c = 0; c < 3; c++) I_CW.push([.069 + c * .036, .385 - r * .022]);
+  const I_TAPE = [-.105, .32, .03, .125], I_HOSE = [-.2, .1], I_LEGA = .124;
+
+  const I_STATIC = (() => { const p = part(() => {
+    const W = F_WIN, BC = F_BC, BL = F_BL, BR = F_BR, SL = F_SL, SR = F_SR;
+    const sub = (f, a0, b0, a1, b1, sh) => { fplate(f, a0, b0, a1, b1, 0, PD, WH, sh * .5); for (const a of [a0 + .009, a1 - .009]) for (const b of [b0 + .009, b1 - .009]) stud(f(a, b, PD), f.n, .0042, .0022, DK, 3); };
+    /* ---- the window: gasket, painted reveal, a retaining ring with its bolt circle, the flat casting it is let into */
+    const Pg = rrect(0, 0, .225, .225, .07, 3), Pg2 = rrect(0, 0, .231, .231, .075, 3), Pi = rrect(0, 0, .236, .233, .079, 3), Po = rrect(0, 0, .288, .285, .115, 3), Pf = rrect(0, 0, .306, .303, .128, 3), Pr = rrect(0, 0, .35, .62, .003, 3);
+    ringFace(W, Pg, Pg2, -.03, DK, 1.6);
+    wallOf(W, Pg2, -.03, .012, WH, 1.9, 0, Pi);
+    ringFace(W, Pi, Po, .012, WH, 2.3);
+    wallOf(W, Po, .012, 0, WH, 1.7, 0, Pf);
+    ringFace(W, Pf, Pr, 0, WH, 1.25);
+    along(rrect(0, 0, .262, .259, .097, 4), 28).forEach(p => { stud(W(p[0], p[1], .012), W.n, .0105, .009, ME, 2.6); fq(W, p[0] - .0045, p[1] - .0045, p[0] + .0045, p[1] + .0045, .0212, DK, 2); });
+    placard(W, -.262, .262, .022, .012, .002, 2); placard(W, .268, .27, .016, .007, .002, 1);
+    seg(W(-.25, .338, .034), W(.25, .338, .034), .016, .016, 6, SU, 1.5, true);                      // rolled shade over the pane
+    for (const s of [-1, 1]) G.box(W(s * .262, .338, .02), [.008, 0, 0], V3.mul(I_CANT, .024), V3.mul(W.n, .024), ME, 2.4, 0);
+    /* ---- the bell wall either side of the casting */
+    bake(part(() => { lathe([[1.655, -1.2], [1.281, .9]], 14 * RAD, 82 * RAD, 6, DK, 2.2); lathe([[1.655, -1.2], [1.281, .9]], -82 * RAD, -14 * RAD, 6, DK, 2.2); }), mT(0, 0, .84));
+    /* ---- the console box: its returns into the window bay, the anti-glare shelf, the rolled coaming */
+    const dl = .0698;
+    for (const s of [-1, 1]) { const o = [s * .31, -.193, -.56], e0 = V3.mad(o, I_CANT, -.02), e1 = V3.mad(o, I_CANT, .66); Q(e1, V3.mad(e1, W.n, -dl), V3.mad(e0, W.n, -dl), e0, WH, 1.0);
+      for (let k = 0; k < 6; k++) stud(V3.mad(V3.mad(o, I_CANT, .05 + k * .1), W.n, -.014), [-s, 0, 0], .005, .004, ME, 3.6);
+      const c0 = V3.mad(V3.mad(o, I_CANT, 0), W.n, -.046), c1 = V3.mad(V3.mad(o, I_CANT, .62), W.n, -.046); c0[0] -= s * .011; c1[0] -= s * .011; seg(c0, c1, .008, .008, 5, SU, 1.6, false);
+      for (let k = 0; k < 4; k++) { const c = V3.lerp(c0, c1, .12 + k * .24); G.box(c, [.012, 0, 0], V3.mul(I_CANT, .007), V3.mul(W.n, .012), ME, 3, 0); } }
+    Q(V3.mad(I_HL, W.n, -dl), V3.mad(I_HR, W.n, -dl), I_HR, I_HL, WH, .22);
+    seg(I_HL, I_HR, .011, .011, 6, WH, .3, false);
+    for (const s of [-1, 1]) seg([s * .31, -.193, -.56], V3.mad([s * .31, -.193, -.56], s > 0 ? I_EUR : I_EUL, s * .42), .011, .011, 6, WH, .3, false);
+    /* ---- box faces (dark: they show in the gaps between the sub-panels) */
+    fq(BC, -.31, -.27, .31, 0, 0, WH, .26);
+    { const hb = V3.mad(I_HL, I_EVB, -.27), ht = V3.mad(I_HL, I_CANT, .66); Q(V3.mad(I_HL, I_EUL, -.42), I_HL, hb, V3.mad(hb, I_EUL, -.42), WH, .26); Q(V3.mad(ht, I_EUL, -.42), ht, I_HL, V3.mad(I_HL, I_EUL, -.42), WH, .3); }
+    { const hb = V3.mad(I_HR, I_EVB, -.27), ht = V3.mad(I_HR, I_CANT, .66); Q(I_HR, V3.mad(I_HR, I_EUR, .42), V3.mad(hb, I_EUR, .42), hb, WH, .26); Q(ht, V3.mad(ht, I_EUR, .42), V3.mad(I_HR, I_EUR, .42), I_HR, WH, .26); }
+
+    /* ---- belt, centre: RETRO FIRE */
+    sub(BC, -.092, -.20, .092, -.008, 2.5);
+    for (const b0 of [-.028, -.142]) for (let k = 0; k < 9; k++) fq(BC, -.08 + k * .0178, b0, -.08 + (k + 1) * .0178, b0 + .010, PD + .0012, k & 1 ? DK : WH, k & 1 ? 1.2 : 2.8);
+    fplate(BC, -.027, -.126, .027, -.042, PD, PD + .003, WH, .2);
+    stud(BC(0, -.084, PD + .003), BC.n, .011, .005, ME, 2.6);
+    fbezel(BC, -.058, -.056, .012, .010, .004, PD + .007, PD + .004, ME, 2.8, WH, .55);
+    fbezel(BC, .058, -.056, .017, .013, .004, PD + .008, PD + .004, ME, 2.8, WH, .55);
+    placard(BC, -.058, -.088, .018, .006, PD + .001, 1); placard(BC, .058, -.091, .02, .006, PD + .001, 1);
+    /* ---- belt, left of centre: BRACE quadrant */
+    sub(BC, -.305, -.20, -.098, -.008, 2.1);
+    fplate(BC, -.288, -.110, -.112, -.052, PD, PD + .009, WH, 1.5);
+    fq(BC, -.275, -.0865, -.125, -.0735, PD + .0095, DK, .7); fq(BC, -.281, -.093, -.262, -.067, PD + .0095, DK, .7); fq(BC, -.138, -.093, -.119, -.067, PD + .0095, DK, .7);
+    for (let k = 0; k <= 6; k++) fq(BC, -.2555 + k * .0185 - .0009, -.064, -.2555 + k * .0185 + .0009, -.057 + (k % 3 ? 0 : .003), PD + .0095, WH, 2.8);
+    fbezel(BC, -.262, -.028, .014, .009, .0035, PD + .007, PD + .004, ME, 2.8, WH, .55); fbezel(BC, -.138, -.028, .014, .009, .0035, PD + .007, PD + .004, ME, 2.8, WH, .55);
+    placard(BC, -.2, -.028, .03, .0065, PD + .001, 1); placard(BC, -.2, -.127, .05, .0065, PD + .001, 1);
+    /* ---- belt, right of centre: sequencer switches behind the hand controller */
+    sub(BC, .098, -.20, .305, -.008, 2.1);
+    fplate(BC, .106, -.039, .297, -.013, PD, PD + .004, WH, .2);
+    for (let i = 0; i < 6; i++) fq(BC, I_LEGA + i * .031 - .011, -.033, I_LEGA + i * .031 + .011, -.019, PD + .0045, WH, .55);
+    fbezel(BC, .2, -.092, .015, .015, .011, PD + .006, PD + .001, WH, 2.8, DK, .6);
+    for (let k = 0; k < 4; k++) { const c = [[-1, -1], [1, -1], [1, 1], [-1, 1]][k]; fq(BC, .2 + c[0] * .0205 - .0055, -.092 + c[1] * .0205 - .0055, .2 + c[0] * .0205 + .0055, -.092 + c[1] * .0205 + .0055, PD + .0065, DK, 1.2); }
+    placard(BC, .2, -.137, .034, .006, PD + .001, 1); placard(BC, .132, -.092, .022, .013, PD + .001, 2); placard(BC, .27, -.092, .022, .013, PD + .001, 2);
+    /* ---- belt, left wing: sequencer switches */
+    sub(BL, -.27, -.19, -.068, -.008, 2.1); sub(BL, -.058, -.06, -.024, -.008, 1.9);
+    for (let k = 0; k < 5; k++) { ftog(BL, -.245 + k * .037, -.05, (k * 7 % 3) - 1); if (k < 4) fwick(BL, -.2265 + k * .037, -.05); }
+    placard(BL, -.17, -.02, .09, .005, PD + .001, 1);
+    frot(BL, -.215, -.112, .9); fdial(BL, -.125, -.115, .024, .4, 6);
+    /* ---- belt, right wing */
+    sub(BR, .068, -.19, .27, -.008, 2.1); sub(BR, .024, -.06, .058, -.008, 1.9);
+    for (let k = 0; k < 4; k++) ftog(BR, .1 + k * .036, -.04, k & 1 ? 1 : -1);
+    frot(BR, .2, -.1, 2.2); placard(BR, .12, -.1, .03, .01, PD + .001, 2);
+
+    /* ---- left panel: altitude */
+    sub(SL, -.158, .165, -.058, .478, 2.3);
+    { const [ta, tb, hw, hh] = I_TAPE; fbezel(SL, ta, tb, hw, hh, .008, PD + .01, PD + .002, WH, .34, DK, 1.0);
+      for (const s of [-1, 1]) T(SL(ta + s * (hw + .001), tb, PD + .0105), SL(ta + s * (hw + .013), tb + .008, PD + .0105), SL(ta + s * (hw + .013), tb - .008, PD + .0105), WH, 3.4);
+      fq(SL, ta - hw, tb - .0008, ta + hw, tb + .0008, PD + .0075, WH, 3.4);
+      placard(SL, ta, tb + hh + .0185, .022, .0055, PD + .001, 1); }
+    sub(SL, -.168, .075, -.036, .158, 2.3);
+    fbezel(SL, -.105, .112, .05, .02, .006, PD + .008, PD + .002, WH, .34, DK, .8); placard(SL, -.105, .146, .02, .005, PD + .001, 1);
+    sub(SL, -.146, .008, -.03, .068, 2.5);
+    G.quad(SL(-.114, .064, PD + .001), SL(-.062, .064, PD + .001), SL(-.062, .012, PD + .001), SL(-.114, .012, PD + .001), NASA_L, 2.6, 0, UV0);
+    sub(SL, -.262, .008, -.172, .478, 2.0);
+    fdial(SL, -.217, .432, .027, .62, 8); fdial(SL, -.217, .358, .027, .3, 8);
+    fbezel(SL, -.217, .262, .026, .044, .006, PD + .008, PD + .002, WH, .34, DK, .8);
+    fq(SL, -.235, .221, -.222, .291, PD + .003, WH, 2.4); fq(SL, -.212, .221, -.199, .262, PD + .003, WH, 2.4);
+    for (let k = 0; k < 5; k++) fq(SL, -.241, .225 + k * .0185, -.193, .2262 + k * .0185, PD + .0038, DK, 1.2);
+    for (let k = 0; k < 3; k++) ftog(SL, -.245 + k * .028, .175, k === 1 ? -1 : 1);
+    latheAt(SL.at(I_HOSE[0], I_HOSE[1], 0), [[.034, 0], [.034, PD + .008], [.025, PD + .014], [.025, .052]], 8, ME, 3.0);
+    for (let k = 0; k < 4; k++) stud(SL(-.245 + k * .02, .03, PD), SL.n, .006, .008, k === 2 ? WH : DK, k === 2 ? 2.8 : 3);
+
+    /* ---- right panel: caution and attitude */
+    sub(SR, .045, .285, .168, .478, 2.3);
+    fbezel(SR, .105, .436, .025, .02, .007, PD + .012, PD + .006, WH, 2.8, WH, .55);
+    for (const c of I_CW) fplate(SR, c[0] - .0155, c[1] - .008, c[0] + .0155, c[1] + .008, PD, PD + .005, WH, .55);
+    sub(SR, .03, .115, .182, .262, 2.2);
+    { const a = .105, b = .188, C = circ(a, b, .047, 16), S = sqr(a, b, .06, 16), H = .05;
+      ringFace(SR, C, S, H, WH, .4); wallOf(SR, S, PD, H, WH, .36); wallOf(SR, C, H, PD, WH, .1); fanOf(SR, C, [a, b], PD + .001, WH, .06);
+      fq(SR, a - .047, b - .0012, a - .013, b + .0012, H + .001, WH, 3.4); fq(SR, a + .013, b - .0012, a + .047, b + .0012, H + .001, WH, 3.4); fq(SR, a - .002, b - .002, a + .002, b + .002, H + .001, WH, 3.4);
+      for (const sa of [-1, 1]) for (const sb of [-1, 1]) stud(SR(a + sa * .051, b + sb * .051, H), SR.n, .005, .003, ME, 3); }
+    sub(SR, .028, .012, .182, .105, 2.3);
+    fbezel(SR, .105, .05, .052, .02, .006, PD + .008, PD + .002, WH, .34, DK, .8); placard(SR, .105, .087, .022, .005, PD + .001, 1);
+    sub(SR, .19, .012, .268, .478, 2.0);
+    fdial(SR, .229, .432, .027, .45, 8); fdial(SR, .229, .358, .027, .72, 8);
+    frot(SR, .229, .275, .4);
+    for (let k = 0; k < 2; k++) { ftog(SR, .212 + k * .034, .2, k ? -1 : 1); }
+    fwick(SR, .229, .2);
+    for (let r = 0; r < 2; r++) for (let k = 0; k < 3; k++) stud(SR(.207 + k * .022, .125 - r * .03, PD), SR.n, .006, .008, (r + k) % 4 === 1 ? WH : DK, (r + k) % 4 === 1 ? 2.8 : 3);
+    for (let k = 0; k < 3; k++) fbezel(SR, .207 + k * .022, .045, .005, .005, .003, PD + .004, PD + .002, ME, 2.6, WH, .5);
+
+    /* ---- pedestal of the hand controller, the couch either side: a suited knee, the arm rest */
+    seg([.31, -.56, -.27], [.277, -.345, -.415], .024, .02, 6, ME, 2.2, false);
+    for (const s of [-1, 1]) { const k = s > 0 ? [.415, -.215, -.345] : [-.50, -.25, -.26], th = [k[0] + s * .08, k[1] - .08, k[2] + .40], sn = [k[0] - s * .01, k[1] - .42, k[2] - .1];
+      G.ball(k, [.086, 0, 0], [0, .086, 0], [0, 0, .09], SU, 1.9, 0, 8, 5);
+      seg(k, th, .083, .097, 7, SU, 1.8, false); seg(k, sn, .08, .066, 7, SU, 1.7, false);
+      seg(V3.lerp(k, th, .22), V3.lerp(k, th, .3), .092, .093, 7, DK, 2.6, false);
+      box([k[0], k[1] + .074, k[2] + .05], .03, .008, .035, WH, 2.4); }
+  }); cabLight(p, 0, p.length / 12, 1); return p; })();
+
+  // lamps that burn whenever the bus is alive
+  const I_LAMPS = part(() => {
+    fq(F_BC, -.058 - .012, -.056 - .010, -.058 + .012, -.056 + .010, PD + .0052, WH, .4, 1.5, UVM);       // retro ARM
+    for (const i of [1, 6]) fq(F_SR, I_CW[i][0] - .0155, I_CW[i][1] - .008, I_CW[i][0] + .0155, I_CW[i][1] + .008, PD + .0062, WH, .4, .7, UVM);
+    fq(F_SR, .207 - .005, .04, .207 + .005, .05, PD + .0032, WH, .4, 1.6, UVM); fq(F_SR, .251 - .005, .04, .251 + .005, .05, PD + .0032, WH, .4, .8, UVM);
+    const [ta, tb, hw, hh] = I_TAPE; fq(F_SL, ta - hw, tb - hh, ta + hw, tb + hh, PD + .0025, DK, .5, .22);                // tape backlight
+  });
+  /* the parts that move */
+  const I_GUARD = part(() => { const w = .021, L = .072, h = .046;           // hinge at the origin, cover running down the panel (+z), standing proud (+y)
+    Q([-w, h, .004], [w, h, .004], [w, h, L], [-w, h, L], WH, 2.8); for (const s of [-1, 1]) Q([s * w, h, .004], [s * w, h, L], [s * w, .003, L], [s * w, .003, .004], WH, 2.3);
+    Q([-w, h, L], [w, h, L], [w, .003, L], [-w, .003, L], WH, 2.5);
+    for (let k = 0; k < 3; k++) { const z0 = .01 + k * .02; Q([-w, h + .0012, z0], [w, h + .0012, z0 + .012], [w, h + .0012, z0 + .021], [-w, h + .0012, z0 + .009], DK, 1.2); }
+    seg([-w - .005, .004, 0], [w + .005, .004, 0], .0045, .0045, 5, ME, 3, true); });
+  const I_BAT = part(() => { seg([0, 0, 0], [0, .03, 0], .0048, .007, 6, ME, 4, false); ball([0, .032, 0], .0082, ME, 4.4, 6, 4); });
+  const I_THAND = part(() => { seg([0, -.075, 0], [0, .03, 0], .0065, .0065, 6, ME, 3.4, false);
+    for (let k = 0; k < 5; k++) seg([-.045 + k * .018, .034, 0], [-.045 + (k + 1) * .018, .034, 0], .0115, .0115, 7, k & 1 ? DK : WH, k & 1 ? 1.4 : 2.9, k === 0 || k === 4);
+    ball([0, .034, 0], .0138, ME, 3, 6, 4); });
+  const I_LEVER = part(() => { box([0, .062, 0], .0048, .052, .0028, ME, 3.4); seg([0, .098, 0], [0, .112, 0], .008, .008, 6, DK, 2, false); ball([0, .123, 0], .0165, WH, 2.9, 8, 5); });
+  const I_STICK = part(() => { lathe([[.036, -.012], [.031, .004], [.013, .036]], 0, TAU, 8, DK, 3.4);
+    seg([0, .03, 0], [0, .075, 0], .008, .008, 6, ME, 3, false);
+    seg([0, .07, .004], [0, .15, -.01], .0145, .017, 7, WH, .3, true);
+    G.ball([0, .158, -.011], [.021, 0, 0], [0, .015, 0], [0, 0, .025], WH, .42, 0, 7, 4);
+    box([0, .176, -.017], .0065, .006, .0065, WH, 2.8); box([0, .1, -.026], .004, .015, .006, DK, 3);
+    seg([0, .158, .012], [0, .158, .03], .006, .005, 5, WH, 2.4, true);
+    for (let k = 0; k < 3; k++) seg([0, .088 + k * .018, .0012 - k * .003], [0, .092 + k * .018, .0006 - k * .003], .0178, .0178, 7, WH, .16, false); });
+  const I_BALL = part(() => { const R = .045, pr = []; for (let j = 0; j <= 8; j++) { const p = j / 8 * PI; pr.push([Math.sin(p) * R, -Math.cos(p) * R]); }
+    lathe(pr, 0, TAU, 10, WH, 1, { sm: true, shf: (i, j) => j < 4 ? ((j & 1) ? .34 : .2) : ((j & 1) ? 2.2 : 2.9) }); });
+  const I_SCR = [];
+  function strap(ax, ay, az, L, w, ph, amp, t) { let prev = null; const N = 6;
+    for (let k = 0; k <= N; k++) { const s = k / N, a = amp * (Math.sin(t * 1.9 + ph) * s + .35 * Math.sin(t * 4.3 + ph * 2.1) * s * s), q = [ax + Math.sin(a) * L * s, ay - Math.cos(a) * L * s, az + Math.sin(t * 1.3 + ph) * amp * .3 * L * s];
+      if (prev) G.quad([prev[0] - w, prev[1], prev[2]], [prev[0] + w, prev[1], prev[2]], [q[0] + w, q[1], q[2]], [q[0] - w, q[1], q[2]], SU, 1.9 - .25 * (k & 1), 0, [.1, k * .19, .4, k * .19 + .19]); prev = q; }
+    G.box([prev[0], prev[1] - .02, prev[2]], [w + .007, 0, 0], [0, .021, 0], [0, 0, .004], ME, 3.4, 0);
+    G.quad([prev[0] - w, prev[1] - .012, prev[2] + .0045], [prev[0] + w, prev[1] - .012, prev[2] + .0045], [prev[0] + w, prev[1] - .03, prev[2] + .0045], [prev[0] - w, prev[1] - .03, prev[2] + .0045], DK, 1.4, 0); }
+
+  function interior(B, t, st) {
+    if (!B.d) { if (!I_SCR[0]) I_SCR[0] = makeBatch(30000); const s = I_SCR[0]; s.reset(); interior(s, t, st); emit(B, s.d.subarray(0, s.n * 12), M_ID); return; }
+    t = num(t, 0); st = st || {}; const q = st.q || [], q0 = clamp(num(q[0], 0), 0, 1), q1 = clamp(num(q[1], 0), 0, 1), q2 = clamp(num(q[2], 0), 0, 1), q3 = clamp(num(q[3], 0), 0, 1);
+    const alarm = clamp(num(st.alarm, 0), 0, 1), alt = Math.max(0, num(st.alt, 1200)), lit = clamp(num(st.lit, 1), 0, 1), amb = .2 + .8 * lit;
+    emit(B, I_STATIC, M_ID, 1, amb); if (lit > .004) emit(B, I_LAMPS, M_ID, 1, lit);
+    const keep = G, n0 = B.n; G = B;
+    // retro FIRE: the guard lifts, then the switch goes over
+    emit(B, I_GUARD, mmul(F_BC.at(0, -.046, PD + .003), mRX(-1.6 * ease(q0 / .45))));
+    emit(B, I_BAT, mmul(F_BC.at(0, -.084, PD + .006), mRX(lerp(.5, -.5, ease((q0 - .45) / .4)))));
+    // leg T-handle: a quarter turn and a pull
+    emit(B, I_THAND, mmul(F_BC.at(.2, -.092, PD + .008 + .062 * ease(q2)), mRY(-.9 * ease(q2 * 1.6))));
+    // brace lever across its quadrant
+    emit(B, I_LEVER, mmul(F_BC.at(-.2, -.08, -.05), mRZ(lerp(.62, -.62, ease(q3)))));
+    // attitude controller
+    { const e = ease(q1), tr = e * Math.sin(t * 23) * .012; emit(B, I_STICK, mmul(mT(.277, -.315, -.42), mmul(mRX(.30), mmul(mRZ(.42 * e + tr), mRX(-.14 * e))))); }
+    // attitude ball: wanders with the vehicle, rolls when the controller is held over
+    emit(B, I_BALL, mmul(F_SR.at(.105, .188, .008), mmul(mRY(.55 * ease(q1) + .05 * Math.sin(t * .9)), mmul(mRX(.1 * Math.sin(t * .63 + 1) - .12), M_FWD))));
+    // altimeter tape: 20 m to a tick, the ground comes up as a solid bar
+    { const f = F_SL, ca = I_TAPE[0], cb = I_TAPE[1], hw = I_TAPE[2] - .002, hh = I_TAPE[3] - .002, k = .25 / 520, d = PD + .004, g = cb - alt * k;
+      if (g > cb - hh) fq(f, ca - hw, cb - hh, ca + hw, Math.min(g, cb + hh), d, WH, 1.5);
+      for (let v = Math.max(0, Math.ceil((alt - hh / k) / 20) * 20), v1 = alt + hh / k; v <= v1; v += 20) { const b = cb + (v - alt) * k; if (b > cb + hh - .002 || b < cb - hh + .002) continue; const M = v % 100 === 0, th = M ? .0019 : .001;
+        fq(f, M ? ca - hw * .9 : ca + hw * .15, b - th, ca + hw * .9, b + th, d, WH, 3.2); if (v % 500 === 0) fq(f, ca - hw * .9, b - .006, ca - hw * .45, b + .006, d, WH, 3.2); } }
+    // suit hose from its socket, restraint straps hanging from the overhead: all swing, less once the harness is locked
+    { const loose = 1 - .8 * ease(q3), A = F_SL(I_HOSE[0], I_HOSE[1], .05), n = F_SL.n, sw = Math.sin(t * 1.7) * .014 * loose, C = [A[0] + n[0] * .07 + sw, A[1] - .20, A[2] + n[2] * .07 + sw * .5], E = [-.41 + sw * .5, -.56, -.37]; let p = A;
+      for (let i = 1; i <= 26; i++) { const s = i / 26, u = 1 - s, pt = [u * u * A[0] + 2 * u * s * C[0] + s * s * E[0], u * u * A[1] + 2 * u * s * C[1] + s * s * E[1], u * u * A[2] + 2 * u * s * C[2] + s * s * E[2]]; G.seg(p, pt, i & 1 ? .0215 : .0165, i & 1 ? .0165 : .0215, 6, SU, 1.7, 0, false); p = pt; }
+      strap(-.385, .52, -.36, .5, .019, 0, .06 * loose + .008, t); strap(.375, .52, -.37, .37, .019, 2.1, .09 * loose + .01, t); }
+    cabLight(B.d, n0, B.n, amb);
+    // everything that burns
+    if (lit > .004) {
+      const fl = alarm > 0 ? (Math.sin(t * 9.4) > -.2 ? 1 : .06) * alarm : 0;
+      flamp(F_SR, .105, .436, .025, .02, PD + .0072, 3.2 * fl * lit);                                   // master caution
+      for (const i of [0, 4, 5, 9, 10]) flamp(F_SR, I_CW[i][0], I_CW[i][1], .0155, .008, PD + .0062, alarm * (i & 1 ? 2.2 : 2.2 * (1 - .9 * (fl > .5 ? 1 : 0) * (i === 4 ? 1 : 0))) * lit);
+      flamp(F_BC, .058, -.056, .017, .013, PD + .0052, 3.2 * clamp((q0 - .85) / .1, 0, 1) * lit * (.9 + .1 * Math.sin(t * 37)));   // retro FIRE
+      for (let i = 0; i < 6; i++) flamp(F_BC, I_LEGA + i * .031, -.026, .011, .007, PD + .0057, 2.4 * clamp((q2 - .35 - i * .1) / .08, 0, 1) * lit);
+      flamp(F_BC, -.262, -.028, .014, .009, PD + .0052, (q3 < .5 ? .9 : 0) * lit); flamp(F_BC, -.138, -.028, .014, .009, PD + .0052, 2.6 * clamp((q3 - .9) / .08, 0, 1) * lit);
+    }
+    { const v = Math.min(9999, Math.round(alt)), e = 2.6 * lit; for (let i = 0; i < 4; i++) { const p = Math.pow(10, 3 - i), dg = Math.floor(v / p) % 10; fdig(F_SL, -.105 - .036 + i * .024, .112, .0075, .0135, v >= p || i === 3 ? dg : -1, PD + .003, e); }
+      const s = Math.floor(Math.abs(t)) % 6000, T4 = [Math.floor(s / 600) % 10, Math.floor(s / 60) % 10, Math.floor(s % 60 / 10), s % 10]; for (let i = 0; i < 4; i++) fdig(F_SR, .105 - .04 + i * .024 + (i > 1 ? .008 : 0), .05, .0075, .0135, T4[i], PD + .003, e);
+      for (const b of [.044, .056]) flamp(F_SR, .105 + .0005, b, .0016, .0016, PD + .003, e); }
+    G = keep;
+  }
+
+  /* ================================================================================================ dimensions for the game */
+  const EYE_A = -60 * RAD;
   const DIM = {
-    r: R,                         // body radius (3.40 m across the flats of the can)
-    h: 4.20,                      // ground to the tip of the whip antenna
-    hatchY: 1.73,                 // centre of the open hatch above the ground (the opening runs 1.30 to 2.16)
-    hatchZ: 1.74,                 // centre out to the hatch boss face (the flat hull behind it is at 1.591)
-    stepZ: 2.62,                  // where the bottom step's feet meet the ground
-    padR: 2.80,                   // footpad spread radius
-    porchY: 1.30,                 // grated porch deck, level with the hatch sill
-    sillY: 1.30,
-    emblem: [-0.92, 1.88, -1.45], // centre of the 0.6 m NASA emblem plate (normal -0.54, 0, -0.84), left of the hatch
+    r: 1.87,                                    // body radius (platform corners); the bell is 1.55 at the deck
+    h: 4.25,                                    // rest plane to the tip of the whip
+    hatchY: HY, hatchZ: -ZF,                    // centre of the hatch opening; axis to the hatch-bay face
+    stepZ: -(LAD_H[2] - LAD_L * Math.cos(Math.asin((LAD_H[1] - .03) / LAD_L))),   // where the ladder feet meet the ground
+    padR: PAD_REST, porchY: DECK + .011, sillY: HY - HHH,
+    emblem: [0, 2.24, ZF - .0155], emblemN: [0, 0, -1],
+    eye: [Math.sin(EYE_A) * .84, 1.635, -Math.cos(EYE_A) * .84], eyeDir: [Math.sin(EYE_A), 0, -Math.cos(EYE_A)],   // the player's couch: where interior()'s camera sits, and the way it looks
+    engine: { p: [0, -.27, 0], dir: [0, -1, 0], r: .40 },
+    jets: JETS,
+    pads: LEGA.map(a => [Math.sin(a) * PAD_REST, -Math.cos(a) * PAD_REST]),
+    egress: [[0, 1.45, -1.15], [0, 1.45, -1.72], [0, 2.20, -2.00], [0, 1.95, -2.40], [0, 1.60, -2.95]],
+    legs: NLEG, legAz: LEGA.slice(), stroke: STROKE, crushRest: C_REST,
   };
-  // vertical stack
-  const Y_BELL = 0.44, Y_SH_IN = 0.88, Y_SH_MID = 0.78, Y_SH_RIM = 0.84, Y_SKIRT = 0.96;
-  const Y_BAY0 = 0.96, Y_BAY1 = 1.22, Y_CAB0 = 1.22, Y_CABM = 1.84, Y_CAB1 = 2.46;
-  const Y_UP1 = 3.04, Y_DRUM1 = 3.36, Y_CAP = 3.50;
-  // ribs: facet 0 is the wide flat hatch bay, facets 1..14 wrap the rest
-  const HA = 0.36, NS = 14, DA = (TAU - 2 * HA) / NS;
-  const ANG = [-HA]; for (let i = 0; i <= NS; i++) ANG.push(HA + i * DA);
-  const FLAT_Z = -R * Math.cos(HA);            // -1.591, the flat of the hatch bay
-  const FLAT_X = R * Math.sin(HA);             //  0.599, its half width
-  // per-facet shade so neighbouring panels never match: seams read without any texture
-  const PSH = [1.00, 1.18, 0.89, 1.10, 0.84, 1.21, 0.95, 1.07, 0.87, 1.15, 1.02, 0.83, 1.13, 0.93, 1.06];
-  // uv windows on the hull sheet, kept clear of the lettering band so no text is sliced
-  const UVW = [[0, .02], [.25, .72], [.5, .04], [.75, .74], [.12, .22], [.62, .78], [.37, .06], [.87, .76]];
-  const uvF = (i, k) => { const w = UVW[(i * 3 + k * 5) & 7]; return [w[0], w[1], w[0] + .24, w[1] + .24]; };
-
-  /* ----------------------------------------------------------------------- generic builders
-     Each takes P (local -> world point) so the same code serves the exterior (tilted world basis)
-     and anything else that wants it. C(angle, radius, y) is the cylindrical form. */
-  const mkP = (O, ex, ey, ez) => p => [
-    O[0] + ex[0] * p[0] + ey[0] * p[1] + ez[0] * p[2],
-    O[1] + ex[1] * p[0] + ey[1] * p[1] + ez[1] * p[2],
-    O[2] + ex[2] * p[0] + ey[2] * p[1] + ez[2] * p[2]];
-
-  /* ----------------------------------------------------------------------- the exterior */
-  function exterior(B, cx, cy, cz, heading, gyFn) {
-    const G = typeof gyFn === 'function' ? gyFn : () => cy;
-    const ex0 = V3.rotY([1, 0, 0], heading), ez0 = V3.rotY([0, 0, 1], heading);
-    const legA = [0.7854, 2.3562, 3.9270, 5.4978];                 // four legs, clear of the hatch at 0
-    const legL = legA.map(a => [Math.sin(a) * DIM.padR, -Math.cos(a) * DIM.padR]);
-    const w2 = (lx, lz) => [cx + ex0[0] * lx + ez0[0] * lz, cz + ex0[2] * lx + ez0[2] * lz];
-
-    // settle: least-squares plane through the four footpad ground heights, leaned no more than ~2.3 deg
-    const gh = legL.map(l => { const w = w2(l[0], l[1]); return G(w[0], w[1]); });
-    const c0 = (gh[0] + gh[1] + gh[2] + gh[3]) / 4;
-    let ta = 0, tb = 0; for (let i = 0; i < 4; i++) { ta += gh[i] * legL[i][0]; tb += gh[i] * legL[i][1]; }
-    const nn = 2 * DIM.padR * DIM.padR; ta /= nn; tb /= nn;
-    const tl = Math.hypot(ta, tb), mx = 0.040; if (tl > mx) { ta *= mx / tl; tb *= mx / tl; }
-    const ey = V3.norm([-ta * ex0[0] - tb * ez0[0], 1, -ta * ex0[2] - tb * ez0[2]]);
-    const ez = V3.norm(V3.sub(ez0, V3.mul(ey, V3.dot(ez0, ey))));
-    const ex = V3.cross(ey, ez);
-    const P = mkP([cx, c0, cz], ex, ey, ez);
-    const C = (a, r, y) => P([Math.sin(a) * r, y, -Math.cos(a) * r]);
-    // residual stroke per leg: each footpad finds its own real ground, so no two legs stand the same
-    const dyOf = (lx, lz) => { const w = w2(lx, lz); return clamp((G(w[0], w[1]) - P([lx, 0, lz])[1]) / ey[1], -0.20, 0.20); };
-    const legDy = legL.map(l => dyOf(l[0], l[1]));
-
-    /* --- helpers bound to this frame --- */
-    // faceted band of the can. skip(i) leaves a facet out; r is per-facet constant so the hatch bay stays flat.
-    const band = (y0, y1, r0, r1, lay, base, skip, emis) => {
-      for (let i = 0; i < 15; i++) {
-        if (skip && skip(i)) continue;
-        const a0 = ANG[i], a1 = ANG[i + 1];
-        B.quad(C(a0, r1, y1), C(a1, r1, y1), C(a1, r0, y0), C(a0, r0, y0), lay, base * PSH[i], emis || 0, uvF(i, y0 * 7 | 0));
-      }
-    };
-    // raised flange ring with a bolt circle: underside, outer face, topside
-    const flange = (y, r, out, h, lay, base) => {
-      for (let i = 0; i < 15; i++) {
-        const a0 = ANG[i], a1 = ANG[i + 1], ro = r + out, s = base * (0.9 + 0.2 * (i & 1));
-        B.quad(C(a0, ro, y), C(a1, ro, y), C(a1, r, y), C(a0, r, y), lay, s * .72, 0, [0, 0, .2, .2]);
-        B.quad(C(a0, ro, y + h), C(a1, ro, y + h), C(a1, ro, y), C(a0, ro, y), lay, s, 0, [0, 0, .3, .1]);
-        B.quad(C(a0, r, y + h), C(a1, r, y + h), C(a1, ro, y + h), C(a0, ro, y + h), lay, s * 1.12, 0, [0, 0, .2, .2]);
-      }
-    };
-    const bolts = (y, r, lay, base, n, step) => {
-      for (let i = 0; i < 15; i += (step || 1)) {
-        const a = (ANG[i] + ANG[i + 1]) * .5;
-        B.seg(C(a, r - .01, y), C(a, r + .022, y), .019, .016, 3, lay, base, 0, true);
-      }
-    };
-    // pipe run through a list of local points, with ball elbows and a clamp at every other joint
-    const pipe = (pts, rr, lay, base, sides) => {
-      for (let i = 0; i + 1 < pts.length; i++) B.seg(P(pts[i]), P(pts[i + 1]), rr, rr, sides || 5, lay, base, 0, i === 0 || i === pts.length - 2);
-      for (let i = 1; i + 1 < pts.length; i++) { const q = P(pts[i]); B.ball(q, V3.mul(ex, rr * 1.18), V3.mul(ey, rr * 1.18), V3.mul(ez, rr * 1.18), lay, base * 1.1, 0, 6, 4); }
-    };
-    // P-clamp / standoff block
-    const clamp3 = (p, dir, rr, lay, base) => {
-      const d = V3.norm(dir), a = V3.mul(V3.perp(d), rr * 1.5), b = V3.mul(V3.cross(d, V3.perp(d)), rr * 1.5);
-      B.box(p, a, b, V3.mul(d, rr * .5), lay, base);
-    };
-    /* crinkled multi-layer insulation. pt(u,v,push) -> world point, push along the blanket's own normal.
-       Pillowed by the quilting stitches, pinched flat at the taped edges, with a fine crinkle on top. */
-    const quilt = (pt, nu, nv, qu, qv, amp, seed, base, lay) => {
-      const r = rnd(seed), p1 = r() * TAU, p2 = r() * TAU, p3 = r() * TAU, sh = [];
-      for (let i = 0; i < nu * nv; i++) sh.push(base * (0.93 + 0.15 * r()));
-      // undulations slow enough for the grid to resolve: the facets end up at all sorts of angles, which is
-      // what makes foil read as foil. The blanket is pinched flat where its edge tape holds it down.
-      const h = (u, v) => {
-        const e = Math.min(1, Math.min(u, 1 - u) * 5.5) * Math.min(1, Math.min(v, 1 - v) * 5.5);
-        const a1 = Math.sin(u * PI * qu + p1) * Math.sin(v * PI * qv + p2);
-        const a2 = Math.sin(u * PI * qu * 1.75 + p3) * Math.cos(v * PI * qv * 1.45 + p1);
-        const a3 = Math.sin((u + v) * PI * qu * .85 + p2);
-        return e * (0.42 + 0.38 * a1 + 0.36 * a2 + 0.16 * a3) * amp;
-      };
-      for (let j = 0; j < nv; j++) for (let i = 0; i < nu; i++) {
-        const u0 = i / nu, u1 = (i + 1) / nu, v0 = j / nv, v1 = (j + 1) / nv;
-        B.quad(pt(u0, v1, h(u0, v1)), pt(u1, v1, h(u1, v1)), pt(u1, v0, h(u1, v0)), pt(u0, v0, h(u0, v0)),
-          lay || TL.SUIT, sh[j * nu + i], 0, [u0 * 1.6 % 1, v0 * 1.6 % 1, (u0 * 1.6 % 1) + .2, (v0 * 1.6 % 1) + .2]);
-      }
-    };
-    const quiltBand = (a0, a1, y0, y1, rr, nu, nv, seed, base) =>
-      quilt((u, v, p) => C(a0 + (a1 - a0) * u, rr + p, y0 + (y1 - y0) * v), nu, nv, nu / 4, nv / 4, .105, seed, base, TL.SUIT);
-    // a grating: frame rails plus slats with daylight between them
-    const grate = (o, du, dv, n, th, lay, base) => {
-      const q = (uu, vv) => P([o[0] + du[0] * uu + dv[0] * vv, o[1] + du[1] * uu + dv[1] * vv, o[2] + du[2] * uu + dv[2] * vv]);
-      const hz = V3.mul(V3.norm(V3.cross(V3.sub(q(1, 0), q(0, 0)), V3.sub(q(0, 1), q(0, 0)))), th * .5);
-      for (let i = 0; i < n; i++) {
-        const u0 = (i + .18) / n, u1 = (i + .82) / n;
-        const c = V3.mul(V3.add(q(u0, 0), q(u1, 1)), .5);
-        B.box(c, V3.mul(V3.sub(q(u1, 0), q(u0, 0)), .5), hz, V3.mul(V3.sub(q(0, 1), q(0, 0)), .5), lay, base * (i & 1 ? 1.06 : .94));
-      }
-    };
-    // shallow paraboloid dish, open on the +n side
-    const dish = (c, n, up, rr, dep, seg, lay, base) => {
-      const u = V3.norm(V3.sub(up, V3.mul(n, V3.dot(up, n)))), v = V3.cross(n, u), rings = 3;
-      const pt = (i, j) => { const a = i / seg * TAU, r0 = rr * j / rings, d = dep * (j / rings) * (j / rings);
-        return [c[0] + u[0] * Math.cos(a) * r0 + v[0] * Math.sin(a) * r0 - n[0] * d, c[1] + u[1] * Math.cos(a) * r0 + v[1] * Math.sin(a) * r0 - n[1] * d, c[2] + u[2] * Math.cos(a) * r0 + v[2] * Math.sin(a) * r0 - n[2] * d]; };
-      for (let j = 0; j < rings; j++) for (let i = 0; i < seg; i++) {
-        const sh = base * (j === rings - 1 ? 1.0 : 1.25);
-        if (j === 0) B.tri(pt(i, 0), pt(i + 1, 1), pt(i, 1), lay, sh);
-        else B.quad(pt(i, j), pt(i + 1, j), pt(i + 1, j + 1), pt(i, j + 1), lay, sh, 0, [0, 0, .3, .3]);
-        // the ribbed back
-        const bo = V3.mad(pt(i, j + 1), n, -.02), bi = V3.mad(pt(i, j), n, -.02);
-        if (j === rings - 1) B.quad(pt(i, j + 1), pt(i + 1, j + 1), V3.mad(pt(i + 1, j + 1), n, -.035), V3.mad(pt(i, j + 1), n, -.035), lay, base * .7);
-        if (j > 0 && (i & 1) === 0) B.quad(bi, bo, pt(i, j + 1), pt(i, j), lay, base * .62);
-      }
-    };
-
-    /* =================================================================== 1. base shield */
-    // ablative heat shield: a shallow dish, charred unevenly, with the engine cavity in the middle
-    for (let i = 0; i < 15; i++) {
-      const a0 = ANG[i], a1 = ANG[i + 1], ch = 1.25 + 0.55 * ((i * 7) % 5) / 4;   // char mottling
-      B.quad(C(a0, 1.18, Y_SH_MID), C(a1, 1.18, Y_SH_MID), C(a1, .56, Y_SH_IN), C(a0, .56, Y_SH_IN), TL.DARK, ch, 0, uvF(i, 1));
-      B.quad(C(a0, 1.62, Y_SH_RIM), C(a1, 1.62, Y_SH_RIM), C(a1, 1.18, Y_SH_MID), C(a0, 1.18, Y_SH_MID), TL.DARK, ch * 1.15, 0, uvF(i, 2));
-      // the shield's bolted retaining strip, every third facet lost its ablator plug
-      if (i % 3 === 0) B.box(C((a0 + a1) * .5, 1.38, Y_SH_MID - .01), V3.mul(ex, .07), V3.mul(ey, .022), V3.mul(ez, .07), TL.METAL, 1.25);
-    }
-    // engine cavity cone, climbing up into the body
-    band(Y_SH_IN, 1.10, .56, .34, TL.DARK, 1.05);
-    // flared base skirt
-    band(Y_SH_RIM, Y_SKIRT, 1.62, R, TL.DARK, 1.45);
-    flange(Y_SKIRT - .03, R - .005, .055, .055, TL.METAL, 1.05);
-    bolts(Y_SKIRT + .005, R + .045, TL.METAL, 1.3, 15, 1);
-
-    /* =================================================================== 2. engines */
-    // main descent engine: throat, scorched bell, cooling tubes, gimbal actuators
-    const EB = (r0, r1, y0, y1, lay, s, cap) => B.seg(P([0, y0, 0]), P([0, y1, 0]), r0, r1, 14, lay, s, 0, cap);
-    EB(.155, .20, 1.06, .86, TL.METAL, 1.05);
-    EB(.20, .60, .86, Y_BELL, TL.METAL, .70);                               // the bell, charred to the lip
-    EB(.185, .565, .85, Y_BELL + .02, TL.DARK, 1.7);                        // sooted inner wall
-    for (let i = 0; i < 14; i++) {                                          // exit lip
-      const a0 = i / 14 * TAU, a1 = (i + 1) / 14 * TAU, p = (a, r, y) => P([Math.cos(a) * r, y, Math.sin(a) * r]);
-      B.quad(p(a0, .60, Y_BELL), p(a1, .60, Y_BELL), p(a1, .565, Y_BELL + .015), p(a0, .565, Y_BELL + .015), TL.METAL, .55);
-      B.quad(p(a0, .615, Y_BELL + .05), p(a1, .615, Y_BELL + .05), p(a1, .60, Y_BELL), p(a0, .60, Y_BELL), TL.METAL, .9);  // stiffening hoop
-    }
-    for (let i = 0; i < 12; i++) {                                          // regenerative cooling tubes
-      const a = i / 12 * TAU, c = Math.cos(a), s = Math.sin(a);
-      B.seg(P([c * .218, .84, s * .218]), P([c * .62, Y_BELL + .02, s * .62]), .024, .030, 3, TL.METAL, .95);
-    }
-    B.seg(P([0, 1.08, 0]), P([0, .99, 0]), .23, .23, 12, TL.METAL, 1.15, 0, false);  // gimbal ring
-    for (const sg of [-1, 1]) {                                             // gimbal actuators
-      B.seg(P([sg * .30, 1.16, 0]), P([sg * .20, .96, sg * .06]), .045, .032, 5, TL.METAL, 1.35, 0, true);
-      B.box(P([sg * .32, 1.19, 0]), V3.mul(ex, .055), V3.mul(ey, .045), V3.mul(ez, .05), TL.METAL, 1.1);
-    }
-    // four trim / landing-abort bells slung outboard of the shield, canted out, scorched at the lip
-    for (let k = 0; k < 4; k++) {
-      const a = legA[k] + PI / 4, c = Math.sin(a), s = -Math.cos(a);
-      const t0 = [c * 1.27, .86, s * 1.27], t1 = [c * 1.50, .42, s * 1.50];
-      B.seg(P(t0), P(t1), .085, .185, 9, TL.METAL, .85, 0, false);
-      B.seg(P([c * 1.275, .84, s * 1.275]), P([c * 1.494, .445, s * 1.494]), .075, .170, 9, TL.DARK, 1.6, 0, false);
-      B.seg(P([c * 1.21, 1.02, s * 1.21]), P(t0), .060, .085, 6, TL.METAL, 1.2, 0, true);
-      B.box(P([c * 1.19, 1.06, s * 1.19]), V3.mul(V3.norm(V3.sub(P([c, 1, s]), P([0, 1, 0]))), .07), V3.mul(ey, .055), V3.mul(V3.cross(ey, V3.norm(V3.sub(P([c, 1, s]), P([0, 1, 0])))), .08), TL.METAL, 1.25);
-      pipe([[c * .98, 1.20, s * .98], [c * 1.10, 1.12, s * 1.10], [c * 1.18, 1.07, s * 1.18]], .028, TL.METAL, 1.3, 4);
-    }
-    // engine compartment: propellant manifold ring under the shield and four feed legs into the injector
-    for (let i = 0; i < 4; i++) {
-      const a = i / 4 * TAU + .4, c = Math.cos(a), s = Math.sin(a), a2 = (i + 1) / 4 * TAU + .4;
-      pipe([[c * .86, 1.00, s * .86], [Math.cos(a2) * .86, 1.00, Math.sin(a2) * .86]], .030, TL.METAL, 1.25, 4);
-      pipe([[c * .86, 1.00, s * .86], [c * .52, .99, s * .52], [c * .26, 1.06, s * .26]], .026, TL.METAL, 1.4, 4);
-      B.box(P([c * .86, 1.04, s * .86]), V3.mul(ex, .05), V3.mul(ey, .05), V3.mul(ez, .05), TL.METAL, 1.1);
-    }
-
-    /* =================================================================== 3. landing gear */
-    for (let k = 0; k < 4; k++) {
-      const a = legA[k], o = [Math.sin(a), 0, -Math.cos(a)], g = [Math.cos(a), 0, Math.sin(a)];  // outward, tangential
-      const dy = legDy[k], pr = DIM.padR;
-      const at = [o[0] * 1.56, 1.34, o[2] * 1.56];                       // primary strut body attachment
-      const hub = [o[0] * pr, dy + .30, o[2] * pr];                      // footpad hub top
-      const lerp3 = (p, q, t) => [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t, p[2] + (q[2] - p[2]) * t];
-      // clevis fitting + MLI boot where the strut leaves the hull
-      B.box(P([o[0] * 1.69, 1.34, o[2] * 1.69]), V3.mul(V3.add(V3.mul(ex, g[0]), V3.mul(ez, g[2])), .10), V3.mul(ey, .085), V3.mul(V3.add(V3.mul(ex, o[0]), V3.mul(ez, o[2])), .075), TL.METAL, 1.2);
-      B.seg(P(at), P(lerp3(at, hub, .17)), .125, .115, 7, TL.SUIT, 1.55, 0, false);
-      // outer shock cylinder, then the honeycomb-crushed piston: its exposed length is this leg's own stroke
-      B.seg(P(lerp3(at, hub, .07)), P(lerp3(at, hub, .58)), .088, .081, 7, TL.METAL, 1.25, 0, true);
-      B.seg(P(lerp3(at, hub, .50)), P(hub), .060, .056, 6, TL.METAL, 1.45, 0, true);
-      B.seg(P(lerp3(at, hub, .555)), P(lerp3(at, hub, .60)), .098, .098, 7, TL.METAL, 1.05, 0, true);   // gland nut
-      // two splayed secondary struts and the cross brace between them
-      const sa = [], sb = [];
-      for (const sg of [-1, 1]) {
-        const up = [o[0] * 1.63 + g[0] * sg * .42, 1.00, o[2] * 1.63 + g[2] * sg * .42];
-        const dn = lerp3(at, hub, .74); const lo = [dn[0] + g[0] * sg * .09, dn[1], dn[2] + g[2] * sg * .09];
-        B.seg(P(up), P(lo), .052, .044, 5, TL.METAL, 1.3, 0, true); sa.push(up); sb.push(lo);
-        B.box(P([o[0] * 1.71 + g[0] * sg * .42, 1.00, o[2] * 1.71 + g[2] * sg * .42]), V3.mul(V3.add(V3.mul(ex, g[0]), V3.mul(ez, g[2])), .06), V3.mul(ey, .055), V3.mul(V3.add(V3.mul(ex, o[0]), V3.mul(ez, o[2])), .05), TL.METAL, 1.15);
-      }
-      B.seg(P(lerp3(sa[0], sb[0], .55)), P(lerp3(sa[1], sb[1], .55)), .026, .026, 4, TL.METAL, 1.4, 0, true);
-      // footpad: hub, conical upper face with gussets, rim, bottom plate flat on the ground
-      const pc = y => P([o[0] * pr, y, o[2] * pr]);
-      const pp = (ang, r, y) => P([o[0] * pr + Math.sin(ang) * r, y, o[2] * pr - Math.cos(ang) * r]);
-      B.seg(pc(dy + .34), pc(dy + .20), .105, .135, 8, TL.METAL, 1.3, 0, true);
-      for (let i = 0; i < 12; i++) {   // a shallow crushed dish, not a cone: wide flat sole, short rim, lip
-        const a0 = i / 12 * TAU, a1 = (i + 1) / 12 * TAU, s2 = 1.1 + .26 * ((i * 5) % 3);
-        B.quad(pp(a0, .135, dy + .195), pp(a1, .135, dy + .195), pp(a1, .455, dy + .105), pp(a0, .455, dy + .105), TL.METAL, s2 * .92);
-        B.quad(pp(a0, .455, dy + .105), pp(a1, .455, dy + .105), pp(a1, .475, dy + .055), pp(a0, .475, dy + .055), TL.METAL, s2 * 1.25);
-        B.quad(pp(a0, .475, dy + .055), pp(a1, .475, dy + .055), pp(a1, .44, dy + .012), pp(a0, .44, dy + .012), TL.METAL, s2 * .8);
-        B.quad(pp(a0, .44, dy + .01), pp(a1, .44, dy + .01), pp(a1, 0, dy + .01), pp(a0, 0, dy + .01), TL.DARK, 1.0);
-        if (i % 2 === 0) {            // radial stiffener standing proud of the dish
-          const w = .045;
-          B.quad(pp(a0 - w, .16, dy + .225), pp(a0 + w, .16, dy + .225), pp(a0 + w, .45, dy + .135), pp(a0 - w, .45, dy + .135), TL.METAL, 1.55);
-          B.quad(pp(a0 - w, .16, dy + .225), pp(a0 - w, .45, dy + .135), pp(a0 - w, .45, dy + .105), pp(a0 - w, .16, dy + .19), TL.METAL, 1.1);
-          B.quad(pp(a0 + w, .45, dy + .135), pp(a0 + w, .16, dy + .225), pp(a0 + w, .16, dy + .19), pp(a0 + w, .45, dy + .105), TL.METAL, 1.1);
-        }
-      }
-      // crushed contact probe, folded under on three of the four legs
-      if (k !== 1) {
-        const pa = [o[0] * (pr + .30), dy + .16, o[2] * (pr + .30)], pb = [o[0] * (pr + .78) + g[0] * .20, dy + .035, o[2] * (pr + .78) + g[2] * .20];
-        const pm = [o[0] * (pr + .52) + g[0] * .02, dy - .02, o[2] * (pr + .52) + g[2] * .02];
-        B.seg(P(pa), P(pm), .018, .016, 4, TL.METAL, 1.5, 0, true);
-        B.seg(P(pm), P(pb), .016, .013, 4, TL.METAL, 1.35, 0, true);
-        B.ball(P(pb), V3.mul(ex, .035), V3.mul(ey, .03), V3.mul(ez, .035), TL.METAL, 1.2, 0, 6, 4);
-      }
-    }
-
-    /* =================================================================== 4. the can */
-    band(Y_BAY0, 1.09, R, R, TL.DARK, 1.55);                 // sooted lower equipment bay
-    band(1.09, Y_BAY1, R, R, HULL, .92);
-    flange(Y_BAY1 - .035, R, .05, .06, TL.METAL, 1.1); bolts(Y_BAY1 + .028, R + .04, TL.METAL, 1.35, 15, 1);
-    const notHatch = i => i === 0;
-    band(Y_CAB0, Y_CABM, R, R, HULL, 1.00, notHatch);
-    band(Y_CABM, Y_CAB1, R, R, HULL, 1.06, notHatch);
-    flange(Y_CABM - .02, R, .035, .04, TL.METAL, 1.0);
-    flange(Y_CAB1 - .04, R, .05, .065, TL.METAL, 1.12); bolts(Y_CAB1 + .018, R + .04, TL.METAL, 1.35, 15, 1);
-    // vertical battens over the facet seams
-    for (let i = 1; i < 15; i++) {
-      const a = ANG[i];
-      for (const [y0, y1] of [[Y_BAY0, Y_BAY1], [Y_CAB0, Y_CABM], [Y_CABM, Y_CAB1]]) {
-        const w = .022;
-        B.quad(C(a - w, R + .028, y1), C(a + w, R + .028, y1), C(a + w, R + .028, y0), C(a - w, R + .028, y0), TL.METAL, 1.28, 0, [0, 0, .1, .6]);
-        B.quad(C(a - w, R + .028, y1), C(a - w, R + .028, y0), C(a - w, R, y0), C(a - w, R, y1), TL.METAL, .8);
-        B.quad(C(a + w, R, y1), C(a + w, R, y0), C(a + w, R + .028, y0), C(a + w, R + .028, y1), TL.METAL, 1.5);
-      }
-    }
-    // corrugated stiffening flutes: they catch the light in strips and break up the round skin
-    for (const [fi, y0, y1] of [[2, Y_CAB0 + .05, Y_CABM - .05], [3, Y_CAB0 + .05, Y_CABM - .05], [7, Y_CABM + .06, Y_CAB1 - .10], [8, Y_CABM + .06, Y_CAB1 - .10], [12, Y_BAY0 + .03, Y_BAY1 - .06]]) {
-      const a0 = ANG[fi], a1 = ANG[fi + 1], n = 5;
-      for (let i = 0; i < n; i++) {
-        const b0 = a0 + (a1 - a0) * (i + .14) / n, b1 = a0 + (a1 - a0) * (i + .86) / n, rr = R + .042;
-        B.quad(C(b0, rr, y1), C(b1, rr, y1), C(b1, rr, y0), C(b0, rr, y0), TL.METAL, 1.28);
-        B.quad(C(b0, rr, y1), C(b0, rr, y0), C(b0, R, y0), C(b0, R, y1), TL.METAL, .78);
-        B.quad(C(b1, R, y1), C(b1, R, y0), C(b1, rr, y0), C(b1, rr, y1), TL.METAL, 1.55);
-        B.quad(C(b0, rr, y1), C(b1, rr, y1), C(b1, R, y1), C(b0, R, y1), TL.METAL, 1.62);
-        B.quad(C(b0, R, y0), C(b1, R, y0), C(b1, rr, y0), C(b0, rr, y0), TL.METAL, .68);
-      }
-    }
-    // two circumferential straps that hold the whole set of blankets down and tie the can together
-    for (const sy of [1.44, 2.26]) {
-      for (let i = 1; i < 15; i++) {
-        const a0 = ANG[i], a1 = ANG[i + 1], ro = R + .062, s2 = 1.3 + .16 * (i & 1);
-        B.quad(C(a0, ro, sy + .030), C(a1, ro, sy + .030), C(a1, ro, sy - .030), C(a0, ro, sy - .030), TL.METAL, s2);
-        B.quad(C(a0, ro, sy + .030), C(a1, ro, sy + .030), C(a1, R + .02, sy + .034), C(a0, R + .02, sy + .034), TL.METAL, s2 * 1.2);
-        B.quad(C(a0, R + .02, sy - .034), C(a1, R + .02, sy - .034), C(a1, ro, sy - .030), C(a0, ro, sy - .030), TL.METAL, s2 * .72);
-        if (i % 4 === 1) B.box(C((a0 + a1) * .5, ro + .018, sy), V3.mul(V3.norm(V3.sub(C(a1, ro, sy), C(a0, ro, sy))), .045), V3.mul(ey, .042), V3.mul(V3.norm(V3.sub(C((a0 + a1) * .5, ro + .2, sy), C((a0 + a1) * .5, ro, sy))), .020), TL.METAL, 1.6);
-      }
-    }
-    // soot: the skin is streaked above the trim bells and below the RCS quads, and the whole base is scorched
-    for (let k = 0; k < 4; k++) {
-      const a = legA[k] + PI / 4;
-      for (const [dw, y0, y1, s] of [[.055, Y_BAY0, 1.46, 1.25], [.028, Y_BAY0, 1.70, 1.6], [.080, Y_BAY0, 1.22, 1.1]])
-        B.quad(C(a - dw, R + .004, y1), C(a + dw, R + .004, y1), C(a + dw, R + .004, y0), C(a - dw, R + .004, y0), TL.DARK, s, 0, [0, 0, .4, .9]);
-      const b = legA[k];
-      for (const [dw, y0, y1, s] of [[.05, 1.96, 2.24, 1.5], [.024, 1.80, 2.24, 1.3]])
-        B.quad(C(b - dw, R + .004, y1), C(b + dw, R + .004, y1), C(b + dw, R + .004, y0), C(b - dw, R + .004, y0), TL.DARK, s, 0, [0, 0, .4, .9]);
-    }
-    // upper deck cone, avionics drum, cap
-    band(Y_CAB1, Y_UP1, R, .94, HULL, 1.02);
-    band(Y_UP1, Y_DRUM1, .94, .94, TL.METAL, 1.1);
-    flange(Y_UP1 - .02, .94, .04, .05, TL.METAL, 1.0);
-    band(Y_DRUM1, Y_CAP, .94, .62, HULL, 1.18);
-    // the cone carries its own blankets, boxes, vents and conduits
-    {
-      const cr = v => R + (0.94 - R) * v, cy = v => Y_CAB1 + (Y_UP1 - Y_CAB1) * v;
-      for (const [i0, i1, sd, bs] of [[4, 7, 21, 1.4], [10, 12, 22, 1.45], [13, 15, 23, 1.36], [1, 3, 24, 1.48]])
-        quilt((u, v, p) => C(ANG[i0] + .05 + (ANG[i1] - ANG[i0] - .10) * u, cr(.08 + v * .82) + p + .03, cy(.08 + v * .82)), 9, 4, 2.2, 1.0, .052, sd, bs, TL.SUIT);
-      for (const [i0, i1] of [[4, 7], [10, 12], [13, 15], [1, 3]]) for (const v of [.08, .90]) {
-        const rr = cr(v) + .035, y = cy(v);
-        for (let s = 0; s < 6; s++) { const a = ANG[i0] + .05 + (ANG[i1] - ANG[i0] - .10) * (s + .5) / 6, t = V3.norm(V3.sub(C(a + .02, rr, y), C(a - .02, rr, y)));
-          B.box(C(a, rr, y), V3.mul(t, .038), V3.mul(ey, .016), V3.mul(V3.norm(V3.sub(C(a, rr + .1, y), C(a, rr, y))), .011), TL.METAL, 1.45); }
-      }
-      // two avionics boxes bolted to the cone, each with a cover and four screws
-      for (const [ai, v, w, hh] of [[2.6, .40, .20, .13], [8.6, .52, .16, .11]]) {
-        const a = ANG[ai | 0] + (ai % 1) * DA, rr = cr(v), y = cy(v);
-        const nx = V3.norm(V3.sub(C(a, rr + 1, y), C(a, rr, y))), wx = V3.norm(V3.sub(C(a + .05, rr, y), C(a - .05, rr, y)));
-        const cen = V3.mad(C(a, rr, y), nx, .09);
-        B.box(cen, V3.mul(wx, w), V3.mul(ey, hh), V3.mul(nx, .085), TL.METAL, 1.12);
-        B.box(V3.mad(cen, nx, .09), V3.mul(wx, w * .86), V3.mul(ey, hh * .84), V3.mul(nx, .012), CRATE, 1.3);
-        for (const sa of [-1, 1]) for (const sb of [-1, 1]) B.seg(V3.add(V3.add(cen, V3.mul(wx, sa * w * .82)), V3.add(V3.mul(ey, sb * hh * .78), V3.mul(nx, .09))), V3.add(V3.add(cen, V3.mul(wx, sa * w * .82)), V3.add(V3.mul(ey, sb * hh * .78), V3.mul(nx, .115))), .014, .012, 4, TL.METAL, 1.5, 0, true);
-      }
-      // cabin pressure relief vents
-      for (const ai of [1.5, 6.4, 13.3]) {
-        const a = ANG[ai | 0] + (ai % 1) * DA, rr = cr(.62), y = cy(.62);
-        const nx = V3.norm(V3.sub(C(a, rr + 1, y), C(a, rr, y)));
-        B.seg(C(a, rr, y), V3.mad(C(a, rr, y), nx, .10), .055, .048, 7, TL.METAL, 1.3, 0, true);
-        B.seg(V3.mad(C(a, rr, y), nx, .07), V3.mad(C(a, rr, y), nx, .105), .070, .066, 7, TL.DARK, 1.5, 0, true);
-      }
-      // conduits running from the cabin up over the cone to the avionics drum
-      for (const ai of [3.2, 9.4]) {
-        const a = ANG[ai | 0] + (ai % 1) * DA;
-        for (let c = 0; c < 2; c++) {
-          const off = (c - .5) * .07, pts = [];
-          for (let s = 0; s <= 4; s++) { const v = s / 4, rr = cr(v) + .05, yy = cy(v), t2 = V3.norm(V3.sub(C(a + .05, rr, yy), C(a - .05, rr, yy))); pts.push(V3.mad(C(a, rr, yy), t2, off)); }
-          for (let s = 0; s + 1 < pts.length; s++) B.seg(pts[s], pts[s + 1], .019, .019, 4, TL.METAL, c ? 1.5 : 1.25, 0, s === 0);
-          for (const s of [1, 3]) B.box(pts[s], V3.mul(ex, .032), V3.mul(ey, .032), V3.mul(ez, .032), TL.METAL, 1.4);
-        }
-      }
-      // docking target plate on the cone, facing the hatch side
-      { const a = ANG[0] + .18, rr = cr(.46) + .02, y = cy(.46), nx = V3.norm(V3.sub(C(a, rr + 1, y), C(a, rr, y))), wx = V3.norm(V3.sub(C(a + .05, rr, y), C(a - .05, rr, y)));
-        const cen = C(a, rr, y);
-        B.quad(V3.add(V3.add(cen, V3.mul(wx, -.14)), V3.mul(ey, .10)), V3.add(V3.add(cen, V3.mul(wx, .14)), V3.mul(ey, .10)), V3.add(V3.add(cen, V3.mul(wx, .14)), V3.mul(ey, -.10)), V3.add(V3.add(cen, V3.mul(wx, -.14)), V3.mul(ey, -.10)), TL.WHITE, 1.3, 0, [.1, .1, .9, .7]);
-        B.seg(cen, V3.mad(cen, nx, .14), .014, .012, 4, TL.METAL, 1.5, 0, true);
-        B.ball(V3.mad(cen, nx, .15), V3.mul(ex, .028), V3.mul(ey, .028), V3.mul(ez, .028), TL.DARK, 1.6, 0, 6, 4); }
-    }
-    for (let i = 0; i < 15; i++) B.tri(P([0, Y_CAP, 0]), C(ANG[i], .62, Y_CAP), C(ANG[i + 1], .62, Y_CAP), TL.METAL, 1.0 * PSH[i]);
-    // MLI blankets taped over the bays. They stand well proud of the skin, so the crinkle is in the silhouette too.
-    quiltBand(ANG[3] + .03, ANG[6] - .03, Y_BAY0 + .02, Y_BAY1 - .05, R + .035, 10, 4, 11, 1.45);
-    quiltBand(ANG[9] + .03, ANG[11] - .03, Y_BAY0 + .02, Y_BAY1 - .05, R + .035, 7, 4, 12, 1.5);
-    quiltBand(ANG[7] + .04, ANG[10] - .04, Y_CAB0 + .06, Y_CABM - .04, R + .038, 10, 6, 13, 1.38);
-    quiltBand(ANG[11] + .04, ANG[13] - .04, Y_CABM + .05, Y_CAB1 - .07, R + .038, 7, 6, 14, 1.42);
-    quiltBand(ANG[5] + .04, ANG[7] - .04, Y_CAB0 + .06, Y_CABM - .04, R + .038, 7, 6, 16, 1.36);
-    quiltBand(ANG[2] + .04, ANG[5] - .04, Y_CABM + .05, Y_CAB1 - .07, R + .038, 10, 6, 15, 1.33);
-    // the aluminium tape battens that pin each blanket down along its edges
-    for (const [i0, i1, y0, y1] of [[3, 6, Y_BAY0 + .02, Y_BAY1 - .05], [9, 11, Y_BAY0 + .02, Y_BAY1 - .05],
-      [7, 10, Y_CAB0 + .06, Y_CABM - .04], [11, 13, Y_CABM + .05, Y_CAB1 - .07], [2, 5, Y_CABM + .05, Y_CAB1 - .07],
-      [5, 7, Y_CAB0 + .06, Y_CABM - .04]]) {
-      const rr = R + .04;
-      for (const y of [y0, y1]) for (let s = 0; s < 7; s++) {
-        const a = ANG[i0] + (ANG[i1] - ANG[i0]) * (s + .5) / 7, t = V3.norm(V3.sub(C(a + .02, rr, y), C(a - .02, rr, y)));
-        B.box(C(a, rr, y), V3.mul(t, .038), V3.mul(ey, .017), V3.mul(V3.norm(V3.sub(C(a, rr + .1, y), C(a, rr, y))), .012), TL.METAL, 1.45);
-      }
-      for (const a of [ANG[i0], ANG[i1]]) for (let s = 0; s < 4; s++) {
-        const y = y0 + (y1 - y0) * (s + .5) / 4, t = V3.norm(V3.sub(C(a + .02, rr, y), C(a - .02, rr, y)));
-        B.box(C(a, rr, y), V3.mul(t, .017), V3.mul(ey, (y1 - y0) / 11), V3.mul(V3.norm(V3.sub(C(a, rr + .1, y), C(a, rr, y))), .012), TL.METAL, 1.45);
-      }
-    }
-
-    /* =================================================================== 5. hatch bay, hatch, porch */
-    const FX = FLAT_X, FZ = FLAT_Z;
-    const OX = .44, OY0 = 1.30, OY1 = 2.16;              // the opening
-    const F = (x, y, z) => P([x, y, z]);
-    // the flat bay face around the opening
-    const bayQ = (x0, x1, y0, y1, s) => B.quad(F(x0, y1, FZ), F(x1, y1, FZ), F(x1, y0, FZ), F(x0, y0, FZ), HULL, s, 0, [.3, .76, .5, .96]);
-    bayQ(-FX, FX, Y_CAB0, OY0, 1.05); bayQ(-FX, FX, OY1, Y_CAB1, .95);
-    bayQ(-FX, -OX, OY0, OY1, 1.12); bayQ(OX, FX, OY0, OY1, .9);
-    // raised hatch boss: a picture frame standing 0.15 proud of the bay
-    const BZ = -1.74, bo = .09;
-    const frameRect = [[-OX - bo, OY1 + bo, OX + bo, OY1], [-OX - bo, OY0, OX + bo, OY0 - bo], [-OX - bo, OY1, -OX, OY0], [OX, OY1, OX + bo, OY0]];
-    for (const [x0, y1, x1, y0] of frameRect) {
-      B.quad(F(x0, y1, BZ), F(x1, y1, BZ), F(x1, y0, BZ), F(x0, y0, BZ), TL.METAL, 1.22, 0, [0, .1, .3, .4]);   // face
-      B.quad(F(x0, y1, FZ), F(x1, y1, FZ), F(x1, y1, BZ), F(x0, y1, BZ), TL.METAL, 1.4);                        // top return
-      B.quad(F(x0, y0, BZ), F(x1, y0, BZ), F(x1, y0, FZ), F(x0, y0, FZ), TL.METAL, .8);                         // bottom return
-      B.quad(F(x0, y1, BZ), F(x0, y1, FZ), F(x0, y0, FZ), F(x0, y0, BZ), TL.METAL, 1.05);
-      B.quad(F(x1, y1, FZ), F(x1, y1, BZ), F(x1, y0, BZ), F(x1, y0, FZ), TL.METAL, 1.05);
-    }
-    for (let i = 0; i < 16; i++) {   // boss bolt circle
-      const t = i / 16, px = -OX - bo + .04 + (2 * OX + 2 * bo - .08) * (t < .5 ? t * 2 : 1 - (t - .5) * 2);
-      const py = t < .5 ? OY1 + bo - .045 : OY0 - bo + .045;
-      B.seg(F(px, py, BZ), F(px, py, BZ - .022), .016, .013, 4, TL.METAL, 1.45, 0, true);
-    }
-    for (let i = 0; i < 6; i++) {    // sides of the bolt circle
-      const py = OY0 + .06 + (OY1 - OY0 - .12) * i / 5;
-      for (const sx of [-OX - bo + .045, OX + bo - .045]) B.seg(F(sx, py, BZ), F(sx, py, BZ - .022), .016, .013, 4, TL.METAL, 1.45, 0, true);
-    }
-    // the sealing lip and the dark tunnel through the pressure wall
-    const TZ = -1.30;
-    B.quad(F(-OX, OY1, BZ), F(OX, OY1, BZ), F(OX, OY1, TZ), F(-OX, OY1, TZ), TL.DARK, 1.0);
-    B.quad(F(-OX, OY0, TZ), F(OX, OY0, TZ), F(OX, OY0, BZ), F(-OX, OY0, BZ), TL.METAL, 1.15);
-    B.quad(F(-OX, OY1, TZ), F(-OX, OY1, BZ), F(-OX, OY0, BZ), F(-OX, OY0, TZ), TL.DARK, 1.2);
-    B.quad(F(OX, OY1, BZ), F(OX, OY1, TZ), F(OX, OY0, TZ), F(OX, OY0, BZ), TL.DARK, 1.2);
-    // what little you can see inside: a shadowed bulkhead, the cabin floor, a couch edge, one panel still live
-    B.quad(F(-OX, OY1, TZ), F(OX, OY1, TZ), F(OX, OY0, TZ), F(-OX, OY0, TZ), TL.DARK, .55);
-    B.quad(F(-OX, OY0 + .10, TZ), F(OX, OY0 + .10, TZ), F(OX, OY0 + .10, BZ), F(-OX, OY0 + .10, BZ), TL.DARK, 1.0);     // floor
-    for (let i = 0; i < 5; i++) B.box(F(-.34 + i * .17, OY0 + .115, TZ + .14), V3.mul(ex, .055), V3.mul(ey, .008), V3.mul(ez, .13), TL.METAL, .95);
-    B.box(F(.20, 1.52, TZ + .12), V3.mul(ex, .20), V3.mul(ey, .06), V3.mul(ez, .11), TL.SUIT, .62);                      // couch pan
-    B.box(F(.24, 1.82, TZ + .02), V3.mul(ex, .17), V3.mul(ey, .26), V3.mul(ez, .03), TL.SUIT, .5);                       // couch back
-    B.quad(F(-.36, 1.96, TZ + .02), F(-.04, 1.96, TZ + .02), F(-.04, 1.74, TZ + .02), F(-.36, 1.74, TZ + .02), TL.DARK, .5, .14);
-    for (let i = 0; i < 4; i++) B.box(F(-.31 + i * .08, 1.88, TZ + .008), V3.mul(ex, .022), V3.mul(ey, .016), V3.mul(ez, .006), TL.WHITE, .4, .95);
-    for (let i = 0; i < 3; i++) B.seg(F(-.30 + i * .09, 1.78, TZ + .01), F(-.30 + i * .09, 1.78, TZ - .03), .015, .013, 4, TL.METAL, .8, 0, true);
-    for (let i = 0; i < 3; i++) B.seg(F(-.38, 1.38 + i * .12, TZ + .30), F(-.38, 1.38 + i * .12, BZ), .018, .018, 4, TL.DARK, 1.3, 0, false);  // hoses vanishing inside
-    // sill plate with tread ribs
-    B.box(F(0, OY0 - .025, BZ + .10), V3.mul(ex, OX), V3.mul(ey, .025), V3.mul(ez, .26), TL.METAL, 1.3);
-    for (let i = 0; i < 7; i++) B.box(F(-.37 + i * .123, OY0 + .005, BZ + .10), V3.mul(ex, .022), V3.mul(ey, .012), V3.mul(ez, .25), TL.METAL, 1.55);
-
-    /* the hatch itself, swung open 112 degrees on two hinges on the +X side */
-    {
-      const hx = OX + bo + .03, hz = BZ - .02, th = 1.955, cth = Math.cos(th), sth = Math.sin(th);
-      const D = (u, w, y) => F(hx + u * cth - w * sth, y, hz + u * sth + w * cth);   // door space -> local
-      const W = -(2 * OX + 2 * bo + .02), T = -.085;                                 // u of the free edge, w of the outer face
-      const y0 = OY0 - bo - .02, y1 = OY1 + bo + .02;
-      // door-space basis as world vectors, so boxes can be laid out on the leaf
-      const du = V3.sub(D(1, 0, 0), D(0, 0, 0)), dw = V3.sub(D(0, 1, 0), D(0, 0, 0));
-      // inner liner: a sunken plate inside a bolted perimeter frame
-      B.quad(D(-.06, -.026, y1 - .06), D(W + .06, -.026, y1 - .06), D(W + .06, -.026, y0 + .06), D(-.06, -.026, y0 + .06), TL.WHITE, 1.05, 0, [0, 0, .4, .4]);
-      for (const [uu, yy, hu, hy] of [[W / 2, y1 - .03, -W / 2, .03], [W / 2, y0 + .03, -W / 2, .03], [-.03, (y0 + y1) / 2, .03, (y1 - y0) / 2], [W + .03, (y0 + y1) / 2, .03, (y1 - y0) / 2]])
-        B.box(D(uu, -.012, yy), V3.mul(du, hu), V3.mul(ey, hy), V3.mul(dw, .014), TL.METAL, 1.3);
-      for (const yy of [y0 + .30, y1 - .30]) B.box(D(W * .5, -.014, yy), V3.mul(du, -W * .44), V3.mul(ey, .020), V3.mul(dw, .013), TL.METAL, 1.22);
-      B.box(D(W * .5, -.010, y0 + .13), V3.mul(du, -W * .44), V3.mul(ey, .075), V3.mul(dw, .010), TL.METAL, 1.5);   // kick plate
-      // grab handle on the liner
-      for (const uu of [-.18, -.44]) B.seg(D(uu, -.026, y0 + .50), D(uu, -.13, y0 + .50), .017, .015, 4, TL.METAL, 1.35, 0, true);
-      B.seg(D(-.18, -.13, y0 + .50), D(-.44, -.13, y0 + .50), .017, .017, 4, TL.METAL, 1.5, 0, true);
-      B.quad(D(-.20, -.028, y0 + .68), D(-.42, -.028, y0 + .68), D(-.42, -.028, y0 + .60), D(-.20, -.028, y0 + .60), TL.WHITE, 1.4, 0, [.1, .1, .9, .6]);
-      // edges
-      B.quad(D(0, T, y1), D(W, T, y1), D(W, 0, y1), D(0, 0, y1), TL.METAL, 1.38);
-      B.quad(D(0, 0, y0), D(W, 0, y0), D(W, T, y0), D(0, T, y0), TL.METAL, .85);
-      B.quad(D(W, T, y1), D(W, T, y0), D(W, 0, y0), D(W, 0, y1), TL.METAL, 1.1);
-      B.quad(D(0, 0, y1), D(0, 0, y0), D(0, T, y0), D(0, T, y1), TL.METAL, 1.0);
-      // outer face: a blanket of MLI over the whole leaf
-      {
-        const o = D(W + .04, T, y0 + .04), du = V3.sub(D(-.04, T, y0 + .04), o), dv = V3.sub(D(W + .04, T, y1 - .04), o);
-        const nq = V3.mul(V3.norm(V3.cross(du, dv)), 1);
-        quilt((u, v, p) => [o[0] + du[0] * u + dv[0] * v + nq[0] * p, o[1] + du[1] * u + dv[1] * v + nq[1] * p, o[2] + du[2] * u + dv[2] * v + nq[2] * p], 6, 7, 3, 4, .05, 31, 1.5, TL.SUIT);
-      }
-      // the hatch porthole: a bolted ring, a conical reveal through the leaf, a scorch-browned pane
-      {
-        const cxw = W * .5, cyw = (y0 + y1) * .5 + .17, rr = .135;
-        const q = (a, r, w) => D(cxw + Math.cos(a) * r, w, cyw + Math.sin(a) * r);
-        for (let i = 0; i < 12; i++) {
-          const a0 = i / 12 * TAU, a1 = (i + 1) / 12 * TAU;
-          B.quad(q(a0, rr + .07, .024), q(a1, rr + .07, .024), q(a1, rr, .024), q(a0, rr, .024), TL.METAL, 1.35);   // ring face
-          B.quad(q(a0, rr + .07, -.004), q(a1, rr + .07, -.004), q(a1, rr + .07, .024), q(a0, rr + .07, .024), TL.METAL, 1.05);
-          B.quad(q(a0, rr, .024), q(a1, rr, .024), q(a1, rr - .012, T * .55), q(a0, rr - .012, T * .55), TL.DARK, 1.25); // reveal
-          B.tri(D(cxw, T * .55, cyw), q(a1, rr - .014, T * .55), q(a0, rr - .014, T * .55), TL.VISOR, 1.8, .07);         // pane
-          B.seg(q(a0 + .26, rr + .040, .024), q(a0 + .26, rr + .040, .044), .013, .011, 4, TL.METAL, 1.5, 0, true);      // bolts
-        }
-      }
-      // interior latch handle and the linkage out to three dogs
-      B.seg(D(W * .62, -.03, y0 + .46), D(W * .62, -.14, y0 + .46), .035, .03, 6, TL.METAL, 1.4, 0, true);
-      B.box(D(W * .62 + .10, -.15, y0 + .46), V3.mul(V3.sub(D(.14, 0, 0), D(0, 0, 0)), 1), V3.mul(ey, .022), V3.mul(V3.sub(D(0, -.022, 0), D(0, 0, 0)), 1), TL.METAL, 1.55);
-      for (const yy of [y0 + .14, y0 + .50, y0 + .86]) {
-        B.seg(D(W * .62, -.055, y0 + .46), D(W + .055, -.055, yy), .013, .013, 4, TL.METAL, 1.45, 0, true);
-        B.box(D(W + .02, T * .5, yy), V3.mul(V3.sub(D(.05, 0, 0), D(0, 0, 0)), 1), V3.mul(ey, .028), V3.mul(V3.sub(D(0, T * .5, 0), D(0, 0, 0)), 1), TL.METAL, 1.6);
-        B.box(F(-OX - bo + .03, yy, BZ - .03), V3.mul(ex, .035), V3.mul(ey, .035), V3.mul(ez, .03), TL.METAL, 1.5);   // striker on the frame
-      }
-      // hinges
-      for (const yy of [OY0 + .12, OY1 - .12]) {
-        B.seg(F(hx, yy - .085, hz), F(hx, yy + .085, hz), .042, .042, 6, TL.METAL, 1.5, 0, true);
-        B.box(F(hx - .06, yy, hz + .035), V3.mul(ex, .06), V3.mul(ey, .05), V3.mul(ez, .016), TL.METAL, 1.3);
-        B.box(D(-.06, -.012, yy), V3.mul(V3.sub(D(.06, 0, 0), D(0, 0, 0)), 1), V3.mul(ey, .05), V3.mul(V3.sub(D(0, -.016, 0), D(0, 0, 0)), 1), TL.METAL, 1.35);
-        B.seg(F(hx, yy + .09, hz), F(hx, yy + .12, hz), .017, .014, 4, TL.METAL, 1.6, 0, true);
-      }
-      // hold-open gas strut
-      {
-        const h0 = [.95, 1.95, -1.408], h1 = D(W * .55, -.03, y0 + .70);
-        B.seg(P(h0), V3.lerp(P(h0), h1, .55), .030, .028, 5, TL.METAL, 1.35, 0, true);
-        B.seg(V3.lerp(P(h0), h1, .45), h1, .019, .018, 4, TL.METAL, 1.55, 0, true);
-        B.ball(h1, V3.mul(ex, .035), V3.mul(ey, .035), V3.mul(ez, .035), TL.METAL, 1.2, 0, 5, 3);
-      }
-    }
-    // grab handrails either side of the hatch, on standoffs
-    for (const sx of [-1, 1]) {
-      const x = sx * .78, zz = -1.52;
-      B.seg(F(x, OY0 + .02, zz - .13), F(x, OY1 + .12, zz - .13), .024, .024, 5, TL.METAL, 1.5, 0, true);
-      for (const yy of [OY0 + .06, OY1 + .06]) B.seg(F(x, yy, zz + .02), F(x, yy, zz - .13), .017, .015, 4, TL.METAL, 1.3, 0, true);
-    }
-    // warning placards and crew markings (plain plates; the lettering lives in the texture sheet)
-    const placard = (x, y, z, w, h, s) => B.quad(F(x - w, y + h, z), F(x + w, y + h, z), F(x + w, y - h, z), F(x - w, y - h, z), TL.WHITE, s, 0, [.1, .1, .9, .6]);
-    placard(-.80, 2.30, FZ - .015, .14, .07, 1.35);
-    placard(.80, 2.30, FZ - .015, .11, .06, 1.3);
-    placard(0, 2.33, FZ - .018, .23, .07, 1.3);          // the vehicle number plate, "EP-2"
-    for (const sx of [-.20, .20]) B.seg(F(sx, 2.33, FZ - .018), F(sx, 2.33, FZ - .004), .012, .010, 4, TL.METAL, 1.4, 0, true);
-    placard(-.30, 1.24, BZ - .025, .10, .035, 1.4);
-    { const x = .52, y = 2.33, z = FZ - .015, w = .10;   // triangular hazard placard
-      B.tri(F(x, y + w, z), F(x + w, y - w * .7, z), F(x - w, y - w * .7, z), TL.WHITE, 1.45, 0, [[.5, .05], [.95, .9], [.05, .9]]); }
-    /* NASA emblem plate: a clean flat 0.6 m square on the facet immediately LEFT of the hatch (the facet to
-       the right is covered by the open hatch leaf), centred at local (-0.91, 1.95, -1.46), normal (-0.53, 0, -0.85).
-       The real emblem texture is applied elsewhere; this is the clean plate it goes on. */
-    {
-      const a = (ANG[14] + ANG[15]) * .5, s = Math.sin(a), c = Math.cos(a), r0 = R + .018, hw = .30;
-      const tx = Math.cos(a), tz = Math.sin(a);
-      const q = (du, dy) => F(s * r0 + tx * du, 1.88 + dy, -c * r0 + tz * du);
-      B.quad(q(-hw, hw), q(hw, hw), q(hw, -hw), q(-hw, -hw), TL.WHITE, 1.3, 0, [0, 0, 1, 1]);
-      for (const [du, dy] of [[-hw, hw], [hw, hw], [hw, -hw], [-hw, -hw]])
-        B.seg(q(du * .93, dy * .93), V3.mad(q(du * .93, dy * .93), V3.norm(V3.sub(q(0, 0), P([0, 1.88, 0]))), .012), .014, .012, 4, TL.METAL, 1.4, 0, true);
-    }
-    // mission patch, one facet further round
-    {
-      const a = (ANG[13] + ANG[14]) * .5, s = Math.sin(a), c = Math.cos(a), r0 = R + .016, hw = .21;
-      const tx = Math.cos(a), tz = Math.sin(a);
-      const q = (du, dy) => F(s * r0 + tx * du, 1.88 + dy, -c * r0 + tz * du);
-      B.quad(q(-hw, hw), q(hw, hw), q(hw, -hw), q(-hw, -hw), TL.PATCH, 1.25, .06, [0, 0, 1, 1]);
-    }
-
-    /* porch and three steps, each stringer foot settled on its own ground */
-    {
-      const pw = .46, pz0 = BZ, pz1 = -2.22;
-      grate([-pw, DIM.porchY, pz0], [2 * pw, 0, 0], [0, 0, pz1 - pz0], 7, .035, TL.METAL, 1.25);
-      for (const sx of [-1, 1]) {   // porch side rails
-        B.box(F(sx * (pw + .035), DIM.porchY - .01, (pz0 + pz1) * .5), V3.mul(ex, .035), V3.mul(ey, .05), V3.mul(ez, (pz1 - pz0) * .5), TL.METAL, 1.35);
-      }
-      B.box(F(0, DIM.porchY - .06, pz1 + .02), V3.mul(ex, pw + .03), V3.mul(ey, .03), V3.mul(ez, .035), TL.METAL, 1.1);
-      // two diagonal hangers back to the hull
-      for (const sx of [-1, 1]) B.seg(F(sx * (pw - .02), DIM.porchY - .04, pz1 + .06), F(sx * .50, 1.70, FZ + .02), .022, .02, 4, TL.METAL, 1.3, 0, true);
-      // stringers down to the regolith
-      const fz = -DIM.stepZ, fdy = [dyOf(-.42, fz), dyOf(.42, fz)];
-      for (let s = 0; s < 2; s++) {
-        const sx = s ? .42 : -.42, top = [sx, DIM.porchY - .05, pz1 + .02], foot = [sx, fdy[s] + .03, fz];
-        B.seg(F(top[0], top[1], top[2]), F(foot[0], foot[1], foot[2]), .042, .038, 5, TL.METAL, 1.3, 0, true);
-        B.box(F(sx, fdy[s] + .025, fz - .02), V3.mul(ex, .09), V3.mul(ey, .025), V3.mul(ez, .09), TL.METAL, 1.15);
-      }
-      for (let i = 0; i < 3; i++) {
-        const t = (i + 1) / 4, y = DIM.porchY - .05 + (((fdy[0] + fdy[1]) * .5 + .03) - (DIM.porchY - .05)) * t, z = pz1 + .02 + (fz - pz1 - .02) * t;
-        grate([-.40, y, z - .11], [.80, 0, 0], [0, 0, .22], 3, .03, TL.METAL, 1.4);
-        for (const sx of [-1, 1]) B.box(F(sx * .415, y - .01, z), V3.mul(ex, .022), V3.mul(ey, .035), V3.mul(ez, .12), TL.METAL, 1.2);
-      }
-      // handrail arch over the steps
-      {
-        const pts = [[.60, DIM.porchY + .02, pz1 - .02], [.62, DIM.porchY + .40, pz1 - .10], [.60, 1.02, -2.42], [.58, fdy[1] + .62, fz - .06], [.56, fdy[1] + .05, fz - .08]];
-        for (let i = 0; i + 1 < pts.length; i++) B.seg(F(pts[i][0], pts[i][1], pts[i][2]), F(pts[i + 1][0], pts[i + 1][1], pts[i + 1][2]), .022, .021, 4, TL.METAL, 1.5, 0, true);
-        B.seg(F(.60, DIM.porchY + .02, pz1 - .02), F(.46, DIM.porchY - .01, pz1 - .02), .018, .016, 4, TL.METAL, 1.3, 0, true);
-      }
-    }
-
-    /* the surface-equipment pallet, swung down off the base beside the steps */
-    {
-      const a = ANG[13] + .30, o = [Math.sin(a), 0, -Math.cos(a)], g = [Math.cos(a), 0, Math.sin(a)];
-      const nx = V3.norm(V3.sub(P([o[0], .8, o[2]]), P([0, .8, 0]))), wx = V3.norm(V3.sub(P([g[0], .8, g[2]]), P([0, .8, 0])));
-      const cen = P([o[0] * 1.98, .86, o[2] * 1.98]);
-      const upT = V3.norm(V3.add(V3.mul(ey, .96), V3.mul(nx, .28)));          // the tray is tipped out a little
-      const fwd = V3.cross(wx, upT);
-      B.box(cen, V3.mul(wx, .34), V3.mul(upT, .024), V3.mul(fwd, .26), TL.METAL, 1.15);
-      for (const sg of [-1, 1]) {
-        B.box(V3.add(cen, V3.mul(wx, sg * .345)), V3.mul(wx, .025), V3.mul(upT, .060), V3.mul(fwd, .26), TL.METAL, 1.4);
-        // a solid gusset plate carrying the tray back to the skirt, not a spindly rod
-        const h0 = P([o[0] * R + g[0] * sg * .32, 1.22, o[2] * R + g[2] * sg * .32]);
-        const h1 = P([o[0] * R + g[0] * sg * .32, .92, o[2] * R + g[2] * sg * .32]);
-        const t0 = V3.add(V3.add(cen, V3.mul(wx, sg * .33)), V3.mul(fwd, -.24));
-        const t1 = V3.add(V3.add(cen, V3.mul(wx, sg * .33)), V3.mul(fwd, .24));
-        B.quad(h0, t0, t1, h1, TL.METAL, sg > 0 ? 1.3 : .95);
-        B.quad(V3.mad(h0, wx, sg * .02), V3.mad(t0, wx, sg * .02), V3.mad(t1, wx, sg * .02), V3.mad(h1, wx, sg * .02), TL.METAL, sg > 0 ? 1.0 : 1.35);
-        B.seg(h0, t0, .020, .018, 4, TL.METAL, 1.5, 0, true);
-        B.seg(V3.lerp(h1, h0, .1), t1, .020, .018, 4, TL.METAL, 1.45, 0, true);
-      }
-      // two stencilled crates and a strapped roll of gear on the tray
-      for (const [sg, w, h] of [[-1, .16, .13], [1, .13, .10]]) {
-        const c2 = V3.add(V3.add(cen, V3.mul(wx, sg * .17)), V3.mul(upT, h + .03));
-        B.box(c2, V3.mul(wx, w), V3.mul(upT, h), V3.mul(fwd, .17), CRATE, 1.05);
-        B.box(V3.add(c2, V3.mul(upT, h + .012)), V3.mul(wx, w * .9), V3.mul(upT, .012), V3.mul(fwd, .16), TL.METAL, 1.4);
-        for (const s2 of [-1, 1]) B.box(V3.add(V3.add(c2, V3.mul(fwd, s2 * .175)), V3.mul(upT, .02)), V3.mul(wx, w * .22), V3.mul(upT, h * .95), V3.mul(fwd, .006), TL.DARK, 1.5);
-      }
-      B.seg(V3.add(V3.add(cen, V3.mul(wx, -.30)), V3.mul(upT, .10)), V3.add(V3.add(cen, V3.mul(wx, .30)), V3.mul(upT, .10)), .018, .018, 4, TL.METAL, 1.5, 0, true);
-    }
-
-    /* =================================================================== 6. plumbing, cable runs, umbilicals */
-    // two propellant feed lines from the tank bay down into the engine compartment
-    const ar = a => [Math.sin(a), 0, -Math.cos(a)];
-    for (const [a, sd] of [[ANG[6] + .10, 0], [ANG[12] - .10, 1]]) {
-      const o = ar(a), g = [Math.cos(a), 0, Math.sin(a)], q = (rr, y, t) => [o[0] * rr + g[0] * t, y, o[2] * rr + g[2] * t];
-      pipe([q(R + .09, 2.30, 0), q(R + .09, 1.44, 0), q(R + .06, 1.26, 0), q(1.28, 1.14, .05), q(.74, 1.05, .05)], .052, TL.METAL, 1.3, 6);
-      for (const y of [2.12, 1.86, 1.60, 1.36]) clamp3(C(a, R + .055, y), V3.sub(C(a, R + .2, y), C(a, R, y)), .075, TL.METAL, 1.45);
-      // a smaller return line beside it
-      pipe([q(R + .07, 2.18, .14), q(R + .07, 1.40, .14), q(1.22, 1.16, .18)], .028, TL.METAL, 1.5, 5);
-      if (sd) pipe([q(R + .07, 2.18, -.14), q(R + .07, 1.52, -.14), q(1.30, 1.22, -.18)], .024, TL.METAL, 1.2, 4);
-    }
-    // cable raceway: a covered channel running the height of the can, cables spilling out at the top
-    {
-      const a = ANG[8] + .18, o = ar(a), g = [Math.cos(a), 0, Math.sin(a)];
-      const q = (rr, y, t) => F(o[0] * rr + g[0] * t, y, o[2] * rr + g[2] * t);
-      const wx = V3.norm(V3.sub(q(R, 1.5, 1), q(R, 1.5, 0))), nx = V3.norm(V3.sub(q(R + 1, 1.5, 0), q(R, 1.5, 0)));
-      for (let i = 0; i < 6; i++) {
-        const y0 = 1.00 + i * .26;
-        B.box(V3.lerp(q(R + .07, y0, 0), q(R + .07, y0 + .26, 0), .5), V3.mul(wx, .105), V3.mul(ey, .13), V3.mul(nx, .055), TL.METAL, i & 1 ? 1.18 : 1.05);
-        for (const sx of [-1, 1]) B.seg(q(R + .125, y0 + .13, sx * .07), V3.mad(q(R + .125, y0 + .13, sx * .07), nx, .014), .011, .009, 4, TL.METAL, 1.5, 0, true);
-      }
-      for (let c = 0; c < 3; c++) {
-        const t = (c - 1) * .05;
-        pipe([[o[0] * (R + .11) + g[0] * t, 2.56, o[2] * (R + .11) + g[2] * t], [o[0] * (R + .09) + g[0] * t, 2.76, o[2] * (R + .09) + g[2] * t], [o[0] * (R * .62) + g[0] * t, 2.98, o[2] * (R * .62) + g[2] * t], [o[0] * (R * .42) + g[0] * t, 3.06, o[2] * (R * .42) + g[2] * t]], .016, TL.DARK, 1.6, 4);
-      }
-    }
-    // umbilical disconnect panel and the severed ground-support lines hanging off it
-    {
-      const a = ANG[10] + .16, o = ar(a), g = [Math.cos(a), 0, Math.sin(a)];
-      const q = (rr, y, t) => [o[0] * rr + g[0] * t, y, o[2] * rr + g[2] * t];
-      const nx = V3.norm(V3.sub(P(q(R + 1, 1.3, 0)), P(q(R, 1.3, 0)))), wx = V3.norm(V3.sub(P(q(R, 1.3, 1)), P(q(R, 1.3, 0))));
-      B.box(P(q(R + .05, 1.22, 0)), V3.mul(wx, .30), V3.mul(ey, .20), V3.mul(nx, .05), TL.METAL, 1.15);
-      for (let i = 0; i < 5; i++) {
-        const t = (i % 3 - 1) * .18, yy = 1.22 + (i < 3 ? .09 : -.09);
-        const b0 = q(R + .10, yy, t);
-        B.seg(P(q(R + .05, yy, t)), P(b0), .048, .044, 6, TL.METAL, 1.4, 0, true);
-        B.seg(P(b0), P(q(R + .145, yy, t)), .055, .052, 6, TL.METAL, 1.1, 0, true);
-        if (i === 4) continue;  // one connector still capped
-        // the hose: it droops out of the connector, cut off short and left lying in the dust
-        const rr2 = rnd(70 + i * 13), spread = .30 + rr2() * .34, wob = (rr2() - .5) * .5;
-        const drop = [q(R + .16, yy, t)];
-        for (let k = 1; k <= 4; k++) {
-          const u = k / 4, fall = u * .35 + u * u * .65;
-          drop.push(q(R + .16 + u * (.42 + spread), Math.max(.05, yy + (.05 - yy) * fall), t + Math.sin(u * 2.6 + i * 1.9) * .16 * u + wob * u * u));
-        }
-        for (let k = 0; k + 1 < drop.length; k++) B.seg(P(drop[k]), P(drop[k + 1]), .027 - k * .002, .025 - k * .002, 5, TL.DARK, 1.5 + .2 * (i & 1), 0, k === 0);
-        // frayed braid at the cut end
-        const e = drop[4], d2 = V3.sub(P(e), P(drop[3]));
-        for (let f = 0; f < 3; f++) B.seg(P(e), V3.mad(V3.mad(P(e), V3.norm(d2), .07), f === 1 ? ey : V3.cross(V3.norm(d2), ey), (f - 1) * .035), .008, .003, 3, TL.METAL, 1.6, 0, true);
-      }
-      placard(q(R + .09, 1.44, 0)[0], 1.44, q(R + .09, 1.44, 0)[2], .09, .045, 1.35);
-    }
-
-    /* =================================================================== 7. strapped-on spheres, boxes, radiator */
-    // two pressurant / water spheres in cradles on opposite flanks
-    for (const [a, rr, sd] of [[ANG[4] + .20, .40, 41], [ANG[10] + .20, .34, 42]]) {
-      const o = ar(a), g = [Math.cos(a), 0, Math.sin(a)], cen = [o[0] * (R + rr + .10), 1.74, o[2] * (R + rr + .10)];
-      const wc = P(cen), nx = V3.norm(V3.sub(P([o[0], 1.74, o[2]]), P([0, 1.74, 0]))), wx = V3.norm(V3.sub(P([g[0], 1.74, g[2]]), P([0, 1.74, 0])));
-      B.ball(wc, V3.mul(wx, rr), V3.mul(ey, rr), V3.mul(nx, rr), TL.WHITE, 1.15, 0, 12, 8);
-      // retaining straps over the sphere, with their tension fittings
-      for (const sg of [-1, 1]) for (let i = 0; i < 14; i++) {
-        const a0 = i / 14 * TAU, a1 = (i + 1) / 14 * TAU, off = sg * .21;
-        const ring = (ang, o2, k) => V3.add(V3.add(wc, V3.mul(wx, o2)), V3.add(V3.mul(ey, Math.cos(ang) * rr * k), V3.mul(nx, Math.sin(ang) * rr * k)));
-        B.quad(ring(a0, off + .028, 1.03), ring(a1, off + .028, 1.03), ring(a1, off - .028, 1.03), ring(a0, off - .028, 1.03), TL.DARK, 1.6);
-        B.quad(ring(a0, off + .028, 1.03), ring(a0, off + .028, 1.0), ring(a1, off + .028, 1.0), ring(a1, off + .028, 1.03), TL.DARK, 1.2);
-        if (i === 3) B.box(ring(a0, off, 1.09), V3.mul(wx, .05), V3.mul(ey, .035), V3.mul(nx, .035), TL.METAL, 1.5);
-      }
-      // cradle
-      for (const sg of [-1, 1]) {
-        B.seg(P([o[0] * R + g[0] * sg * .22, 1.40, o[2] * R + g[2] * sg * .22]), V3.add(V3.add(wc, V3.mul(wx, sg * .22)), V3.mul(ey, -rr * .72)), .035, .03, 4, TL.METAL, 1.3, 0, true);
-        B.seg(P([o[0] * R + g[0] * sg * .22, 2.08, o[2] * R + g[2] * sg * .22]), V3.add(V3.add(wc, V3.mul(wx, sg * .22)), V3.mul(ey, rr * .72)), .03, .026, 4, TL.METAL, 1.3, 0, true);
-      }
-      B.seg(V3.add(wc, V3.mul(ey, -rr * .9)), V3.add(wc, V3.mul(ey, -rr - .09)), .035, .03, 5, TL.METAL, 1.5, 0, true);
-      // the saddle: a plate on the hull and a ring frame the sphere sits in, so it is plainly bolted on
-      B.box(P([o[0] * (R + .035), 1.74, o[2] * (R + .035)]), V3.mul(wx, .30), V3.mul(ey, .34), V3.mul(nx, .035), TL.METAL, 1.1);
-      for (let i = 0; i < 14; i++) {
-        const a0 = i / 14 * TAU, a1 = (i + 1) / 14 * TAU;
-        const rg = (ang, k, o2) => V3.add(V3.add(wc, V3.mul(nx, o2)), V3.add(V3.mul(ey, Math.cos(ang) * rr * k), V3.mul(wx, Math.sin(ang) * rr * k)));
-        B.quad(rg(a0, 1.03, .030), rg(a1, 1.03, .030), rg(a1, 1.03, -.030), rg(a0, 1.03, -.030), TL.DARK, 1.5);
-        B.quad(rg(a0, 1.03, .030), rg(a0, 1.0, .030), rg(a1, 1.0, .030), rg(a1, 1.03, .030), TL.DARK, 1.15);
-      }
-      for (const sg of [-1, 1]) B.box(V3.add(V3.add(wc, V3.mul(wx, sg * .16)), V3.mul(nx, -rr * .86)), V3.mul(wx, .05), V3.mul(ey, .05), V3.mul(nx, .06), TL.METAL, 1.5);
-      pipe([[cen[0], 1.74 - rr - .12, cen[2]], [cen[0] * .86, 1.42, cen[2] * .86], [o[0] * (R + .04), 1.30, o[2] * (R + .04)]], .026, TL.METAL, 1.4, 4);
-    }
-    // equipment box with a hinged cover and four over-centre latches
-    {
-      const a = ANG[6] + .55, o = ar(a), g = [Math.cos(a), 0, Math.sin(a)];
-      const nx = V3.norm(V3.sub(P([o[0], 2, o[2]]), P([0, 2, 0]))), wx = V3.norm(V3.sub(P([g[0], 2, g[2]]), P([0, 2, 0])));
-      const cen = V3.add(P([o[0] * (R + .14), 2.08, o[2] * (R + .14)]), [0, 0, 0]);
-      B.box(cen, V3.mul(wx, .32), V3.mul(ey, .24), V3.mul(nx, .14), TL.METAL, 1.0);
-      B.box(V3.add(cen, V3.mul(nx, .145)), V3.mul(wx, .30), V3.mul(ey, .22), V3.mul(nx, .02), CRATE, 1.25);
-      for (const sa of [-1, 1]) for (const sb of [-1, 1])
-        B.box(V3.add(V3.add(cen, V3.mul(wx, sa * .30)), V3.add(V3.mul(ey, sb * .14), V3.mul(nx, .13))), V3.mul(wx, .035), V3.mul(ey, .05), V3.mul(nx, .035), TL.METAL, 1.55);
-      B.seg(V3.add(V3.add(cen, V3.mul(ey, .25)), V3.mul(wx, -.28)), V3.add(V3.add(cen, V3.mul(ey, .25)), V3.mul(wx, .28)), .022, .022, 4, TL.METAL, 1.4, 0, true);
-      B.quad(V3.add(V3.add(cen, V3.mul(nx, .17)), V3.add(V3.mul(wx, -.10), V3.mul(ey, .09))), V3.add(V3.add(cen, V3.mul(nx, .17)), V3.add(V3.mul(wx, .10), V3.mul(ey, .09))), V3.add(V3.add(cen, V3.mul(nx, .17)), V3.add(V3.mul(wx, .10), V3.mul(ey, -.01))), V3.add(V3.add(cen, V3.mul(nx, .17)), V3.add(V3.mul(wx, -.10), V3.mul(ey, -.01))), TL.WHITE, 1.35, 0, [.1, .1, .9, .6]);
-    }
-    // finned radiator panel
-    {
-      const a = ANG[9] + .50, o = ar(a), g = [Math.cos(a), 0, Math.sin(a)];
-      const nx = V3.norm(V3.sub(P([o[0], 2, o[2]]), P([0, 2, 0]))), wx = V3.norm(V3.sub(P([g[0], 2, g[2]]), P([0, 2, 0])));
-      const cen = P([o[0] * (R + .07), 2.12, o[2] * (R + .07)]);
-      B.box(cen, V3.mul(wx, .44), V3.mul(ey, .30), V3.mul(nx, .025), TL.METAL, .95);
-      for (let i = 0; i < 9; i++) B.box(V3.add(V3.add(cen, V3.mul(wx, (i - 4) * .098)), V3.mul(nx, .055)), V3.mul(wx, .012), V3.mul(ey, .28), V3.mul(nx, .055), TL.METAL, i & 1 ? 1.5 : 1.15);
-      pipe([[o[0] * (R + .05) + g[0] * .44, 2.42, o[2] * (R + .05) + g[2] * .44], [o[0] * (R + .05) + g[0] * .44, 2.14, o[2] * (R + .05) + g[2] * .44], [o[0] * (R + .05) + g[0] * .44, 1.78, o[2] * (R + .05) + g[2] * .44]], .022, TL.METAL, 1.45, 4);
-    }
-
-    /* =================================================================== 8. RCS quads */
-    for (let k = 0; k < 4; k++) {
-      const a = legA[k], o = ar(a), g = [Math.cos(a), 0, Math.sin(a)];
-      const nx = V3.norm(V3.sub(P([o[0], 2.3, o[2]]), P([0, 2.3, 0]))), wx = V3.norm(V3.sub(P([g[0], 2.3, g[2]]), P([0, 2.3, 0])));
-      const cen = P([o[0] * (R + .17), 2.30, o[2] * (R + .17)]);
-      B.box(V3.mad(cen, nx, -.09), V3.mul(wx, .17), V3.mul(ey, .17), V3.mul(nx, .085), TL.METAL, 1.1);
-      B.box(cen, V3.mul(wx, .125), V3.mul(ey, .125), V3.mul(nx, .085), TL.DARK, 1.5);
-      const bell = (d, up) => {
-        const t0 = V3.mad(cen, d, .09), t1 = V3.mad(cen, d, .255);
-        B.seg(t0, t1, .035, .072, 7, TL.METAL, .9, 0, false);
-        B.seg(V3.mad(cen, d, .10), V3.mad(cen, d, .245), .028, .064, 7, TL.DARK, 1.45, 0, false);
-      };
-      bell(ey); bell(V3.mul(ey, -1)); bell(wx); bell(V3.mul(wx, -1));
-      // propellant lines into the quad
-      pipe([[o[0] * R + g[0] * .02, 2.48, o[2] * R + g[2] * .02], [o[0] * (R + .09) + g[0] * .02, 2.40, o[2] * (R + .09) + g[2] * .02], [o[0] * (R + .11) + g[0] * .02, 2.33, o[2] * (R + .11) + g[2] * .02]], .020, TL.METAL, 1.45, 4);
-      B.seg(V3.mad(cen, nx, -.19), V3.mad(cen, nx, -.10), .055, .055, 5, TL.SUIT, 1.5, 0, true);
-    }
-
-    /* =================================================================== 9. upper deck */
-    // hoist / docking ring with three lugs
-    for (let i = 0; i < 14; i++) {
-      const a0 = i / 14 * TAU, a1 = (i + 1) / 14 * TAU, q = (a, r, y) => P([Math.cos(a) * r, y, Math.sin(a) * r]);
-      B.quad(q(a0, .50, Y_CAP + .10), q(a1, .50, Y_CAP + .10), q(a1, .50, Y_CAP), q(a0, .50, Y_CAP), TL.METAL, 1.3);
-      B.quad(q(a0, .43, Y_CAP + .10), q(a1, .43, Y_CAP + .10), q(a1, .50, Y_CAP + .10), q(a0, .50, Y_CAP + .10), TL.METAL, 1.0);
-      B.quad(q(a0, .43, Y_CAP), q(a1, .43, Y_CAP), q(a1, .43, Y_CAP + .10), q(a0, .43, Y_CAP + .10), TL.METAL, .8);
-    }
-    for (let i = 0; i < 3; i++) {
-      const a = i / 3 * TAU + .4, q = (r, y) => P([Math.cos(a) * r, y, Math.sin(a) * r]);
-      B.box(q(.56, Y_CAP + .06), V3.mul(V3.norm(V3.sub(q(1, 0), q(0, 0))), .09), V3.mul(ey, .055), V3.mul(V3.cross(ey, V3.norm(V3.sub(q(1, 0), q(0, 0)))), .035), TL.METAL, 1.5);
-    }
-    // handrail round the upper deck
-    {
-      const pts = []; for (let i = 0; i <= 6; i++) { const a = ANG[2] + (ANG[8] - ANG[2]) * i / 6; pts.push([Math.sin(a) * .78, Y_CAP + .16, -Math.cos(a) * .78]); }
-      for (let i = 0; i + 1 < pts.length; i++) B.seg(P(pts[i]), P(pts[i + 1]), .019, .019, 4, TL.METAL, 1.5, 0, true);
-      for (const i of [0, 3, 6]) B.seg(P([pts[i][0], Y_CAP, pts[i][2]]), P(pts[i]), .017, .015, 4, TL.METAL, 1.3, 0, true);
-    }
-    // deployed S-band dish on a canted mast
-    {
-      const base = [.62, Y_DRUM1 - .06, -.30], hinge = [.74, Y_CAP + .02, -.36], top = [1.06, 3.98, -.50];
-      B.box(P(base), V3.mul(ex, .09), V3.mul(ey, .07), V3.mul(ez, .09), TL.METAL, 1.2);
-      B.seg(P(base), P(hinge), .055, .048, 6, TL.METAL, 1.25, 0, true);
-      B.seg(P(hinge), P(top), .042, .030, 6, TL.METAL, 1.35, 0, true);
-      B.ball(P(hinge), V3.mul(ex, .06), V3.mul(ey, .06), V3.mul(ez, .06), TL.METAL, 1.45, 0, 6, 4);
-      // deployment actuator alongside
-      B.seg(P([base[0] + .14, base[1] + .04, base[2] - .04]), P([hinge[0] + .20, hinge[1] + .30, hinge[2] - .02]), .026, .022, 4, TL.METAL, 1.4, 0, true);
-      const wt = P(top), nrm = V3.norm(V3.sub(P([top[0] + .52, top[1] + .40, top[2] - .40]), wt));
-      const dc = V3.mad(wt, nrm, .10);
-      dish(dc, nrm, ey, .34, .13, 14, TL.METAL, 1.1);
-      // feed horn on three struts
-      const fp = V3.mad(dc, nrm, .25);
-      for (let i = 0; i < 3; i++) {
-        const a = i / 3 * TAU, u = V3.norm(V3.sub(V3.mad(wt, ey, 1), V3.mul(nrm, V3.dot(ey, nrm)))), v = V3.cross(nrm, u);
-        const rim = V3.add(dc, V3.add(V3.mul(u, Math.cos(a) * .33), V3.mul(v, Math.sin(a) * .33)));
-        B.seg(rim, fp, .010, .010, 3, TL.METAL, 1.5, 0, true);
-      }
-      B.seg(fp, V3.mad(fp, nrm, -.09), .045, .030, 6, TL.METAL, 1.3, 0, true);
-      B.ball(V3.mad(wt, nrm, -.04), V3.mul(ex, .05), V3.mul(ey, .05), V3.mul(ez, .05), TL.METAL, 1.2, 0, 6, 4);
-    }
-    // whip antenna to 4.20 m, a VHF blade, and two beacons
-    B.seg(P([-.30, Y_CAP, .18]), P([-.34, 4.20, .22]), .016, .006, 4, TL.METAL, 1.5, 0, true);
-    B.box(P([-.30, Y_CAP + .05, .18]), V3.mul(ex, .05), V3.mul(ey, .05), V3.mul(ez, .05), TL.METAL, 1.25);
-    B.quad(P([-.76, Y_CAP + .46, -.20]), P([-.62, Y_CAP + .46, -.26]), P([-.62, Y_CAP + .02, -.26]), P([-.76, Y_CAP + .02, -.20]), TL.METAL, 1.4);
-    B.box(P([-.70, Y_CAP + .03, -.23]), V3.mul(ex, .06), V3.mul(ey, .035), V3.mul(ez, .06), TL.METAL, 1.2);
-    for (const [bx, bz] of [[.18, -.52], [-.46, -.34]]) {
-      B.seg(P([bx, Y_CAP, bz]), P([bx, Y_CAP + .11, bz]), .05, .045, 6, TL.METAL, 1.2, 0, false);
-      B.ball(P([bx, Y_CAP + .13, bz]), V3.mul(ex, .048), V3.mul(ey, .042), V3.mul(ez, .048), TL.WHITE, .7, 1.25, 7, 4);
-    }
-    // docking camera on a bracket, watching the hatch
-    {
-      const a = ANG[2] + .14, o = ar(a), nx = V3.norm(V3.sub(P([o[0], 2.4, o[2]]), P([0, 2.4, 0])));
-      const b0 = P([o[0] * (R + .02), 2.40, o[2] * (R + .02)]), b1 = V3.mad(b0, nx, .22);
-      B.seg(b0, b1, .024, .022, 4, TL.METAL, 1.3, 0, true);
-      B.box(V3.mad(b1, ey, -.04), V3.mul(V3.cross(ey, nx), .055), V3.mul(ey, .05), V3.mul(nx, .075), TL.METAL, 1.2);
-      B.seg(V3.add(V3.mad(b1, ey, -.04), V3.mul(nx, .07)), V3.add(V3.mad(b1, ey, -.07), V3.mul(nx, .15)), .030, .026, 6, TL.DARK, 1.4, 0, true);
-      B.seg(b0, V3.mad(V3.mad(b0, ey, -.14), nx, .02), .014, .012, 4, TL.METAL, 1.25, 0, true);
-    }
-    // a rack of three small gas bottles on the flank
-    {
-      const a = ANG[5] + .20, o = ar(a), g = [Math.cos(a), 0, Math.sin(a)];
-      const nx = V3.norm(V3.sub(P([o[0], 2, o[2]]), P([0, 2, 0]))), wx = V3.norm(V3.sub(P([g[0], 2, g[2]]), P([0, 2, 0])));
-      for (let i = 0; i < 3; i++) {
-        const c = P([o[0] * (R + .13) + g[0] * (i - 1) * .17, 1.60, o[2] * (R + .13) + g[2] * (i - 1) * .17]);
-        B.seg(V3.mad(c, ey, -.21), V3.mad(c, ey, .21), .072, .072, 8, TL.METAL, 1.15, 0, false);
-        B.ball(V3.mad(c, ey, .21), V3.mul(wx, .072), V3.mul(ey, .055), V3.mul(nx, .072), TL.METAL, 1.3, 0, 8, 4);
-        B.ball(V3.mad(c, ey, -.21), V3.mul(wx, .072), V3.mul(ey, .055), V3.mul(nx, .072), TL.METAL, .95, 0, 8, 4);
-        B.seg(V3.mad(c, ey, .26), V3.mad(c, ey, .32), .020, .018, 4, TL.METAL, 1.5, 0, true);
-      }
-      for (const yy of [-.14, .14]) B.box(P([o[0] * (R + .13), 1.60 + yy, o[2] * (R + .13)]), V3.mul(wx, .30), V3.mul(ey, .018), V3.mul(nx, .085), TL.METAL, 1.45);
-      for (const sg of [-1, 1]) B.seg(P([o[0] * R + g[0] * sg * .30, 1.46, o[2] * R + g[2] * sg * .30]), P([o[0] * (R + .13) + g[0] * sg * .30, 1.74, o[2] * (R + .13) + g[2] * sg * .30]), .026, .024, 4, TL.METAL, 1.3, 0, true);
-    }
-    // a long grab rail round the flank, the way crews move about the vehicle
-    {
-      const pts = []; for (let i = 0; i <= 5; i++) { const a = ANG[3] + (ANG[8] - ANG[3]) * i / 5; pts.push([Math.sin(a) * (R + .13), 2.26, -Math.cos(a) * (R + .13)]); }
-      for (let i = 0; i + 1 < pts.length; i++) B.seg(P(pts[i]), P(pts[i + 1]), .020, .020, 4, TL.METAL, 1.5, 0, true);
-      for (const i of [0, 2, 5]) { const a = ANG[3] + (ANG[8] - ANG[3]) * i / 5; B.seg(C(a, R, 2.26), P(pts[i]), .016, .014, 4, TL.METAL, 1.25, 0, true); }
-    }
-    // a docking light over the hatch, still burning
-    B.box(P([0, Y_CAB1 + .10, FZ - .06]), V3.mul(ex, .09), V3.mul(ey, .06), V3.mul(ez, .07), TL.METAL, 1.25);
-    B.quad(P([-.07, Y_CAB1 + .07, FZ - .13]), P([.07, Y_CAB1 + .07, FZ - .13]), P([.07, Y_CAB1 + .01, FZ - .11]), P([-.07, Y_CAB1 + .01, FZ - .11]), TL.WHITE, .8, 1.4);
-    // two floods washing the steps
-    for (const sx of [-1, 1]) {
-      B.seg(P([sx * 1.02, 2.56, -1.26]), P([sx * 1.10, 2.44, -1.40]), .045, .055, 6, TL.METAL, 1.2, 0, true);
-      B.ball(P([sx * 1.11, 2.43, -1.42]), V3.mul(ex, .045), V3.mul(ey, .045), V3.mul(ez, .045), TL.WHITE, .7, 1.1, 6, 4);
-    }
-  }
-
-  /* ======================================================================= the interior
-     Local space: the camera sits at the origin looking down -Z through a ~1 rad vertical FOV, so at the
-     forward bulkhead (z = -0.84) the frame is only 1.63 m wide by 0.92 m tall and nothing further out than
-     that pyramid is ever seen. Everything therefore lives on or just in front of the bulkhead; the overhead,
-     the left wall and the floor appear as converging slivers at the edges.
-     The cabin is lit by the crew's own helmet lamps, which throw a narrow cone straight down the view axis:
-     the middle of the frame is washed bright and the corners fall to nothing. So the tone is carried by
-     emissive instead - a low ambient glow on the structure, more of it out at the edges where no lamp
-     reaches, bright white paint on a few faces, and the instruments burning on their own.
-     Nothing is allowed to cross the window aperture (|x| < .36, y -0.17..+0.31 at z = -0.84). */
-  function interior(B, t) {
-    const BZ = -0.84, SK = -1.06;                       // inner bulkhead, outer skin: the reveal is 0.22 deep
-    const HW = 0.80, HT = 0.47, HB = -0.52;             // bulkhead half width, top, bottom
-    const GS = .15, GE = .26, GP = .34;                 // glow: structure / out at the edges / white paint
-    // window: a trapezoid canted so the sight line runs downhill, out over the nose
-    const WI = [[-.36, .31], [.36, .31], [.305, -.17], [-.305, -.17]];        // on the bulkhead
-    const WO = [[-.325, .265], [.325, .265], [.265, -.275], [-.265, -.275]];  // at the skin, dropped: the cant
-    const wi = i => [WI[i][0], WI[i][1], BZ], wo = i => [WO[i][0], WO[i][1], SK];
-
-    /* --- the forward bulkhead: plates around the aperture, two of them bright painted panels --- */
-    const plate = (x0, y0, x1, y1, s, g, lay) => B.quad([x0, y1, BZ], [x1, y1, BZ], [x1, y0, BZ], [x0, y0, BZ], lay || TL.WHITE, s, g, [.08, .08, .3, .3]);
-    plate(-HW, -.17, -.44, HT, 2.15, GP);                  // painted white, so it holds light at the dark left edge
-    plate(-.44, -.17, -.37, HT, 1.30, GE, TL.METAL);
-    plate(.37, -.17, .46, HT, 1.10, GE, TL.METAL);
-    plate(.46, -.17, HW, HT, 1.55, GE);
-    plate(-HW, HB, HW, -.17, 1.05, GS * .5, TL.METAL);     // under the window, behind the console
-    plate(-.37, .31, .37, HT, 2.15, GP);                   // the bright panel over the window
-    B.quad([-.37, .31, BZ], [-.36, .31, BZ], [-.305, -.17, BZ], [-.37, -.17, BZ], TL.WHITE, 1.7, GS);
-    B.quad([.36, .31, BZ], [.37, .31, BZ], [.37, -.17, BZ], [.305, -.17, BZ], TL.WHITE, 1.5, GS);
-    // stiffeners, seams and rivet lines
-    for (const [x0, x1, y, s] of [[-HW, -.45, .14, 2.1], [.47, HW, .14, 1.9], [-HW, -.45, -.06, 1.8], [.47, HW, -.06, 1.7]])
-      B.box([(x0 + x1) / 2, y, BZ + .020], [(x1 - x0) / 2, 0, 0], [0, .016, 0], [0, 0, .020], TL.METAL, s, GE);
-    for (const x of [-.63, .64]) B.box([x, .08, BZ + .020], [.016, 0, 0], [0, .36, 0], [0, 0, .020], TL.METAL, 1.9, GE);
-    for (let i = 0; i < 7; i++) for (const x of [-.755, .755])
-      B.seg([x, -.08 + i * .080, BZ + .012], [x, -.08 + i * .080, BZ + .032], .011, .009, 3, TL.METAL, 2.1, GE, true);
-
-    /* --- the window: reveal, scorch rim, retaining ring and its bolt circle --- */
-    for (let i = 0; i < 4; i++) {
-      const a = wi(i), b = wi((i + 1) % 4), c = wo((i + 1) % 4), d = wo(i);
-      B.quad(a, b, c, d, TL.WHITE, [1.95, 1.15, .55, 1.15][i], GS * .8, [.02, .02, .14, .14]);  // reveal, each face caught differently
-      const sh = p => [p[0] * .90, p[1] * .90, SK + .085];
-      B.quad(d, c, sh(WO[(i + 1) % 4]), sh(WO[i]), TL.DARK, 1.7, .02, [.1, .1, .6, .6]);    // ablative char around the pane
-    }
-    for (let i = 0; i < 4; i++) {                                                           // retaining ring, standing proud
-      const g = .070, e = p => [p[0] + Math.sign(p[0]) * g, p[1] + Math.sign(p[1]) * g];
-      const a = WI[i], b = WI[(i + 1) % 4], A = e(a), Bp = e(b);
-      B.quad([A[0], A[1], BZ + .040], [Bp[0], Bp[1], BZ + .040], [b[0], b[1], BZ + .040], [a[0], a[1], BZ + .040], TL.WHITE, 1.85, GS, [0, 0, .3, .2]);
-      B.quad([A[0], A[1], BZ], [Bp[0], Bp[1], BZ], [Bp[0], Bp[1], BZ + .040], [A[0], A[1], BZ + .040], TL.METAL, 1.5, GS);
-      B.quad([a[0], a[1], BZ + .040], [b[0], b[1], BZ + .040], [b[0], b[1], BZ], [a[0], a[1], BZ], TL.METAL, 1.0, GS);
-      for (let k = 0; k < 5; k++) {
-        const u = (k + .5) / 5, px = A[0] + (Bp[0] - A[0]) * u, py = A[1] + (Bp[1] - A[1]) * u;
-        B.seg([px, py, BZ + .040], [px, py, BZ + .064], .013, .011, 4, TL.METAL, 2.1, GS, true);
-      }
-    }
-    // the window edge-light strip: a dim bar tucked under the top of the frame, washing the glass
-    B.box([0, .345, BZ + .052], [.33, 0, 0], [0, .012, 0], [0, 0, .016], TL.WHITE, .6, .85);
-    // stowed sun shade on its rail above the window, with two spring latches
-    B.box([0, .435, BZ + .05], [.40, 0, 0], [0, .024, 0], [0, 0, .05], TL.METAL, 1.9, GE);
-    B.box([0, .393, BZ + .09], [.36, 0, 0], [0, .016, 0], [0, 0, .012], TL.SUIT, 1.7, GE);
-    for (const sx of [-1, 1]) B.seg([sx * .28, .393, BZ + .10], [sx * .28, .393, BZ + .15], .014, .011, 4, TL.METAL, 2.1, GE, true);
-
-    /* --- overhead, left wall and floor, converging on the nose --- */
-    const CY0 = .47, CY1 = .64, WL0 = -.78, WL1 = -1.00, FY0 = -.52, FY1 = -.70;
-    B.quad([-HW, CY0, BZ], [HW, CY0, BZ], [.96, CY1, .32], [-.96, CY1, .32], TL.WHITE, 1.5, GE * .9, [0, 0, .2, .2]);
-    for (let i = 0; i < 4; i++) { const u = i / 3.4, zz = BZ + .10 + i * .20, yy = CY0 + (CY1 - CY0) * (zz - BZ) / (0.32 - BZ);
-      B.box([0, yy - .012, zz], [HW * (1 + u * .12), 0, 0], [0, .026, 0], [0, 0, .026], TL.METAL, 1.95, GE); }
-    B.quad([WL0, CY0, BZ], [WL0, HB, BZ], [WL1, FY1 + .06, .32], [WL1, CY1 - .02, .32], TL.WHITE, 1.4, GE, [0, 0, .2, .2]);
-    for (let i = 0; i < 3; i++) { const zz = BZ + .09 + i * .17, u = (zz - BZ) / (.32 - BZ);
-      B.box([WL0 + (WL1 - WL0) * u + .02, .02, zz], [.022, 0, 0], [0, .42, 0], [0, 0, .024], TL.METAL, 1.9, GE); }
-    B.quad([-HW, FY0, BZ], [HW, FY0, BZ], [.96, FY1, .32], [-.96, FY1, .32], TL.DARK, 1.6, GS * .4, [0, 0, .2, .2]);
-    // the nose frame: a box-section longeron each side with its diagonal braces
-    for (const sx of [-1, 1]) {
-      B.box([sx * .565, .06, BZ + .062], [.030, 0, 0], [0, .38, 0], [0, 0, .062], TL.WHITE, sx < 0 ? 1.95 : 1.45, GE);
-      B.box([sx * .565, .42, BZ + .062], [.040, 0, 0], [0, .028, 0], [0, 0, .072], TL.METAL, 2.1, GE);
-      B.box([sx * .565, -.31, BZ + .062], [.040, 0, 0], [0, .028, 0], [0, 0, .072], TL.METAL, 1.5, GE);
-      B.seg([sx * .53, .38, BZ + .02], [sx * .75, .44, BZ + .04], .016, .014, 4, TL.METAL, 2.0, GE, true);
-      B.seg([sx * .53, -.26, BZ + .02], [sx * .75, -.38, BZ + .04], .016, .014, 4, TL.METAL, 1.6, GE, true);
-      for (let i = 0; i < 5; i++) B.seg([sx * .536, -.24 + i * .16, BZ + .062], [sx * .558, -.24 + i * .16, BZ + .062], .009, .008, 3, TL.METAL, 2.2, GE, true);
-    }
-    // cabin flood over the console, and its pool of light on the coaming
-    B.box([-.12, .435, BZ + .27], [.13, 0, 0], [0, .033, 0], [0, 0, .06], TL.METAL, 1.4, GS);
-    B.quad([-.23, .400, BZ + .21], [-.01, .400, BZ + .21], [-.01, .400, BZ + .33], [-.23, .400, BZ + .33], TL.WHITE, .9, 1.5);
-
-    /* --- stowage net on the left of the window, bags behind it --- */
-    {
-      const x0 = -.775, x1 = -.46, y0 = -.12, y1 = .28;
-      for (let i = 0; i < 6; i++) {
-        const u = (i % 3) * .34 + .17, v = (i > 2 ? .70 : .28), r0 = .050 + ((i * 5) % 3) * .011;
-        B.ball([x0 + (x1 - x0) * u, y0 + (y1 - y0) * v, BZ + r0 * .8], [r0 * 1.25, 0, 0], [0, r0, 0], [0, 0, r0 * .85], TL.SUIT, 1.75, GE, 9, 6);
-      }
-      for (let i = 0; i <= 5; i++) { const xx = x0 + (x1 - x0) * i / 5;
-        B.seg([xx, y0 - .02, BZ + .02], [xx, y1 + .02, BZ + .045], .0055, .0055, 3, TL.METAL, 1.4, GS, false); }
-      for (let i = 0; i <= 3; i++) { const yy = y0 + (y1 - y0) * i / 3;
-        B.seg([x0, yy, BZ + .02], [(x0 + x1) / 2, yy, BZ + .07], .0055, .0055, 3, TL.METAL, 1.4, GS, false);
-        B.seg([(x0 + x1) / 2, yy, BZ + .07], [x1, yy, BZ + .02], .0055, .0055, 3, TL.METAL, 1.4, GS, false); }
-      for (const xx of [x0, x1]) B.box([xx, (y0 + y1) / 2, BZ + .026], [.015, 0, 0], [0, (y1 - y0) / 2 + .03, 0], [0, 0, .024], TL.METAL, 2.0, GE);
-    }
-    /* --- circuit breaker panel and a lit annunciator on the right of the window --- */
-    {
-      const x0 = .455, y0 = -.12, zf = BZ + .030;
-      B.box([x0 + .145, y0 + .20, BZ + .017], [.155, 0, 0], [0, .225, 0], [0, 0, .017], TL.METAL, 1.6, GE);
-      for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++)
-        B.seg([x0 + .035 + c * .072, y0 + .040 + r * .078, zf], [x0 + .035 + c * .072, y0 + .040 + r * .078, zf + .030], .015, .013, 6, TL.METAL, 2.1, GE, true);
-      // four annunciator tiles, two of them live
-      for (let i = 0; i < 4; i++) {
-        const tx = x0 + .075 + (i % 2) * .145, ty = y0 + .345 + (i >> 1) * .058;
-        B.box([tx, ty, zf + .004], [.062, 0, 0], [0, .024, 0], [0, 0, .006], TL.WHITE, .5, (i === 0 || i === 3) ? 1.35 : .07);
-        B.box([tx, ty, zf - .002], [.070, 0, 0], [0, .030, 0], [0, 0, .006], TL.METAL, 1.9, GE);
-      }
-    }
-
-    /* --- the instrument panel: raked back under the window so its faces point at the crew --- */
-    {
-      // PN(u,v,h): u across, v down the rake, h proud of the panel along its own normal
-      const PN = (u, v, h) => [u, -.20 - .30 * v + .287 * (h || 0), -.83 + .09 * v + .958 * (h || 0)];
-      B.quad(PN(-.78, 0), PN(.78, 0), PN(.78, 1), PN(-.78, 1), TL.METAL, 1.7, GS, [.1, .1, .22, .22]);
-      B.box([0, -.176, -.820], [.80, 0, 0], [0, .022, .007], [0, .010, .034], TL.WHITE, 1.9, GP);          // glareshield lip
-      B.box([0, -.512, -.730], [.80, 0, 0], [0, .024, .008], [0, .008, .030], TL.METAL, 1.5, GS);          // the panel's bottom rail
-      B.quad(PN(-.80, 1), PN(.80, 1), [.86, -.62, -.42], [-.86, -.62, -.42], TL.DARK, 1.5, GS * .4);       // the dark footwell below it
-      // a lit edge strip along the top of the panel, broken either side of the event timer
-      for (const sx of [-1, 1]) B.box([sx * .46, -.198, -.806], [.28, 0, 0], [0, .007, .002], [0, .003, .011], TL.WHITE, .5, .75);
-      // the event timer, dead centre under the window: the one thing the crew watch all the way down
-      {
-        const TL0 = [-.17, -.178, -.808], TR0 = [.17, -.178, -.808], BR0 = [.17, -.200, -.790], BL0 = [-.17, -.200, -.790];
-        B.quad(TL0, TR0, BR0, BL0, TL.DARK, .7, .04);
-        B.box([0, -.187, -.802], [.185, 0, 0], [0, .017, .014], [0, .011, -.013], TL.METAL, 2.0, GS);
-        for (let d = 0; d < 6; d++) {
-          const dx = -.1375 + d * .055, g = d === 2 ? .04 : 0;
-          B.quad([dx - .019, -.1805, -.8095], [dx + .019, -.1805, -.8095], [dx + .019, -.1975, -.7955], [dx - .019, -.1975, -.7955], TL.WHITE, .3, 1.05 + ((d * 5) % 4) * .22 + g);
-        }
-      }
-
-      // centre: the eight-ball attitude indicator, lit from inside
-      {
-        const c = PN(0, .30, .055), bz = PN(0, .30, 0);
-        for (let i = 0; i < 14; i++) {                        // bezel
-          const a0 = i / 14 * TAU, a1 = (i + 1) / 14 * TAU, rr = .092;
-          const q = (ang, k, h) => [bz[0] + Math.cos(ang) * rr * k, bz[1] + Math.sin(ang) * rr * k * .958 + .287 * h, bz[2] - Math.sin(ang) * rr * k * .287 + .958 * h];
-          B.quad(q(a0, 1, .055), q(a1, 1, .055), q(a1, 1, 0), q(a0, 1, 0), TL.METAL, 1.9, GS);
-          B.quad(q(a0, 1.14, .035), q(a1, 1.14, .035), q(a1, 1, .055), q(a0, 1, .055), TL.METAL, 2.1, GE);
-          if (i % 2 === 0) B.box(q(a0, 1.06, .062), [.005, 0, 0], [0, .009 * .958, -.009 * .287], [0, .287 * .006, .958 * .006], TL.WHITE, 1.2, .55);
-        }
-        B.ball(c, [.070, 0, 0], [0, .067, -.020], [0, .020, .067], TL.WHITE, .50, .68, 12, 7);             // the ball itself
-        for (let i = 0; i < 12; i++) {                        // the dark lower half: the ball's horizon
-          const a0 = i / 12 * TAU, a1 = (i + 1) / 12 * TAU;
-          const q = (ang, yy) => { const r2 = .0705 * Math.sqrt(Math.max(0, 1 - yy * yy));
-            return [c[0] + Math.cos(ang) * r2, c[1] + yy * .067 + .020 * Math.sin(ang) * r2 * .3, c[2] + Math.sin(ang) * r2 * .30 + yy * .020]; };
-          B.quad(q(a0, -.12), q(a1, -.12), q(a1, -.72), q(a0, -.72), TL.DARK, 1.4, .05);
-          B.quad(q(a0, -.72), q(a1, -.72), q(a1, -.99), q(a0, -.99), TL.DARK, 1.1, .04);
-        }
-        B.box([c[0], c[1] + .002, c[2] + .072], [.055, 0, 0], [0, .004, 0], [0, 0, .004], TL.DARK, 1.0, .03);   // the fixed aircraft index
-        B.box([c[0], c[1] + .022, c[2] + .070], [.006, 0, 0], [0, .016, 0], [0, 0, .004], TL.DARK, 1.0, .03);
-      }
-      // two round dials flanking it, with lit faces and dark needles
-      for (const [du, an] of [[-.29, 2.35], [.28, -.65]]) {
-        const bz = PN(du, .30, 0);
-        const q = (ang, k, h) => [bz[0] + Math.cos(ang) * .072 * k, bz[1] + Math.sin(ang) * .072 * k * .958 + .287 * h, bz[2] - Math.sin(ang) * .072 * k * .287 + .958 * h];
-        for (let i = 0; i < 12; i++) {
-          const a0 = i / 12 * TAU, a1 = (i + 1) / 12 * TAU;
-          B.quad(q(a0, 1, .040), q(a1, 1, .040), q(a1, 1, 0), q(a0, 1, 0), TL.METAL, 1.9, GS);
-          B.quad(q(a0, .88, .040), q(a1, .88, .040), q(a1, 1, .040), q(a0, 1, .040), TL.METAL, 2.1, GE);
-          B.tri(PN(du, .30, .036), q(a1, .88, .036), q(a0, .88, .036), TL.WHITE, .42, .66);                 // lit face
-          if (i % 2 === 0) B.box(q(a0, .76, .040), [.004, 0, 0], [0, .007 * .958, -.007 * .287], [0, .0017, .0057], TL.DARK, 1.0, .02);
-        }
-        const nc = PN(du, .30, .042), nl = .048;
-        B.box([nc[0] + Math.cos(an) * nl * .5, nc[1] + Math.sin(an) * nl * .5 * .958, nc[2] - Math.sin(an) * nl * .5 * .287],
-          [Math.cos(an) * nl * .5, Math.sin(an) * nl * .5 * .958, -Math.sin(an) * nl * .5 * .287], [.0045, 0, 0], [0, .0013, .0043], TL.DARK, 1.0, .03);
-        B.seg(PN(du, .30, .040), PN(du, .30, .052), .010, .008, 5, TL.METAL, 2.1, GS, true);
-      }
-      // outboard: a segment readout and a caution block each side
-      for (const sx of [-1, 1]) {
-        const u0 = sx * .505;
-        B.quad(PN(u0 - .13, .06, .004), PN(u0 + .13, .06, .004), PN(u0 + .13, .92, .004), PN(u0 - .13, .92, .004), TL.METAL, 1.55, GS, [.03, .03, .16, .16]);
-        for (const v of [.06, .92]) B.box(PN(u0, v, .010), [.135, 0, 0], [0, .006 * .958, -.006 * .287], [0, .287 * .010, .958 * .010], TL.METAL, 2.1, GE);
-        B.quad(PN(u0 - .11, .13, .008), PN(u0 + .11, .13, .008), PN(u0 + .11, .33, .008), PN(u0 - .11, .33, .008), TL.DARK, .8, .04);
-        for (let d = 0; d < 5; d++) {
-          const dx = u0 - .088 + d * .044;
-          B.quad(PN(dx - .016, .16, .012), PN(dx + .016, .16, .012), PN(dx + .016, .30, .012), PN(dx - .016, .30, .012), TL.WHITE, .3, .62 + ((d * 3 + (sx > 0 ? 2 : 0)) % 7) / 7 * 1.0);
-        }
-        for (let r = 0; r < 2; r++) for (let c = 0; c < 3; c++) {
-          const tx = u0 - .075 + c * .075, tv = .42 + r * .14, on = ((c * 3 + r * 5 + (sx > 0 ? 1 : 0)) % 7) < 2 ? 1.45 : .05;
-          B.box(PN(tx, tv, .012), [.032, 0, 0], [0, .025 * .958, -.025 * .287], [0, .287 * .004, .958 * .004], TL.WHITE, .55, on);
-          B.box(PN(tx, tv, .006), [.037, 0, 0], [0, .030 * .958, -.030 * .287], [0, .287 * .006, .958 * .006], TL.METAL, 1.9, GS);
-        }
-        // two guarded toggles at the bottom of the block
-        for (let k2 = 0; k2 < 2; k2++) {
-          const tx = u0 - .055 + k2 * .11, b0 = PN(tx, .76, .006);
-          B.seg(b0, PN(tx, .72, .034), .009, .007, 4, TL.METAL, 2.2, GS, true);
-          for (const g of [-1, 1]) B.seg(PN(tx + g * .026, .80, .006), PN(tx + g * .026, .68, .040), .0055, .0055, 3, TL.METAL, 2.1, GS, false);
-          B.seg(PN(tx - .026, .68, .040), PN(tx + .026, .68, .040), .0055, .0055, 3, TL.METAL, 2.1, GS, false);
-        }
-      }
-      // the master caution and warning strip, right under the window
-      for (let r = 0; r < 2; r++) for (let c = 0; c < 6; c++) {
-        const tx = -.21 + c * .084, tv = .06 + r * .10, on = ((c * 3 + r * 5) % 9) < 3 ? 1.5 : .05;
-        B.box(PN(tx, tv, .010), [.034, 0, 0], [0, .019 * .958, -.019 * .287], [0, .287 * .004, .958 * .004], TL.WHITE, .55, on);
-        B.box(PN(tx, tv, .004), [.039, 0, 0], [0, .024 * .958, -.024 * .287], [0, .287 * .006, .958 * .006], TL.METAL, 1.9, GS);
-      }
-      // a row of rotaries along the bottom of the centre section
-      for (let k2 = 0; k2 < 4; k2++) {
-        const tx = -.165 + k2 * .11;
-        B.seg(PN(tx, .72, .004), PN(tx, .70, .034), .026, .022, 8, TL.METAL, 2.0, GS, true);
-        B.box(PN(tx + .012, .70, .038), [.016, 0, 0], [0, .004, 0], [0, .0013, .0043], TL.WHITE, 1.4, .40);
-      }
-    }
-
-    /* --- hoses and restraint straps, swaying with the descent --- */
-    const hose = (a, c, bow, r0, sh, gl, lay) => {
-      const m = [(a[0] + c[0]) / 2 + bow[0], (a[1] + c[1]) / 2 + bow[1], (a[2] + c[2]) / 2 + bow[2]];
-      const pts = []; for (let i = 0; i <= 5; i++) { const u = i / 5, w = (1 - u) * (1 - u), v = 2 * u * (1 - u), x2 = u * u;
-        pts.push([a[0] * w + m[0] * v + c[0] * x2, a[1] * w + m[1] * v + c[1] * x2, a[2] * w + m[2] * v + c[2] * x2]); }
-      for (let i = 0; i + 1 < pts.length; i++) B.seg(pts[i], pts[i + 1], r0, r0, 5, lay || TL.SUIT, sh, gl, i === 0);
-    };
-    const s1 = Math.sin(t * 1.35), s2 = Math.sin(t * 2.05 + 1.1), s3 = Math.sin(t * .83 + 2.4);
-    hose([-.80, .24, BZ + .03], [-.50, -.34, BZ + .26], [-.09 + s1 * .038, -.09, .05], .026, 1.45, GE);
-    hose([.80, .20, BZ + .03], [.54, -.36, BZ + .22], [.09 + s2 * .034, -.08, .04], .022, 1.25, GE);
-    hose([-.80, -.06, BZ + .02], [-.44, -.38, BZ + .18], [-.04, -.10 + s3 * .032, .05], .020, 1.55, GE);
-    // one black umbilical for contrast against all the white
-    hose([.80, -.02, BZ + .02], [.46, -.40, BZ + .16], [.05, -.09 - s1 * .030, .05], .022, 1.9, .05, TL.DARK);
-    for (const [sx, ph] of [[-.70, 0], [.72, 1.7]]) {
-      const sw = Math.sin(t * 1.9 + ph) * .034;
-      const top = [sx, .44, BZ + .16], bot = [sx + sw * 1.4, -.32, BZ + .34];
-      for (let i = 0; i < 3; i++) {
-        const pz = u => [top[0] + (bot[0] - top[0]) * u + sw * Math.sin(u * PI), top[1] + (bot[1] - top[1]) * u, top[2] + (bot[2] - top[2]) * u];
-        const p0 = pz(i / 3), p1 = pz((i + 1) / 3);
-        B.box([(p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2, (p0[2] + p1[2]) / 2], [.024, 0, 0], [0, (p0[1] - p1[1]) / 2, (p1[2] - p0[2]) / 2], [0, .004, 0], TL.WHITE, 1.7, GE);
-      }
-      B.box([bot[0], bot[1] - .018, bot[2] + .01], [.030, 0, 0], [0, .024, 0], [0, 0, .012], TL.METAL, 2.1, GE);
-    }
-
-    /* --- the crewmate in the right-hand couch: shoulder, arm and the near edge of a helmet --- */
-    {
-      const cx = .78, cz = BZ + .13;
-      B.ball([cx, -.14, cz + .04], [.19, 0, .02], [0, .18, 0], [0, 0, .21], TL.SUIT, 1.7, GE, 9, 6);           // shoulder
-      B.seg([cx - .04, -.22, cz + .09], [cx - .14, -.48, cz + .24], .086, .072, 7, TL.SUIT, 1.45, GE, true);   // upper arm
-      for (const yy of [-.12, -.24]) B.seg([cx - .18, yy, cz - .02], [cx + .14, yy - .03, cz + .10], .016, .016, 4, TL.DARK, 1.9, .05, true);  // suit restraint tapes
-      B.ball([cx - .05, .23, cz], [.195, 0, 0], [0, .205, 0], [0, 0, .195], TL.WHITE, 1.85, GE, 10, 7);        // helmet shell
-      B.ball([cx - .16, .205, cz - .11], [.128, 0, 0], [0, .138, 0], [0, 0, .105], TL.VISOR, 2.2, .10, 8, 5);  // visor
-      for (let i = 0; i < 10; i++) {                                                                            // visor frame
-        const a0 = i / 10 * PI - PI * .55, a1 = (i + 1) / 10 * PI - PI * .55;
-        B.seg([cx - .16 + Math.cos(a0) * .134, .205 + Math.sin(a0) * .145, cz - .100], [cx - .16 + Math.cos(a1) * .134, .205 + Math.sin(a1) * .145, cz - .100], .014, .014, 3, TL.METAL, 2.1, GE, false);
-      }
-      for (let i = 0; i < 4; i++) B.seg([cx - .13, .03 + i * .023, cz + .14], [cx + .12, .01 + i * .023, cz + .16], .012, .012, 4, TL.METAL, 2.0, GE, true);  // neck ring
-      B.box([cx - .16, -.07, cz + .20], [.060, 0, 0], [0, .045, 0], [0, 0, .024], TL.METAL, 2.0, GE);           // chest fitting
-      B.quad([cx - .20, -.11, cz + .17], [cx - .06, -.12, cz + .18], [cx - .06, -.195, cz + .18], [cx - .20, -.185, cz + .17], TL.PATCH, 1.6, .14);  // his crew patch
-      B.seg([cx - .16, -.10, cz + .22], [cx - .03, -.30, cz + .30], .026, .024, 5, TL.SUIT, 1.3, GE, true);     // his suit hose
-    }
-  }
-
-  return {
-    exterior(B, x, y, z, heading, groundY) { exterior(B, x, y, z, heading, groundY); },
-    interior(B, t) { interior(B, t); },
-    DIM,
-  };
+  return { exterior, flight, interior, frame: (x, y, z, h, g, st) => { const f = frame(x, y, z, h, g, st); return { o: f.o, ex: f.ex, ey: f.ey, ez: f.ez }; }, padY, DIM };
 })();
 
 
@@ -11022,7 +10888,7 @@ const FOE_KEI = [];   // none to begin with. The more of them there are the less
 function newGame(crewIdx) {
   const rng = mulberry(2011 + crewIdx), c = CREW[crewIdx];
   S = { t: 0, left: 600, rng, crew: c, crewIdx, stage: 0, over: null, overT: 0, micOn: false, cine: null,
-    players: [{ x: START.x + 3.7, z: START.z + .6, yaw: 0, pitch: 0, vx: 0, vz: 0, stam: 1, lamp: true, bob: 0, breach: 0, ammo: c.id === 'baker' ? 21 : 12, pulses: c.id === 'algo' ? 3 : 0, y: 0, vy: 0, air: 0, coyote: 0, jbuf: 0, fireT: 9, fireBuf: 0, kickP: 0, kickY: 0, hitT: 9, fovK: 0, hold: 0, holdId: null, stepD: 0 }],
+    players: [{ x: START.x + 4.7, z: START.z + .6, yaw: 0, pitch: 0, vx: 0, vz: 0, stam: 1, lamp: true, bob: 0, breach: 0, ammo: c.id === 'baker' ? 21 : 12, pulses: c.id === 'algo' ? 3 : 0, y: 0, vy: 0, air: 0, coyote: 0, jbuf: 0, fireT: 9, fireBuf: 0, kickP: 0, kickY: 0, hitT: 9, fovK: 0, hold: 0, holdId: null, stepD: 0 }],
     foes: [], reactor: false, lines: [], spawnT: 40, cr: {}, code: 0, flow: new Int16Array(MW * MH), flowT: 0,
     prints: [], dust: [], brass: [], climb: null, brk: {}, signal: 1, glitch: 0, burstT: 6, burst: 0, freeze: 0, prox: 0, breath: 0, heartT: 0, keiT: 3, scanT: 0, scan: [], shake: 0, white: 0, script: 0, killer: null, launchT: 0, said: {} };
   FOE_KEI.forEach(([x, z], i) => S.foes.push(mkFoe('kei', x, z, -1, i)));
@@ -11676,9 +11542,10 @@ function cineExt(c, asp, dt) {
 function emitCineExt(B, cam, c, dt) {
   const gy = groundY(START.x, START.z), tau = c.td ? c.t - c.tdT : -1, legs = c.gearT !== undefined, hh = Math.max(0, c.h);
   if (typeof POD !== 'undefined' && POD.exterior) { const st = { legs: legs ? 1 : c.td ? 1 : 0, crush: c.td ? (legs ? .85 : 1) * clamp(tau / .12, 0, 1) : 0, hatch: smooth((tau - 2.6) / .7), eng: 0, dmg: c.td ? 1 : 0 };
-    POD.exterior(B, START.x, gy + hh, START.z, Math.PI / 2, hh > 0 ? (x, z) => groundY(x, z) + hh : groundY, st); }
+    if (!c.td && POD.flight) { const k = clamp(hh / DROP, 0, 1); POD.flight(B, { p: [START.x, gy + hh + (legs ? .68 : .3), START.z], yaw: Math.PI / 2 + .05 * Math.sin(c.t * 1.3) * k, pitch: .07 * Math.sin(c.t * 2.1 + 1) * k, roll: .06 * Math.sin(c.t * 1.7) * k }, st); }
+    else POD.exterior(B, START.x, gy + hh, START.z, Math.PI / 2, groundY, st); }
   if (c.td) gasGround(B, START.x, START.z, .8 * Math.exp(-tau * .45), c.t, tau);
-  if (tau > 2.6 && tau < 4.4) { const k = (tau - 2.6) / 1.8, o = podPt(0, 1.75, 1.8); gasJet(B, cam, o, [1, .15, 0], 1.2 + 3.5 * k, .35, 1.6 + 1.2 * k, .5 * (1 - k), .35 + .6 * k); }   // the cabin's air goes out with the hatch
+  if (tau > 2.6 && tau < 4.4) { const k = (tau - 2.6) / 1.8, o = podPt(0, (POD.DIM && POD.DIM.hatchY || 1.55) + .2, (POD.DIM && POD.DIM.hatchZ || 1.7) + .1); gasJet(B, cam, o, [1, .15, 0], 1.2 + 3.5 * k, .35, 1.6 + 1.2 * k, .5 * (1 - k), .35 + .6 * k); }   // the cabin's air goes out with the hatch
   const fg = c.fig; if (fg && !c.figHide) { if (!c.rig) c.rig = ASTRO.create(CREW.indexOf(S.crew), 900); ASTRO.update(c.rig, { x: fg.x, z: fg.z, heading: fg.heading, speed: fg.speed, scale: 1.45, stun: 0, alert: 0, active: true, open: 0, dup: false, gun: 0 }, dt, (x, z) => groundY(x, z) + fg.cy); ASTRO.emit(B, c.rig); } }
 function startCine() {
   const shots = W.sentinels.map(s => { let best = null, bd = 1e9; for (const p of PATHS[0].pts) { const d = Math.hypot(p[0] - s.x, p[1] - s.z); if (d < bd) { bd = d; best = p; } } return { s, cam: best, d: bd }; }).filter(o => o.d > 25 && o.d < 90).sort((a, b) => b.d - a.d).slice(0, 3);
@@ -11828,9 +11695,9 @@ function mat(yaw, pitch, e, asp, fov) {
 const GEAR_OK = typeof GEAR !== 'undefined' && !!GEAR.footprint;
 /* The descent is flown from inside EP-2: the pod's own interior is modelled around the origin looking
    down -Z, so it is emitted into a scratch batch and carried onto the camera's basis each frame. */
-const POD_OK = typeof POD !== 'undefined' && !!POD.interior, PODB = POD_OK ? makeBatch(24000) : null;
-function emitPodInterior(B, cam, t) {
-  if (!POD_OK) return; PODB.reset(); POD.interior(PODB, t);
+const POD_OK = typeof POD !== 'undefined' && !!POD.interior, PODB = POD_OK ? makeBatch(24000) : null, PODST = { q: [0, 0, 0, 0], alarm: 0, alt: 1200, lit: 1 };
+function emitPodInterior(B, cam, t, st) {
+  if (!POD_OK) return; PODB.reset(); POD.interior(PODB, t, st);
   const R = cam.r, U = cam.up, F = cam.f, e = cam.e, d = PODB.d;
   for (let i = 0; i < PODB.n; i++) { const o = i * STRIDE, x = d[o], y = d[o + 1], z = d[o + 2], nx = d[o + 6], ny = d[o + 7], nz = d[o + 8];
     B.v([e[0] + R[0] * x + U[0] * y - F[0] * z, e[1] + R[1] * x + U[1] * y - F[1] * z, e[2] + R[2] * x + U[2] * y - F[2] * z],
@@ -11897,12 +11764,16 @@ function render(dt, now) {
         if (B.n > nb0) smear.push([nb0, B.n - nb0, 0]); }
       if (pp && !S.over && !S.cine && !S.climb && S.stage !== 3) { const n0 = B.n; emitGun(B, cam, pp, dt); smear.push([n0, B.n - n0, 0]); }
       if (S.cine && S.cine.phase === 'descent' && S.cine.t >= XCUT) { const n0 = B.n; emitCineExt(B, cam, S.cine, dt); smear.push([n0, B.n - n0, 0]); }
-      else if (S.cine && S.cine.phase === 'descent') { const n0 = B.n, c = S.cine; emitPodInterior(B, cam, c.t);
+      else if (S.cine && S.cine.phase === 'descent') { const n0 = B.n, c = S.cine;
+        // the cabin answers the controls: guard and retro switch, hand controller, leg handle, brace lever
+        if (!c.qa) c.qa = [0, 0, 0, 0]; for (let i = 0; i < 4; i++) { const qq = c.q[i], tg = qq.done > 0 ? 1 : qq.hold && c.t > qq.t && !qq.done ? clamp(qq.held / qq.hold, 0, 1) : 0; c.qa[i] += clamp(tg - c.qa[i], -dt * 2.2, dt * 2.2); PODST.q[i] = c.qa[i]; }
+        PODST.alarm = c.fails > 0 || c.t > 14.8 ? 1 : 0; PODST.alt = Math.max(0, c.h); PODST.lit = c.t > FLAMEOUT ? (Math.sin(c.t * 61) + Math.sin(c.t * 23.7) > .3 ? .12 : .75) : 1;
+        emitPodInterior(B, cam, c.t, PODST);
         const q = c.q[1], hold = c.t > q.t && !q.done && keys[q.key], pre = c.ignT === undefined ? 1 : 0, live = !c.td;
         emitPodFX(B, cam, { ru: live ? rcsFire(c.t + .17, 2, c.seed + pre * 3) : null, rl: live ? (hold && q.key === 'KeyA' ? [1, 1] : rcsFire(c.t, 0, c.seed + pre)) : null, rr: live ? (hold && q.key === 'KeyD' ? [1, 1] : rcsFire(c.t + .31, 1, c.seed + pre)) : null, eng: c.eng, ign: c.ignT === undefined ? undefined : c.t - c.ignT, gear: c.gearT === undefined ? undefined : c.t - c.gearT });
         if (c.h < 80) gasGround(B, START.x + (c.drift || 0) * (9 + c.h) * .1, START.z + 2.6, c.dust, c.t, c.td ? c.t - c.tdT : undefined);
         smear.push([n0, B.n - n0, 0]); }
-      if (!S.cine && S.stage === 3) { const n0 = B.n, u = S.launchT - LAUNCH_HOLD; emitPodInterior(B, cam, S.launchT + 40);
+      if (!S.cine && S.stage === 3) { const n0 = B.n, u = S.launchT - LAUNCH_HOLD; PODST.q[0] = clamp(u * 2 + 1, 0, 1); PODST.q[1] = 0; PODST.q[2] = 0; PODST.q[3] = 1; PODST.alarm = 0; PODST.alt = Math.max(0, u) * Math.max(0, u) * 30; PODST.lit = 1; emitPodInterior(B, cam, S.launchT + 40, PODST);
         // the tanks vent on the hold, then the engine: its skirt under the sill, and the jets working all the way up
         emitPodFX(B, cam, { ru: rcsFire(S.launchT + .17, 2, 7), rl: rcsFire(S.launchT, 0, 7), rr: rcsFire(S.launchT + .31, 1, 7), eng: clamp(u * 4, 0, 1), ign: u > 0 ? u : undefined, gear: S.launchT % .8 * (u > 0 ? 9 : 1) });
         smear.push([n0, B.n - n0, 0]); }
