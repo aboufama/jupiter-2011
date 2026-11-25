@@ -99,6 +99,10 @@ button:hover,button:focus-visible{border-color:var(--amber);color:var(--amber)}
 /* The first document: a photocopied, declassified NASA mission report. Modelled on the cover of the Gemini Program
    Mission Report for Gemini-Titan 1 (MSC-R-G-64-1, May 1964): struck classification lines, the rotated change stamp,
    the crossed downgrading box, punch holes, the accession number up the margin, the espionage-law legend. */
+#film{background:#000}
+#filmV{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;opacity:0}
+#filmCard{position:relative;max-width:760px;padding:0 30px;text-align:center;font-size:clamp(15px,1.45vw,20px);line-height:1.75;letter-spacing:.07em;color:#e8e5dc;opacity:0;transition:opacity 1.3s;white-space:pre-line}
+#filmCard.on{opacity:1}
 #disc{background:#050505;--red:#a8231c}
 .fscale{position:relative}
 .desk{position:absolute;left:50%;top:50%;width:4400px;height:3200px;margin:-1600px 0 0 -2200px;transform:translateZ(-4px);pointer-events:none;background:radial-gradient(ellipse 1000px 800px at 47% 46%,rgba(255,248,232,.17),rgba(255,248,232,.05) 45%,rgba(0,0,0,.55) 100%),url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='900' height='600'%3E%3Cfilter id='w'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.003 .07' numOctaves='4' seed='11'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1.5 0 0 0 -.45'/%3E%3C/filter%3E%3Crect width='900' height='600' filter='url(%23w)'/%3E%3C/svg%3E"),linear-gradient(#211f1c,#191816)}
@@ -312,6 +316,11 @@ button:hover,button:focus-visible{border-color:var(--amber);color:var(--amber)}
 <div class="screen" id="pause">
   <h2>FEED PAUSED</h2>
   <div class="row"><button id="resumeBtn">RESUME</button><button data-back>MAIN MENU</button></div>
+</div>
+
+<div class="screen" id="film">
+  <video id="filmV" playsinline preload="none" src="video/ending.mp4"></video>
+  <div id="filmCard"></div>
 </div>
 
 <div class="screen" id="end">
@@ -10652,7 +10661,7 @@ function burnStep(dt, p, X) {
   if (AU.ctx && Math.floor(u * 2) !== Math.floor((u - dt) * 2)) sfx.rumble(.5 + Math.min(1, u * .15));
   if (u > 3 && shOnce('b1')) say('NICK (CAPCOM)', 'Good burn. Good burn. You are coming home.');
   S.white = clamp((u - 5.2) / 2.6, 0, 1);
-  if (u > 8.2) homeBegin();
+  if (u > 8.2) filmBegin();
 }
 
 // ---------------------------------------------------------------- drawing the ship
@@ -11981,7 +11990,7 @@ function frame(now) {
 
 // ---------------------------------------------------------------- screens
 function show(id) { if (id !== 'disc' && window.encStop) window.encStop(); screen = id === 'end' ? 'ending' : id; for (const s of document.querySelectorAll('.screen')) s.classList.toggle('on', s.id === id); }
-function startRun(i, at) { auInit(); if (typeof homeAudio === 'function') homeAudio(false); newGame(i); show('none'); acc = 0;
+function startRun(i, at) { auInit(); try { $('filmV').preload = 'auto'; } catch (e) { } if (typeof homeAudio === 'function') homeAudio(false); newGame(i); show('none'); acc = 0;
   if (at === 'ship') { screen = 'play'; shipBegin(); if (cv.requestPointerLock) { try { const r = cv.requestPointerLock(); if (r && r.catch) r.catch(() => { }); } catch (e) { } } return; }   // a death aboard Ithaca puts you back at her hatch, not back on the moon
   if (at === 'impact') { flowField(); S.cine = null; endCine(true); say('SUIT', 'IMPACT. SUIT INTACT.'); if (AU.ctx) sfx.ring(6); return; }   // a death on the surface puts you back at the wreck of the pod, just after she hit
   startCine(); screen = 'cine'; flowField(); }
@@ -11994,10 +12003,33 @@ function showEnd() {
     $('endH').textContent = 'DUPLICATION COMPLETE'; $('endP').textContent = `${c.name} did not reach Argus A-2. The helmet feed is still transmitting.`; }
   else if (S.over === 'taken') { x.fillStyle = '#000'; x.fillRect(0, 0, 384, 480); $('endH').textContent = 'NO ONE ABOARD'; $('endP').textContent = `ERV Ithaca was found on station round Callisto with her hatches sealed. ${c.name} had docked with her. The deck cameras show something walking the spine with a ring of keys.`; }
   else if (S.over === 'cut') { $('endH').textContent = 'THE KEY WAS FINISHED'; $('endP').textContent = `Three cuts were taken from ${c.name} aboard ERV Ithaca. A key cut to that pattern opens exactly one thing. The helmet feed ends eleven seconds later.`; }
-  else if (S.over === 'home') { const o = CREW[S.home && S.home.ci !== undefined ? S.home.ci : 2]; $('endH').textContent = 'WELCOME HOME'; $('endP').textContent = `${c.name} came home alone on ERV Ithaca and was given a parade on May 17, 2014. Newsreel of the route shows a second EVA suit standing in the crowd. The face in it was identified as ${o.name}, who never left Callisto.`; }
+  else if (S.over === 'home') { $('endH').textContent = 'END OF RECONSTRUCTION'; $('endP').textContent = `Helmet recorder HR-${CREW.indexOf(c) + 1}, ${c.name}. Odyssey 9, March 23 to August 29, 2011.`; }
   else if (S.over === 'crush') { $('endH').textContent = 'VEHICLE DEPARTED'; $('endP').textContent = `Argus A-2 lifted on its window at 23:47 UTC with no one aboard. ${c.name} was still on the surface.`; }
   else { const left = S.foes.filter(f => f.kind === 'crew').length, reached = CREW.length - 1 - (S.taken || 0) - 0; $('endH').textContent = 'BURN COMPLETE'; $('endP').textContent = `${c.name} cleared Jovian orbit with ${m}:${s} to spare. ${(S.taken || 0) >= 4 ? 'No one else came back.' : (S.taken || 0) ? `${S.taken} of the crew were taken on the surface.` : 'The rest of the crew were still on the surface.'} A second biological signature was later found aboard.`; }
   show('end');
+}
+/* THE WAY HOME. The return is not reconstructed: it is the footage. The picture comes up grey, the way everything on
+   Callisto was, and the colour comes back into it over the first seconds. When it has run, the record is closed the
+   way a documentary closes one: a few plain cards, taken from the file. Escape skips to the end. */
+const FILM_CARDS = [
+  'Commander Case D. Baker was the only member of the\nOdyssey 9 crew to return to Earth.',
+  'Pilot Forrest Waldron and Flight Engineer Darren Watkins Jr.\nare presumed dead. The fate of Science Officer\nJoseph J. Bartolozzi is disputed.',
+  'Mission Specialist Mateo O. Algo was never recovered.',
+  'No funeral was held. The families were told\nthat the crew had been hospitalized.',
+  'Commander Baker lives in seclusion.\nHe has never spoken publicly about the mission.',
+  'Flight Director Nicholas Stewart resigned.\nHe says he remembers nothing from before 2012.',
+  'NASA cancelled every crewed flight beyond the Moon.\nOdyssey 9 remains classified.' ];
+function filmBegin() {
+  if (document.pointerLockElement) document.exitPointerLock(); const v = $('filmV'), card = $('filmCard'); let done = false, raf = 0, carded = false;
+  if (typeof homeAudio === 'function') homeAudio(false); if (AU.ctx && AU.master) { const t = AU.ctx.currentTime; AU.master.gain.cancelScheduledValues(t); AU.master.gain.setTargetAtTime(0, t, .4); }
+  card.classList.remove('on'); card.textContent = ''; v.style.opacity = 0; try { v.currentTime = 0; } catch (e) { } v.volume = clamp(SET.vol * 1.3, 0, 1); show('film');
+  const fin = () => { if (done) return; done = true; cancelAnimationFrame(raf); try { v.pause(); } catch (e) { } removeEventListener('keydown', key); if (AU.ctx && AU.master) AU.master.gain.setTargetAtTime(AU.vol, AU.ctx.currentTime, .3); S.over = 'home'; S.overT = 0; showEnd(); };
+  const cards = () => { if (done || carded) return; carded = true; cancelAnimationFrame(raf); v.style.opacity = 0; let i = 0;
+    const next = () => { if (done) return; if (i >= FILM_CARDS.length) return fin(); card.textContent = FILM_CARDS[i++]; card.classList.add('on'); setTimeout(() => { card.classList.remove('on'); setTimeout(next, 1500); }, 5400); }; setTimeout(next, 1100); };
+  const tick = () => { if (done || carded) return; const t = v.currentTime, d = v.duration || 47.4, g = Math.max(0, 1 - t / 2.8);
+    v.style.opacity = Math.max(0, Math.min(1, t / .7, (d - .12 - t) / 2.6)).toFixed(3); v.style.filter = g > 0 ? `grayscale(${g.toFixed(3)}) contrast(${(1 + .14 * g).toFixed(3)})` : 'none'; raf = requestAnimationFrame(tick); };
+  const key = e => { if (e.code === 'Escape') fin(); }; addEventListener('keydown', key); v.onended = cards; v.onerror = cards;
+  const pr = v.play(); if (pr && pr.catch) pr.catch(() => cards()); tick();
 }
 /* Who carries what. Four real pistols with a history in spaceflight between five people. */
 const ARM_INFO = {
@@ -12084,7 +12116,7 @@ function refreshFace(id) { const i = CREW_IDS.indexOf(id); if (i < 0) return; gl
   for (const [lay, open] of [[TL.FACE + i, false], [TL.FACE_OPEN + i, true]]) gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, lay, 256, 256, 1, gl.RGBA, gl.UNSIGNED_BYTE, faceLayer(id, open));
   gl.generateMipmap(gl.TEXTURE_2D_ARRAY); const box = $('crew'); if (box) { box.innerHTML = ''; buildSelect(); } }
 try { initGL(); buildMapCanvas(); loadPhotos(refreshFace); NASA_IMG.onload = () => { try { const c = document.createElement('canvas'); c.width = c.height = TS; const x = c.getContext('2d'); x.fillStyle = '#ecebe6'; x.fillRect(0, 0, TS, TS); const w = NASA_IMG.naturalWidth, h = NASA_IMG.naturalHeight, k = TS * .97 / Math.max(w, h); x.imageSmoothingQuality = 'high'; x.drawImage(NASA_IMG, (TS - w * k) / 2, (TS - h * k) / 2, w * k, h * k); gl.bindTexture(gl.TEXTURE_2D_ARRAY, R.tex); gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, TL.NASA, TS, TS, 1, gl.RGBA, gl.UNSIGNED_BYTE, c); gl.generateMipmap(gl.TEXTURE_2D_ARRAY); } catch (e) { } hudDirty = true; }; NASA_IMG.src = document.querySelector('.brand img').src; if (document.fonts && document.fonts.load) document.fonts.load('500 16px "IBM Plex Mono"').then(() => { hudDirty = true; }).catch(() => { }); buildSelect(); bindUI(); requestAnimationFrame(frame); } catch (e) { document.body.insertAdjacentHTML('beforeend', `<pre style="position:fixed;left:8px;bottom:8px;color:#fff;z-index:9">${String(e.message || e)}</pre>`); throw e; }
-window.__dbg = { R, W, SET, cine(dt) { cineStep(dt); }, get S() { return S; }, startRun, show, step, ship(i) { startRun(i || 0, 'ship'); }, home() { homeBegin(); }, tp(x, z) { P().x = x; P().z = z; }, set screen(v) { screen = v; }, get screen() { return screen; } };
+window.__dbg = { R, W, SET, cine(dt) { cineStep(dt); }, get S() { return S; }, startRun, show, step, ship(i) { startRun(i || 0, 'ship'); }, home() { filmBegin(); }, parade() { homeBegin(); }, tp(x, z) { P().x = x; P().z = z; }, set screen(v) { screen = v; }, get screen() { return screen; } };
 
 
 </script>
