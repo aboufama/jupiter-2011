@@ -3517,7 +3517,7 @@ const passAt = (cx, cz) => cx >= 0 && cz >= 0 && cx < MW && cz < MH && W.pass[cz
   let f = bfs(); const sc = Math.floor(START.x / CS) + Math.floor(START.z / CS) * MW;
   if (f[sc] < 0) { for (let i = 0; i < MW * MH; i++) if (W.pass[i] === 2) W.pass[i] = 1; for (const k of W.rocks) k.block = false; f = bfs(); }
   W.shipDist = f;
-  W.lamps = [[START.x + 5, START.z - 4], [150, 312], [116, 226], [92, 174], [138, 126]].map(([x, z]) => ({ x, z, y: groundY(x, z) }));
+  W.lamps = [[START.x + 6.5, START.z - 9.5], [150, 312], [116, 226], [92, 174], [138, 126]].map(([x, z]) => ({ x, z, y: groundY(x, z) }));
   // silhouettes on the ridgeline, the way the recovered photographs show them
   for (let n = 0; n < 4000 && W.sentinels.length < 14; n++) { const x = 10 + r() * (WX - 20), z = 20 + r() * (WZ - 40), d = corridorD(x, z); if (d < 10 || d > 15) continue; if (W.sentinels.some(s => Math.hypot(s.x - x, s.z - z) < 34)) continue; W.sentinels.push({ x, z, seed: 500 + n, scale: 1.3 + r() * .5, heading: r() * 6.28 }); }
 })();
@@ -3563,8 +3563,8 @@ function buildPropsMesh(withSentinels) {
   // EVA site
   const g = (x, z) => groundY(x, z), sx = START.x, sz = START.z; const up = h => [0, h, 0];
   if (GK) {
-    GEAR.crate(B, sx + 4, sz + 2, .4, groundY, 0); GEAR.crate(B, sx + 5.4, sz + 1.2, 1.9, groundY, 1); GEAR.crate(B, sx - 4.2, sz + 3.1, -.7, groundY, 2);
-    GEAR.flag(B, sx - 3, sz - 5, groundY); GEAR.rover(B, sx + 9, sz - 8, -.6, groundY); GEAR.antenna(B, sx - 7.5, sz + 1.5, groundY);
+    GEAR.crate(B, sx + 12.5, sz - 12, .4, groundY, 0); GEAR.crate(B, sx + 13.9, sz - 11, 1.9, groundY, 1); GEAR.crate(B, sx + 6.5, sz - 12.5, -.7, groundY, 2);   // the March camp: she came down beside it, not in it
+    GEAR.flag(B, sx + 4.5, sz - 15, groundY); GEAR.rover(B, sx + 10, sz - 9, -.6, groundY); GEAR.antenna(B, sx + 14.5, sz - 15.5, groundY);
     for (const l of W.lamps) GEAR.lamp(B, l.x, l.z, groundY, (l.x * 31 + l.z * 7) | 0);
   } else {
   for (const [dx, dz, h, w] of [[4, 2, .5, .7], [5.2, 1.4, .35, .5], [-4, 3, .6, .6]]) { const y = g(sx + dx, sz + dz); B.box([sx + dx, y + h, sz + dz], [w, 0, .2 * w], up(h), [-.2 * w, 0, w], WL.CRATE, 1); }
@@ -9552,7 +9552,7 @@ function initGL() {
   layers.forEach((c, i) => c && gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, i, TS, TS, 1, gl.RGBA, gl.UNSIGNED_BYTE, c));
   gl.generateMipmap(gl.TEXTURE_2D_ARRAY); gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR); gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   R.terrain = mkMesh(buildTerrainMesh(), gl.STATIC_DRAW); R.props = mkMesh(buildPropsMesh(true), gl.STATIC_DRAW); R.ship = mkMesh(buildShipMesh(), gl.STATIC_DRAW);
-  R.batch = makeBatch(120000); R.dyn = mkMesh(R.batch.d, gl.DYNAMIC_DRAW); R.empty = gl.createVertexArray();
+  R.batch = makeBatch(200000); R.dyn = mkMesh(R.batch.d, gl.DYNAMIC_DRAW); R.empty = gl.createVertexArray();
   // shadow map
   R.shTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, R.shTex); gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, R.SM, R.SM, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
   for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE], [gl.TEXTURE_COMPARE_MODE, gl.COMPARE_REF_TO_TEXTURE], [gl.TEXTURE_COMPARE_FUNC, gl.LEQUAL]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
@@ -9908,7 +9908,8 @@ function step(dt, cmd) {
       p.kickP += .055; p.kickY += (S.rng() - .5) * .03;
       let best = null, bt = 70, leg = -1;
       for (const f of S.foes) { const dx = f.x - p.x, dz = f.z - p.z, d = Math.hypot(dx, dz); if (d > 70 || d < .1 || !los(p.x, p.z, f.x, f.z)) continue;
-        if (f.kind === 'kei' && KEI.hit) { const h = KEI.hit(f.rig, o, dir); if (h && h.t < bt) { best = f; bt = h.t; leg = h.leg; } }
+        if (f.kind === 'kei' && KEI.hit) { const h = KEI.hit(f.rig, o, dir); if (h && h.t < bt) { best = f; bt = h.t; leg = h.leg; }
+          else if (!h) { const along = dx * dir[0] + dz * dir[2]; if (along > 0 && along < bt) { const px = dx - dir[0] * along, pz = dz - dir[2] * along, hy = o[1] + dir[1] * along - groundY(f.x, f.z), sc = f.vsc || 1; if (Math.hypot(px, pz) < .42 * sc && hy > 1.1 * sc && hy < 3.9 * sc) { best = f; bt = along; leg = -1; } } } }   // a shot through the middle of it counts even where the model has a gap
         else { const along = dx * dir[0] + dz * dir[2]; if (along <= 0 || along >= bt) continue; const px = dx - dir[0] * along, pz = dz - dir[2] * along, hy = o[1] + dir[1] * along - groundY(f.x, f.z); if (Math.hypot(px, pz) < (f.kind === 'kei' ? .7 : .38) && hy > 0 && hy < (f.kind === 'kei' ? 4.6 : 1.95)) { best = f; bt = along; leg = -1; } } }
       { const cy = Math.cos(yw), sy = Math.sin(yw), m = [o[0] + dir[0] * .55 + cy * .2, o[1] + dir[1] * .55 - .16, o[2] + dir[2] * .55 + sy * .2], L = best ? bt : 70; (S.tracers || (S.tracers = [])).push({ a: m, b: [o[0] + dir[0] * L, o[1] + dir[1] * L, o[2] + dir[2] * L], t0: S.t }); if (S.tracers.length > 12) S.tracers.shift(); }
       if (best) { p.hitT = 0; hudDirty = true; best.active = true; if (AU.ctx) sfx.tick();
@@ -10199,14 +10200,43 @@ function end(kind) { S.over = kind; S.overT = 0; if (!AU.ctx) return; if (kind =
 // ---------------------------------------------------------------- the landing, and what the cameras saw afterwards
 /* The way down. Odyssey 9 is abandoned in orbit and the five of them come down in EP-2, a lifeboat: one retro burn, no
    landing engine to speak of, legs made to crush once. She runs dry short of the ground and falls the rest of the way. */
-const QTES = [{ t: 6, key: 'Space', label: 'PRESS SPACE', what: 'FIRE RETRO BURN' }, { t: 13.5, key: 'KeyA', label: 'HOLD A', what: 'STOP THE TUMBLE', hold: 1.1 }, { t: 21, key: 'KeyE', label: 'PRESS E', what: 'DEPLOY CRUSH LEGS' }, { t: 28.4, key: 'Space', label: 'PRESS SPACE', what: 'BRACE FOR IMPACT' }];
-const FLAMEOUT = 29.3, CINE_END = 16;
-const CINE_LINES = [[1.2, 'ODYSSEY 9', 'ABANDON SHIP. ESCAPE POD TWO IS AWAY.', 'pa'], [3.6, 'NICK (CAPCOM)', 'EP-2, Houston. You are clear of Odyssey and you are falling. That pod has one burn in her. Light it.', 'nick'],
-  [9.6, 'PLT F. WALDRON', 'Retro is lit. She is a lifeboat, Nick. She was built to fall, not to land.', 'waldron'], [16.8, 'SO J. BARTOLOZZI', 'Noting an unscheduled power draw from Specialist Algo\'s locker.', 'bart'], [19.3, 'MS M. O. ALGO', 'Ignore the reading, Nick.', 'algo'],
-  [24.3, 'FE D. WATKINS', 'Propellant is gone. We are not getting a landing out of this.', 'watkins'], [27.2, 'CDR C. BAKER', 'Brace. Everybody brace.', 'baker']];
-// after the impact, counted from it: nobody answers for a while, and then nobody is quite sure of anything
-const CINE_AFTER = [[4.8, 'SUIT', 'IMPACT. SUIT INTACT.', 'pa'], [6.6, 'NICK (CAPCOM)', 'EP-2, Houston. EP-2, do you read. Sound off, all of you.', 'nick'], [9.3, 'CDR C. BAKER', 'Baker. I am here.', 'baker'],
-  [10.5, 'PLT F. WALDRON', 'Waldron. I cannot see straight.', 'waldron'], [11.9, 'SO J. BARTOLOZZI', 'Bartolozzi. Something is wrong with my suit.', 'bart'], [13.2, 'FE D. WATKINS', 'Watkins. Which way is up.', 'watkins'], [14.3, 'MS M. O. ALGO', 'Algo.', 'algo']];
+/* The opening. A few controls from your couch on the way down, and they matter: the burn, the tumble, the legs, the
+   brace. Then the tanks run dry and the picture cuts to the valley floor, where she comes down out of the black and
+   hits. The hatch goes, you climb out, and the camera comes across the dust and into your helmet. */
+const QTES = [{ t: 3.8, key: 'Space', label: 'PRESS SPACE', what: 'FIRE RETRO BURN' }, { t: 8.2, key: 'KeyA', label: 'HOLD A', what: 'STOP THE TUMBLE', hold: 1.1 }, { t: 12.6, key: 'KeyE', label: 'PRESS E', what: 'DEPLOY CRUSH LEGS' }, { t: 16.6, key: 'Space', label: 'PRESS SPACE', what: 'BRACE FOR IMPACT' }];
+const DES_T = 20, FLAMEOUT = 19.4, XCUT = 20.3, CINE_END = 11.9, DROP = 26;
+const CINE_LINES = [[.8, 'ODYSSEY 9', 'ABANDON SHIP. ESCAPE POD TWO IS AWAY.', 'pa'], [2.2, 'NICK (CAPCOM)', 'EP-2, Houston. You are falling. That pod has one burn in her. Light it.', 'nick'],
+  [6.4, 'PLT F. WALDRON', 'Retro is lit. She was built to fall, Nick, not to land.', 'waldron'], [10.9, 'SO J. BARTOLOZZI', 'Noting an unscheduled power draw from Specialist Algo\'s locker.', 'bart'], [12.3, 'MS M. O. ALGO', 'Ignore the reading, Nick.', 'algo'],
+  [15, 'FE D. WATKINS', 'Propellant is gone. We are not getting a landing out of this.', 'watkins'], [16.3, 'CDR C. BAKER', 'Brace. Everybody brace.', 'baker']];
+// after the impact, counted from it
+const CINE_AFTER = [[1.6, 'SUIT', 'IMPACT. SUIT INTACT.', 'pa'], [3.3, 'NICK (CAPCOM)', 'EP-2, Houston. EP-2, do you read. Sound off, all of you.', 'nick'], [5.5, 'CDR C. BAKER', 'Baker. I am here.', 'baker'],
+  [6.6, 'PLT F. WALDRON', 'Waldron. I cannot see straight.', 'waldron'], [7.8, 'SO J. BARTOLOZZI', 'Bartolozzi. Something is wrong with my suit.', 'bart'], [9, 'FE D. WATKINS', 'Watkins. Which way is up.', 'watkins'], [10.1, 'MS M. O. ALGO', 'Algo.', 'algo']];
+const smooth = x => { x = clamp(x, 0, 1); return x * x * (3 - 2 * x); };
+// hatch side of the pod, local (x right of the hatch, y up, d out from the axis through the hatch) into the world
+const podPt = (x, y, d) => [START.x + d, groundY(START.x, START.z) + y, START.z + x];
+function cineExt(c, asp, dt) {
+  const p = P(), gy = groundY(START.x, START.z), tau = c.td ? c.t - c.tdT : -1, D = (typeof POD !== 'undefined' && POD.DIM) || { hatchZ: 1.74, sillY: 1.3, stepZ: 2.62 };
+  if (!c.xe) { c.xe = [START.x + 11, 0, START.z + 9]; for (const [ox, oz] of [[11, 9], [13, 6], [9, 12], [15, 8], [16, 2]]) { const x = START.x + ox, z = START.z + oz, y = groundY(x, z) + 1.15; if (corridorD(x, z) < -1 && clearView(x, y, z, START.x, gy + 2.5, START.z) && clearView(x, y, z, START.x, gy + DROP, START.z)) { c.xe = [x, y, z]; break; } } c.xe[1] = groundY(c.xe[0], c.xe[2]) + 1.15; c.lk = gy + c.h + 2; }
+  // the man who gets out
+  const T0 = 3.5, T1 = 4.5, T2 = 6.5, T3 = 8.3, G0 = 8.7, G1 = CINE_END - .25, A = [0, D.sillY, D.hatchZ - .45], Bq = [0, D.sillY, D.hatchZ + .5], C = [0, 0, D.stepZ + .35], Dq = [p.z - START.z, 0, p.x - START.x];
+  let fg = null; if (tau >= T0) { let a, b, k, back = false; if (tau < T1) { a = A; b = Bq; k = (tau - T0) / (T1 - T0); } else if (tau < T2) { a = Bq; b = C; k = (tau - T1) / (T2 - T1); back = true; } else { a = C; b = Dq; k = smooth((tau - T2) / (T3 - T2)); }
+    k = clamp(k, 0, 1); const lx = lerp(a[0], b[0], k), ly = lerp(a[1], b[1], k), ld = lerp(a[2], b[2], k), mv = tau < T3; let hd = Math.atan2(b[2] - a[2], -(b[0] - a[0])); if (back) hd += Math.PI; if (!mv) hd = p.yaw; c.fh = c.fh === undefined ? hd : c.fh + angd(hd, c.fh) * Math.min(1, dt * 5);
+    fg = { x: START.x + ld, z: START.z + lx, cy: ly, heading: c.fh, speed: mv ? Math.hypot(b[0] - a[0], b[2] - a[2]) / (tau < T1 ? T1 - T0 : tau < T2 ? T2 - T1 : T3 - T2) * (tau < T2 ? 1 : 1.4) : 0 }; }
+  c.fig = fg;
+  // the camera: on the ground, watching her come down; then across the dust and into the helmet
+  const g = smooth((tau - G0) / (G1 - G0)), eye = [p.x, groundY(p.x, p.z) + 1.66, p.z], tgt = fg && tau > T1 + .4 ? [fg.x, groundY(fg.x, fg.z) + fg.cy + 1.9, fg.z] : [START.x, gy + Math.max(0, c.h) + 2.2, START.z];
+  c.lkv = c.lkv ? V3.lerp(c.lkv, tgt, Math.min(1, dt * (c.td ? 2.2 : 7))) : tgt;
+  const e = V3.lerp(c.xe, eye, g); e[1] += Math.sin(g * Math.PI) * .5; const dv = V3.sub(c.lkv, c.xe), y0 = Math.atan2(dv[0], -dv[2]), p0 = Math.atan2(dv[1], Math.hypot(dv[0], dv[2]));
+  const t2 = c.td2 ? c.t - c.td2 : -1, sh = (c.td ? .05 * c.imp * Math.exp(-3 * tau) : 0) + (c.td2 ? .03 * Math.exp(-3 * t2) : 0), jy = (c.td ? -.1 * c.imp * Math.exp(-5 * tau) * Math.sin(16 * tau) : 0);
+  e[1] += jy * (1 - g); const cam = mat(y0 + angd(p.yaw, y0) * g + (Math.random() - .5) * sh, lerp(p0, 0, g) + (Math.random() - .5) * sh, e, asp, lerp(.72, 1.2, g));
+  c.g = g; c.figHide = Math.hypot(e[0] - eye[0], e[2] - eye[2]) < 2.4; return cam; }
+function emitCineExt(B, cam, c, dt) {
+  const gy = groundY(START.x, START.z), tau = c.td ? c.t - c.tdT : -1, legs = c.gearT !== undefined, hh = Math.max(0, c.h);
+  if (typeof POD !== 'undefined' && POD.exterior) { const st = { legs: legs ? 1 : c.td ? 1 : 0, crush: c.td ? (legs ? .85 : 1) * clamp(tau / .12, 0, 1) : 0, hatch: smooth((tau - 2.6) / .7), eng: 0, dmg: c.td ? 1 : 0 };
+    POD.exterior(B, START.x, gy + hh, START.z, Math.PI / 2, hh > 0 ? (x, z) => groundY(x, z) + hh : groundY, st); }
+  if (c.td) gasGround(B, START.x, START.z, .8 * Math.exp(-tau * .45), c.t, tau);
+  if (tau > 2.6 && tau < 4.4) { const k = (tau - 2.6) / 1.8, o = podPt(0, 1.75, 1.8); gasJet(B, cam, o, [1, .15, 0], 1.2 + 3.5 * k, .35, 1.6 + 1.2 * k, .5 * (1 - k), .35 + .6 * k); }   // the cabin's air goes out with the hatch
+  const fg = c.fig; if (fg && !c.figHide) { if (!c.rig) c.rig = ASTRO.create(CREW.indexOf(S.crew), 900); ASTRO.update(c.rig, { x: fg.x, z: fg.z, heading: fg.heading, speed: fg.speed, scale: 1.45, stun: 0, alert: 0, active: true, open: 0, dup: false, gun: false }, dt, (x, z) => groundY(x, z) + fg.cy); ASTRO.emit(B, c.rig); } }
 function startCine() {
   const shots = W.sentinels.map(s => { let best = null, bd = 1e9; for (const p of PATHS[0].pts) { const d = Math.hypot(p[0] - s.x, p[1] - s.z); if (d < bd) { bd = d; best = p; } } return { s, cam: best, d: bd }; }).filter(o => o.d > 25 && o.d < 90).sort((a, b) => b.d - a.d).slice(0, 3);
   S.cine = { t: 0, fails: 0, q: QTES.map(q => Object.assign({ done: 0, held: 0 }, q, q.hold ? (S.rng() < .5 ? { key: 'KeyD', label: 'HOLD D' } : {}) : {})), li: 0, shots, phase: 'card1', pt: 0, shotN: -1, skip: 0, h: 1500, vy: 0, eng: 0, dust: 0, seed: S.rng() * 99 };
@@ -10222,7 +10252,7 @@ function cineStep(dt) {
     if (q0.done && c.ignT === undefined) { c.ignT = c.t; S.shake = Math.max(S.shake, q0.done > 0 ? .8 : 1.2); if (AU.ctx) sfx.ignite(q0.done > 0 ? 1 : 1.4); }
     if (c.q[2].done > 0 && c.gearT === undefined) { c.gearT = c.t; S.shake = Math.max(S.shake, .5); if (AU.ctx) sfx.gear(); }
     c.eng = lerp(c.eng, lit ? 1 : 0, Math.min(1, dt * (lit ? 5 : 14)));
-    if (!out) c.h = cineAlt(c.t) - 9 + 6;
+    if (!out) c.h = cineAlt(c.t) - 9 + DROP;
     else if (!c.td2) { if (c.cutT === undefined) { c.cutT = c.t; if (AU.ctx) { sfx.bad(); sfx.buzz(); } } c.vy -= 2.7 * dt; c.h += c.vy * dt;
       if (c.h <= 0 && !c.td) { c.h = 0; c.td = 1; c.tdT = c.t; if (!q3.done) { q3.done = -1; c.fails++; } c.imp = clamp(-c.vy / 3, .9, 2) * (q3.done < 0 ? 1.25 : 1); c.vy = 1.9; S.shake = 1.6 * c.imp;
         if (NASA.cine) NASA.cine.stop(.2); if (AU.ctx) { sfx.touchdown(c.imp); sfx.alarm(); sfx.ring(11); } }
@@ -10248,7 +10278,7 @@ function cineStep(dt) {
     else if (c.phase === 'card3' && c.pt > 3.2) { c.phase = 'card4'; c.pt = 0; }
     else if (c.phase === 'card4' && c.pt > 3.6) { c.phase = 'descent'; c.pt = 0; c.t = 0; } }
 }
-function endCine(skipped) { const c = S.cine; if (NASA.cine) { NASA.cine.stop(.2); NASA.cine = null; } S.left = 600 - 25 * (skipped || !c ? 0 : c.fails); S.cine = null; S.t = 0; S.lines = []; S.shake = 0; S.daze = skipped ? .6 : 1; P().pitch = -.5; if (AU.ctx) AU.engG.gain.setTargetAtTime(0, AU.ctx.currentTime, .1); screen = 'play'; if (cv.requestPointerLock) { try { const r = cv.requestPointerLock(); if (r && r.catch) r.catch(() => { }); } catch (e) { } } }
+function endCine(skipped) { const c = S.cine; if (NASA.cine) { NASA.cine.stop(.2); NASA.cine = null; } S.left = 600 - 25 * (skipped || !c ? 0 : c.fails); S.cine = null; S.t = 0; S.lines = []; S.shake = 0; S.daze = skipped ? .6 : .22; P().pitch = skipped ? -.5 : 0; if (AU.ctx) AU.engG.gain.setTargetAtTime(0, AU.ctx.currentTime, .1); screen = 'play'; if (cv.requestPointerLock) { try { const r = cv.requestPointerLock(); if (r && r.catch) r.catch(() => { }); } catch (e) { } } }
 
 // ---------------------------------------------------------------- audio frame
 function audioFrame(dt) {
@@ -10301,7 +10331,8 @@ function drawHud() {
   const txt = (s, x, y, size, al, col) => { hx.font = `500 ${Math.round(size * .66 * u)}px ${FONT}`; hx.textAlign = al || 'left'; hx.fillStyle = 'rgba(0,0,0,.6)'; hx.fillText(s, x * u + u * .7, y * u + u * .7); hx.fillStyle = col || '#ececE6'; hx.fillText(s, x * u, y * u); };
   const radio = y0 => { const l = S.lines[S.lines.length - 1]; if (!l) return; const age = S.t - l.t; if (age > 8 || age < 0) return; const full = (l.who + ': ' + l.text).slice(0, l.who.length + 2 + Math.floor(age * 38)); hx.globalAlpha = clamp(8 - age, 0, 1); wrap(full, 52).forEach((r, i) => txt(garbleText(r, gz * (l.calm ? .25 : .55)), cw / 2, y0 + i * 12, 13, 'center')); hx.globalAlpha = 1; };
   if (S.cine) { const c = S.cine;
-    if (c.phase === 'descent') { const alt = c.h; txt('ALT ' + String(Math.max(0, Math.round(alt))).padStart(5, ' ') + ' M', mx, top, 14); txt('ESCAPE POD EP-2', cw - mx, top, 14, 'right', C_AMB); crewVitals(txt, mx, top + 14, 0); if (c.t >= FLAMEOUT && !c.td) txt('ENGINE OUT', cw / 2, top, 22, 'center', C_RED); radio(216);
+    if (c.phase === 'descent' && c.t >= XCUT) { if (c.g > .9) { hx.globalAlpha = (c.g - .9) * 10; const m = Math.floor(S.left / 60), sx = Math.floor(S.left % 60); txt(S.crew.short, mx, top, 13, 'left', C_BLU); crewVitals(txt, mx, top + 13, 0); hx.globalAlpha = 1; } radio(216); }
+    else if (c.phase === 'descent') { const alt = c.h; txt('ALT ' + String(Math.max(0, Math.round(alt))).padStart(5, ' ') + ' M', mx, top, 14); txt('ESCAPE POD EP-2', cw - mx, top, 14, 'right', C_AMB); crewVitals(txt, mx, top + 14, 0); if (c.t >= FLAMEOUT && !c.td) txt('ENGINE OUT', cw / 2, top, 22, 'center', C_RED); radio(216);
       for (const q of c.q) { if (q.done || c.t < q.t) continue; const k = 1 - (c.t - q.t) / 3.2; txt(q.label, cw / 2, 128, 30, 'center'); txt(q.what, cw / 2, 146, 14, 'center', C_AMB); hx.fillStyle = 'rgba(236,236,230,.25)'; hx.fillRect((cw / 2 - 60) * u, 154 * u, 120 * u, 4 * u); hx.fillStyle = '#fff'; hx.fillRect((cw / 2 - 60) * u, 154 * u, 120 * u * (q.hold ? q.held / q.hold : k), 4 * u); }
       if (c.fails) txt('HULL STRESS ' + c.fails, cw - mx, top + 14, 13, 'right', C_RED);
  }
@@ -10369,7 +10400,7 @@ const TINTS = new Float32Array(72); (() => { const T = (i, r, g, b) => TINTS.set
 const SUN = V3.norm([-.62, .36, .58]), JUP = V3.norm([.1, .5, -.86]);
 function shadowMat(c) { const f = V3.mul(SUN, -1), r = V3.norm(V3.cross(f, [0, 1, 0])), u = V3.cross(r, f), E = 85, D = 260, tex = 2 * E / R.SM; const cr = Math.round(V3.dot(r, c) / tex) * tex, cu = Math.round(V3.dot(u, c) / tex) * tex, cf = V3.dot(f, c);
   return new Float32Array([r[0] / E, u[0] / E, f[0] / D, 0, r[1] / E, u[1] / E, f[1] / D, 0, r[2] / E, u[2] / E, f[2] / D, 0, -cr / E, -cu / E, -cf / D, 1]); }
-const cineAlt = t => t < 30 ? 1500 * Math.pow(1 - t / 30, 2.3) + 9 : 9;
+const cineAlt = t => t < DES_T ? 1500 * Math.pow(1 - t / DES_T, 2.3) + 9 : 9;
 let lastYaw = 0, sway = [0, 0], hudT = 0, tPrev = 0, acc = 0, menuT = 0;
 function render(dt, now) {
   const inGame = S && (screen === 'play' || screen === 'pause' || screen === 'ending' || screen === 'cine'); const t = now / 1000;
@@ -10377,7 +10408,8 @@ function render(dt, now) {
   let cam, glitch = .1, breath = 0, nosig = 0, fade = 1, white = 0, visor = 1, grain = 1, sceneOn = true, showShip = true, hudOn = inGame && screen !== 'ending';
   const frozen = inGame && S.freeze > 0 && !S.over && !S.cine; const asp = R.sw / R.sh; let flash = 0, pp = null, haze = .035, sunI = .7, sat = 1;
   if (inGame && S.cine) { const c = S.cine; glitch = .1;
-    if (c.phase === 'descent') { const alt = cineAlt(c.t), k = clamp(c.t / 30, 0, 1), q = c.q[1], drift = (c.t > q.t && q.done <= 0) ? Math.min(1, (c.t - q.t) * .6) * (q.key === 'KeyA' ? 1 : -1) : 0; c.drift = lerp(c.drift || 0, drift, dt * 2);
+    if (c.phase === 'descent' && c.t >= XCUT) { cam = cineExt(c, asp, dt); const tau = c.td ? c.t - c.tdT : -1, g = c.g; showShip = true; visor = smooth((g - .72) / .28); grain = 1; glitch = .05 + (c.td ? .35 * Math.exp(-tau * 3) : 0); white = c.td ? .2 * Math.exp(-tau * 3) : 0; fade = clamp((c.t - XCUT) * 4, 0, 1) * (1 - .3 * Math.exp(-Math.pow((g - .9) / .07, 2))); haze = .05; hudOn = true; breath = .5 + .5 * Math.sin(S.breath * 6.283); }
+    else if (c.phase === 'descent') { const alt = cineAlt(c.t), k = clamp(c.t / DES_T, 0, 1), q = c.q[1], drift = (c.t > q.t && q.done <= 0) ? Math.min(1, (c.t - q.t) * .6) * (q.key === 'KeyA' ? 1 : -1) : 0; c.drift = lerp(c.drift || 0, drift, dt * 2);
       // impact: the legs crush and she bounces, the head goes down, the picture goes, and it comes back slowly and wrong
       const tau = c.td ? c.t - c.tdT : -1, imp = c.td ? c.imp : 0, t2 = c.td2 ? c.t - c.td2 : -1, wake = Math.max(0, tau - 4.2);
       const jy = (c.td ? -.3 * imp * Math.exp(-5 * tau) * Math.sin(14 * tau) : 0) + (c.td2 ? -.22 * Math.exp(-5 * t2) * Math.sin(14 * t2) : 0);
@@ -10386,7 +10418,7 @@ function render(dt, now) {
       cam = mat(Math.PI + .25 * Math.sin(c.t * .11) + c.drift * .5 + jw + (Math.random() - .5) * sh, lerp(-1.25, -.2, k * k) + jp + (Math.random() - .5) * sh, [START.x + c.drift * alt * .1, groundY(START.x, START.z) + 9 + Math.max(0, c.h) + jy, START.z + 2], asp, 1.15);
       const black = !c.td ? 1 : tau < 1 ? 1 : tau < 1.8 ? 1 - (tau - 1) / .8 : tau < 4.2 ? 0 : Math.min(.8, wake / 4.5) * (.78 + .22 * Math.sin(tau * 2.3)) * clamp(CINE_END - tau, 0, 1);
       showShip = false; white = c.dust * .2 + (c.td ? .6 * Math.exp(-tau * 2.2) : 0) + (c.td2 ? .25 * Math.exp(-t2 * 3) : 0) + (c.ignT !== undefined ? .22 * Math.exp(-(c.t - c.ignT) * 5) : 0);
-      glitch = .1 + (c.td ? .8 * Math.exp(-tau * 2.5) + .5 * Math.min(1, wake) * Math.exp(-wake * .16) : 0); fade = black * clamp(c.t, 0, 1); if (c.td && tau > 1.6 && tau < 4.6) hudOn = false; breath = .5 + .5 * Math.sin(S.breath * 6.283); }
+      glitch = .1 + (c.td ? .8 * Math.exp(-tau * 2.5) + .5 * Math.min(1, wake) * Math.exp(-wake * .16) : 0) + (c.t > FLAMEOUT ? .5 : 0); fade = black * clamp(c.t, 0, 1) * clamp((XCUT - c.t) * 6, 0, 1); if (c.td && tau > 1.6 && tau < 4.6) hudOn = false; breath = .5 + .5 * Math.sin(S.breath * 6.283); }
     else if (c.phase === 'photo' && c.shots[c.shotN]) { const s = c.shots[c.shotN], e = [s.cam[0], groundY(s.cam[0], s.cam[1]) + 1.5, s.cam[1]], tg = [s.s.x, groundY(s.s.x, s.s.z) + 2.4 * s.s.scale * .6, s.s.z], d = V3.sub(tg, e);
       cam = mat(Math.atan2(d[0], -d[2]) + .02 * Math.sin(c.shotN * 5.), Math.atan2(d[1], Math.hypot(d[0], d[2])) - .03, e, asp, [.42, .3, .17][c.shotN]); visor = 0; grain = .3; glitch = 0; haze = .42; sunI = 1.0; sat = 0; fade = clamp(c.pt * 6, 0, 1) * clamp((3.8 - c.pt) * 4, 0, 1); white = Math.max(0, .5 - c.pt * 3); }
     else { cam = mat(0, 0, [0, 9000, 0], asp, 1); sceneOn = false; visor = 0; grain = 1.6; }
@@ -10421,7 +10453,8 @@ function render(dt, now) {
           B.seg([c.x - ca * L, c.y - sa * L * hy, c.z - sa * L * (1 - hy)], [c.x + ca * L, c.y + sa * L * hy, c.z + sa * L * (1 - hy)], .0042, .0046, 5, TL.METAL, 1.5, 0, true); }
         if (B.n > nb0) smear.push([nb0, B.n - nb0, 0]); }
       if (pp && !S.over && !S.cine && !S.climb && S.stage !== 3) { const n0 = B.n; emitGun(B, cam, pp, dt); smear.push([n0, B.n - n0, 0]); }
-      if (S.cine && S.cine.phase === 'descent') { const n0 = B.n, c = S.cine; emitPodInterior(B, cam, c.t);
+      if (S.cine && S.cine.phase === 'descent' && S.cine.t >= XCUT) { const n0 = B.n; emitCineExt(B, cam, S.cine, dt); smear.push([n0, B.n - n0, 0]); }
+      else if (S.cine && S.cine.phase === 'descent') { const n0 = B.n, c = S.cine; emitPodInterior(B, cam, c.t);
         const q = c.q[1], hold = c.t > q.t && !q.done && keys[q.key], pre = c.ignT === undefined ? 1 : 0, live = !c.td;
         emitPodFX(B, cam, { ru: live ? rcsFire(c.t + .17, 2, c.seed + pre * 3) : null, rl: live ? (hold && q.key === 'KeyA' ? [1, 1] : rcsFire(c.t, 0, c.seed + pre)) : null, rr: live ? (hold && q.key === 'KeyD' ? [1, 1] : rcsFire(c.t + .31, 1, c.seed + pre)) : null, eng: c.eng, ign: c.ignT === undefined ? undefined : c.t - c.ignT, gear: c.gearT === undefined ? undefined : c.t - c.gearT });
         if (c.h < 80) gasGround(B, START.x + (c.drift || 0) * (9 + c.h) * .1, START.z + 2.6, c.dust, c.t, c.td ? c.t - c.tdT : undefined);
@@ -10449,7 +10482,8 @@ function render(dt, now) {
       if (pp && pp.fireT < .07) Ls.push([GUN.mz[0], GUN.mz[1], GUN.mz[2], 30, 3.4]);
       if (S) for (const f of S.foes) if (f.kind === 'crew' && f.flash > 0) Ls.push([f.x + Math.sin(f.aimAt || 0) * .8, groundY(f.x, f.z) + 1.9, f.z - Math.cos(f.aimAt || 0) * .8, 16, 2.2 * f.flash / .09]);
       if (S && S.depart !== undefined) Ls.push([SHIP.x, sy + 1.1 + shipLift, SHIP.z, 170, 7]);
-      if (S && S.cine && S.cine.phase === 'descent') { const c = S.cine, k = clamp(1 - c.h / 110, 0, 1); if (k > 0) Ls.push([cam.e[0], cam.e[1] - 1.5, cam.e[2] + 5, 130, k * k * (.55 + 1.15 * c.eng * (.86 + .14 * Math.sin(t * 31)))]); }   // her landing lamps, and the descent engine on the regolith ahead of the nose
+      if (S && S.cine && S.cine.phase === 'descent' && S.cine.t >= XCUT) { const c = S.cine, gy = groundY(START.x, START.z); Ls.push([START.x + 6, gy + Math.max(0, c.h) + 5, START.z - 4, 46, 1.1]); if (c.td) Ls.push([START.x, gy + 1, START.z, 40, 1.4 * Math.exp(-(c.t - c.tdT) * 6)]); }
+      else if (S && S.cine && S.cine.phase === 'descent') { const c = S.cine, k = clamp(1 - c.h / 110, 0, 1); if (k > 0) Ls.push([cam.e[0], cam.e[1] - 1.5, cam.e[2] + 5, 130, k * k * (.55 + 1.15 * c.eng * (.86 + .14 * Math.sin(t * 31)))]); }   // her landing lamps, and the descent engine on the regolith ahead of the nose
       if (S && S.stage === 3 && S.launchT > LAUNCH_HOLD) Ls.push([SHIP.x, sy - 4 + shipLift, SHIP.z, 70 + shipLift * .4, 2.2]);   // the engine, well below the cabin: it lights the ground, not your lap
       Ls.sort((a, b) => Math.hypot(a[0] - cam.e[0], a[2] - cam.e[2]) - a[3] - Math.hypot(b[0] - cam.e[0], b[2] - cam.e[2]) + b[3]); const lp = new Float32Array(32), li = new Float32Array(8); for (let i = 0; i < 8 && i < Ls.length; i++) { lp.set(Ls[i].slice(0, 4), i * 4); li[i] = Ls[i][4]; } gl.uniform4fv(u.uLP, lp); gl.uniform1fv(u.uLI, li);
       gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, R.shTex); gl.uniform1i(u.uSh, 1); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D_ARRAY, R.tex); gl.uniform1i(u.uTex, 0);
