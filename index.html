@@ -16958,6 +16958,7 @@ const shOnce = id => { const X = S.sh; if (X.said[id]) return false; X.said[id] 
 const shDone = X => X.bus + (X.core === 2 ? 1 : 0) + X.valve;
 
 // ---------------------------------------------------------------- boarding
+const BLANKS_ABOARD = false;
 const BLANK_AT = [['dock', 23.6, 40.7], ['med', 19.5, 28.5], ['stores', 8.5, 31.5], ['lab', 18.5, 37.5], ['crew', 6.5, 12.5], ['mess', 10.5, 38.5], ['engine', 13.5, 56.5]];
 function shipBegin() {
   const p = P(), r = mulberry(4409 + S.crewIdx * 13);
@@ -16972,7 +16973,8 @@ function shipBegin() {
   X.w = { x: 13.5, z: 4.5, heading: Math.PI, spd: 0, st: WAR_OK ? 'gone' : 'listen', wait: WAR_OK ? 44 : 16, wait0: 44, upAt: [13.5, 4.5], thT: 30, dropAt: null, warned: 0, dropT: 0, goal: null, flow: new Int16Array(SHW * SHH), fk: -1, lkp: [13.5, 21.5], lost: 9, stun: 0, chk: -1, lastChk: -1, sees: false, legT: 0, after: null, alert: 0,
     rig: wb ? KEI.create(977, { build: 'warden' }) : KEI.create(977), sc: wb ? SHT.wScale : .52 };
   X.intro = { st: 0, t: 0 }; X.lampCut = 0; X.tickT = 3;
-  X.bl = BLANK_AT.map(([id, x, z], i) => ({ id, x, z, heading: i ? r() * 6.28 : 2.6, staged: !i, active: i < 2, woke: 0, wokeT: 0, frozen: 1, seen: false, acc: r() * .1, stun: 0, spd: 0, cut: 0, reach: 0, rig: BLK_OK ? BLANK.create(31 + i * 7) : null }));
+  /* Andre, 2026-11-25: "in the ship, only have the boss alien". The Warden has her to itself; the Blanks are not aboard. */
+  X.bl = !BLANKS_ABOARD ? [] : BLANK_AT.map(([id, x, z], i) => ({ id, x, z, heading: i ? r() * 6.28 : 2.6, staged: !i, active: i < 2, woke: 0, wokeT: 0, frozen: 1, seen: false, acc: r() * .1, stun: 0, spd: 0, cut: 0, reach: 0, rig: BLK_OK ? BLANK.create(31 + i * 7) : null }));
   shFlowP(p, X);
   p2Ensure(); shEnsureMesh();
   if (AU.ctx) { AU.engG.gain.setTargetAtTime(0, AU.ctx.currentTime, .4); }
@@ -16991,7 +16993,7 @@ function shNext(X) { const st = SH.stations;
 /* The first one. It stands in the passage outside the lock, and the first time the lamp finds it the lamp drops out for
    a second. When the light comes back it is nearer and it has turned. That is the whole rule, shown once, with room to
    get past it afterwards. */
-function shIntro(dt, p, X) { const I = X.intro, b = X.bl[0]; if (X.lampCut > 0) X.lampCut -= dt; if (I.st > 3) return;
+function shIntro(dt, p, X) { const I = X.intro, b = X.bl[0]; if (X.lampCut > 0) X.lampCut -= dt; if (I.st > 3) return; if (!b) { I.st = 4; return; }
   const d = Math.hypot(b.x - p.x, b.z - p.z);
   if (I.st === 0) { if ((b.seen && d < 9) || (d < 4.2 && shLos(p.x, p.z, b.x, b.z, false))) { I.st = 1; I.t = 0; b.woke = 1; b.wokeT = X.t + 90; } return; }
   if (I.st === 1) { if (!p.lamp || X.power > .5) { if (X.power > .5 || d > 16) { I.st = 4; b.staged = false; b.wokeT = X.t + 4; } return; } I.t += dt;
