@@ -6319,28 +6319,40 @@ const BURROW = (() => {
        active      false = standing still (it breathes, shifts its weight, looks about)
        open        0..1 a duplicate's mouth. The jaw really drops: by 0.5 the cavity is wider than any mouth, by 1 the head has tipped back and come up to the glass and the
                    face it copied is looking out of its throat. The lower face stretches with the jaw.
-       stun        > 0 = knocked to hands and knees; it gets up when stun returns to 0. The pistol goes back in the holster first.
+       stun        > 0 = knocked to hands and knees (down in about 1.8 s; a slow fall in this gravity); it gets up when stun returns to 0, which takes a suited man about
+                   3 s (a duplicate 2.4 s). The pistol is put away as it goes down, at the pace an arm can go, and is not drawn again until the figure is on its feet.
+       dead        (optional) > 0 = dead: it goes down and stays down, differently for each seed and crew member (crumples forward, sits back and topples, goes over
+                   sideways ...), in about 3 s. 0 again = it gets up (for a restart; a pose() is the usual way).
        dup         true = a duplicate (stiff quick gait, tilted head that turns ahead of the body, dead over-long arms, a twitch every few seconds). Gestures, fear and
                    hurt are for the living and are ignored for a duplicate; gun, aim, fire, lookYaw work for both.
-       gun         0 holstered (default), 1 drawn and held low (in one hand by the leg; in both hands in front of the chest pack once fear > 0.4), 2 aiming two-handed
+       gun         0 holstered (default), 1 drawn and held low (in one hand by the leg; in both hands in front of the chest pack once fear > 0.4), 2 aiming two-handed.
+                   The draw is paced by how far the hand is from the holster (about 0.5 s from the side, longer from a gesture or the top of a stride) and waits for a
+                   right arm that is in the middle of a gesture to come down; up to the aim takes another 0.5 s.
        aim         world heading the pistol points along at gun 2 (same sense as heading). The shoulders take about half of the turn, to 46 degrees, the head inside the
                    helmet follows the sights, the arms do the rest: exact to about 100 degrees either side of the body, beyond that it points as far round as it can.
        aimPitch    radians, positive up (to +-0.9)
-       fire        0..1 muzzle flash this frame: an emissive flash at the muzzle (turned differently for each shot) and a recoil kick that decays in 0.1 s
+       fire        0..1 muzzle flash this frame: an emissive flash at the muzzle (turned differently for each shot) and a recoil kick that goes in at the wrist and
+                   travels up the arm into the shoulders. Asked for before the pistol is on aim (the game fires on the frame it first asks for the aim), the shot is held
+                   until the pistol is up, which is hurried, and then shown: ASTRO.muzzle is right on the frame the flash appears.
        gest        'wave'   the whole arm overhead, slowly side to side: for attention at a distance
                    'beckon' reach out palm up and draw it in: this way
                    'point'  arm straight out along world heading s.pointYaw and held; the shoulders turn a little with it
                    'halt'   the flat of the hand out in front: stop
                    'check'  left forearm across the chest, head down to read the wrist panel
-                   'kneel'  down on the right knee, both hands working at something 0.9 m up in front
-                   'down'   sat slumped on the ground, back against whatever is behind, one leg out, one hand on the suit: a man who cannot stand
+                   'kneel'  down on the right knee, both hands working at something 0.9 m up in front (1.25 s down, 1.5 s up)
+                   'down'   sat slumped on the ground, back against whatever is behind, one leg out, one hand on the suit: a man who cannot stand (1.7 s down, 2.6 s up)
                    null     nothing. One-armed gestures use the right arm, or the left when the right has the pistol (or the thing pointed at is to the left).
        lookYaw     world heading to look along; lookPitch radians, positive up. The head inside the helmet goes first (+-31 degrees), the helmet follows (+-35), the
                    shoulders come part of the way (+-29); the rest is for the caller to turn the body. Absent = looks where it is going.
        fear        0..1: hunched, elbows in, shorter quicker steps, glances over a shoulder (more often the more afraid)
        hurt        0..1: a limp on the left leg and the left hand held to the side
-       Every one of these is eased in and out inside the rig (gestures 0.4 s, sitting and kneeling 0.5 s, pistol 0.3 s out and 0.25 s up), so the caller sets and clears.
-       groundY(x, z) -> terrain height. A jump in position re-plants the feet. dt <= 0 changes nothing. Travel need not be along heading (backing up, side-stepping).
+       Every one of these is eased in and out inside the rig, with its anticipation, hold and release, so the caller sets and clears; open is eased over 0.05 s.
+       Kneeling, sitting, struck down and dead are acts: they begin where the feet are. A figure struck down at a run runs on, stumbling, as it goes down. Getting up
+       takes the times above, and the best picture comes from leaving the figure where it is until it is up (rig.pw is 0 when it is on its feet). If it is made
+       to travel sooner it is not left sliding: from a knee or from sitting it scrambles up in about a second and its first step is part of the getting up; from
+       hands and knees its feet are under it and stepping as soon as its hands have pushed it up. A figure that is kept moving while it is down is dragged.
+       groundY(x, z) -> terrain height. A jump in position re-plants the feet. dt <= 0 changes nothing. Travel need not be along heading (backing up, side-stepping),
+       and pace and direction may change on any frame: the stride bends, the feet never cross or skate.
    ASTRO.emit(B, rig, lod)              appends the current pose to batch B as world-space triangles. lod 0 (default) is the full model, at most 6,200 triangles;
                                         lod 1 is for beyond about 20 m, at most 2,400. A batch with too little room is filled as far as whole triangles go; nothing throws.
                                         If SIDEARM.thirdPerson exists (gun.js) the pistol built here is left out and SIDEARM.thirdPerson(B, xf, st, lod) is called once
@@ -6351,6 +6363,9 @@ const BURROW = (() => {
    ASTRO.pose(rig, s, groundY)          place instantly at s in whatever state s describes (gun, gesture, look and all); no time passes.
    ASTRO.muzzle(rig)                    -> [x, y, z, dx, dy, dz]: the muzzle and the unit direction of the barrel in the world as of the last update, in every gun state
                                         (holstered included). Draw the tracer and the light of the shot from it.
+   ASTRO.footfalls(rig)                 -> [[x, y, z, yaw, side, impact], ...]: every boot set down since this was last asked, and the list is emptied. x, y, z where the
+                                        middle of the sole comes to lie on the ground, yaw the way the boot points (as heading), side -1 left / +1 right, impact 0..1
+                                        (a shuffle about 0.2, a lope's landing 0.5 to 1, a duplicate's flat stamp 0.5). For the sound and the dust of each step.
 
    The suit is the Shuttle / ISS EMU: hard upper torso; the display and control module on the chest (display, row of guarded switches, pressure gauge, selector
    dial, purge valve on its left side, labels on its top); life support pack with the secondary oxygen pack under it, antenna, access panel and warning placards;
@@ -6367,13 +6382,14 @@ const BURROW = (() => {
    plain skin or hair drawn from a small clean patch of the same picture and toned to match the picture where they meet. TL.FACE_OPEN is no longer used.
 
    The figure is about 1.9 m to the top of the helmet (1.81 to 2.0 by build). Everything is built once, on first use, as rigid pieces in bone space in the prims.js
-   vertex format (the head and jaw as two shapes that emit() blends); update() solves 19 bone matrices and emit() only transforms the pieces by them. */
+   vertex format (the head and jaw as two shapes that emit() blends); update() solves 23 bone matrices (the boots break at the ball of the foot; the antenna and the
+   tether swing) and emit() only transforms the pieces by them. */
 const ASTRO = (() => {
   const PI = Math.PI, TAU = PI * 2, DEG = PI / 180;
   // bones
-  const PEL = 0, TOR = 1, HEL = 2, HEAD = 3, INNER = 4, UAL = 5, FAL = 6, HAL = 7, UAR = 8, FAR = 9, HAR = 10, THL = 11, SHL = 12, FTL = 13, THR = 14, SHR = 15, FTR = 16, GUN = 17, FLASH = 18, NB = 19;
+  const PEL = 0, TOR = 1, HEL = 2, HEAD = 3, INNER = 4, UAL = 5, FAL = 6, HAL = 7, UAR = 8, FAR = 9, HAR = 10, THL = 11, SHL = 12, FTL = 13, THR = 14, SHR = 15, FTR = 16, GUN = 17, FLASH = 18, TOEL = 19, TOER = 20, ANT = 21, TETH = 22, NB = 23;
   // skeleton, metres, for a figure of scale 1. Character space: +X right, +Y up, +Z back (it faces -Z).
-  const HIP_Y = 0.9, HIP_X = 0.105, THIGH = 0.42, SHIN = 0.38, LEG = THIGH + SHIN, ANKLE = 0.115, BALL = 0.215, HEEL = 0.075, WAIST = 0.11;
+  const HIP_Y = 0.9, HIP_X = 0.105, THIGH = 0.42, SHIN = 0.38, LEG = THIGH + SHIN, ANKLE = 0.115, BALL = 0.146, TIP = 0.25, HEEL = 0.11, WAIST = 0.11;   // BALL: where the boot breaks, ahead of the ankle; TIP: the last of the sole that bears; HEEL: behind it
   const SH_X = 0.262, SH_Y = 0.40, NECK_Y = 0.52, NECK_Z = -0.005;
   const HC = [0, 0.185, -0.01], HR = 0.2;          // helmet sphere centre (from the neck pivot) and radius
   const UPPER = 0.29, FORE = 0.27;
@@ -6386,6 +6402,15 @@ const ASTRO = (() => {
   const wrapPi = a => { a = (a + PI) % TAU; if (a < 0) a += TAU; return a - PI; };
   const damp = (dt, tau) => dt > 0 ? 1 - Math.exp(-dt / tau) : 0;
   const gau = x => Math.exp(-x * x);
+  const bump = x => x <= 0 || x >= 1 ? 0 : Math.sin(PI * x);
+  /* a second-order follower (a mass on a damped spring), stepped exactly so that any frame time is stable. sco fills K with the step for natural
+     frequency w (rad/s) and damping ratio z; spr moves the pair q[i] (value), q[i + 1] (rate) toward tg by it. K all zero puts the value on the target. */
+  function sco(K, w, z, dt) {
+    if (!(dt > 0)) { K[0] = 1; K[1] = 0; K[2] = 0; K[3] = 1; return K; }
+    if (z >= 1) { const E = Math.exp(-w * dt); K[0] = E * (1 + w * dt); K[1] = E * dt; K[2] = -E * w * w * dt; K[3] = E * (1 - w * dt); }
+    else { const al = z * w, wd = w * Math.sqrt(1 - z * z), E = Math.exp(-al * dt), C = Math.cos(wd * dt), S = Math.sin(wd * dt); K[0] = E * (C + al / wd * S); K[1] = E * S / wd; K[2] = -E * w * w / wd * S; K[3] = E * (C - al / wd * S); }
+    return K; }
+  const spr = (q, i, tg, K) => { const y = q[i] - tg, v = q[i + 1]; q[i + 1] = K[2] * y + K[3] * v; return q[i] = tg + K[0] * y + K[1] * v; };
   const flat = () => 0;
   // 3x3 rotations stored by columns [X, Y, Z]
   const rX = a => { const c = Math.cos(a), s = Math.sin(a); return [1, 0, 0, 0, c, s, 0, -s, c]; };   // positive tips the top backward
@@ -6399,8 +6424,16 @@ const ASTRO = (() => {
   // frame whose Y axis is y (unit) and whose Z axis is as close as it can be to zh
   const fromYZ = (y, zh) => { let z = V3.sub(zh, V3.mul(y, V3.dot(zh, y))); const l = V3.len(z); z = l < 1e-6 ? V3.perp(y) : V3.mul(z, 1 / l); const x = V3.cross(y, z); return [x[0], x[1], x[2], y[0], y[1], y[2], z[0], z[1], z[2]]; };
   const fromXY = (xh, y) => { let z = V3.cross(xh, y); const l = V3.len(z); z = l < 1e-6 ? V3.perp(y) : V3.mul(z, 1 / l); const x = V3.cross(y, z); return [x[0], x[1], x[2], y[0], y[1], y[2], z[0], z[1], z[2]]; };
-  // the nearest rotation to a blend of two (columns re-squared: Y kept, Z and X rebuilt)
-  const mixR = (a, b, t) => { const y = V3.norm([lerp(a[3], b[3], t), lerp(a[4], b[4], t), lerp(a[5], b[5], t)]); return fromYZ(y, [lerp(a[6], b[6], t), lerp(a[7], b[7], t), lerp(a[8], b[8], t)]); };
+  // a blend of two rotations, the short way round (as quaternions: however far apart the two are it never folds through nothing and flips)
+  const quatOf = R => { const a = R[0], b = R[4], c = R[8], t = a + b + c; let w, x, y, z, s;
+    if (t > 0) { s = Math.sqrt(t + 1) * 2; w = s / 4; x = (R[5] - R[7]) / s; y = (R[6] - R[2]) / s; z = (R[1] - R[3]) / s; }
+    else if (a > b && a > c) { s = Math.sqrt(1 + a - b - c) * 2; w = (R[5] - R[7]) / s; x = s / 4; y = (R[3] + R[1]) / s; z = (R[6] + R[2]) / s; }
+    else if (b > c) { s = Math.sqrt(1 + b - a - c) * 2; w = (R[6] - R[2]) / s; x = (R[3] + R[1]) / s; y = s / 4; z = (R[7] + R[5]) / s; }
+    else { s = Math.sqrt(1 + c - a - b) * 2; w = (R[1] - R[3]) / s; x = (R[6] + R[2]) / s; y = (R[7] + R[5]) / s; z = s / 4; }
+    return [w, x, y, z]; };
+  const mixR = (a, b, t) => { if (t <= 0) return a; if (t >= 1) return b; const p = quatOf(a), q = quatOf(b), sg = p[0] * q[0] + p[1] * q[1] + p[2] * q[2] + p[3] * q[3] < 0 ? -t : t, u = 1 - t;
+    let w = p[0] * u + q[0] * sg, x = p[1] * u + q[1] * sg, y = p[2] * u + q[2] * sg, z = p[3] * u + q[3] * sg; const n = 1 / Math.sqrt(w * w + x * x + y * y + z * z); w *= n; x *= n; y *= n; z *= n;
+    return [1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w), 2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w), 2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y)]; };
   function rng(seed) { let a = (seed | 0) * 2654435761 + 0x9E3779B9 | 0; return () => { a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
   // repeatable lumps: value noise on a lattice, -1..1
   const hash3 = (x, y, z) => { let h = Math.imul(x | 0, 374761393) + Math.imul(y | 0, 668265263) + Math.imul(z | 0, 2147483647) | 0; h = Math.imul(h ^ h >>> 13, 1274126177); return ((h ^ h >>> 16) >>> 0) / 2147483648 - 1; };
@@ -7137,6 +7170,14 @@ const ASTRO = (() => {
   const P_TH = lod => [[.085, 0, 0, .7], [.05, .088, .5, .8], [-.04, .118, 1.4, .92], [-.17, .11, 2.6, .96], [-.3, .098, 3.8, .9]].concat(lod ? [[-.385, .09, 5.6, .66]] : [[-.322, .092, 4.3, .5], [-.347, .102, 4.8, 1], [-.372, .088, 5.3, .48], [-.397, .096, 5.8, .9]], [[-.44, .064, 7, .4]]);
   const P_SN = lod => [[.058, 0, 0, .4], [.03, .074, 1.2, .5]].concat(lod ? [[-.03, .097, 3, .8], [-.1, .091, 4, .84]] : [[0, .098, 2, .95], [-.028, .087, 2.6, .5], [-.056, .099, 3.2, .92], [-.084, .088, 3.7, .55], [-.11, .091, 4.1, .84]], [[-.2, .084, 5, .74], [-.295, .09, 5.9, .64], [-.365, .078, 6.6, .5]]);
   const TH_KZ = 1.06;
+  const ANT_AT = [.17, .78, .29], TETH_AT = [-.105, -.029, -.186];   // in the torso: the foot of the antenna, and the D-ring the tether hangs from
+  // cut triangle soup by the plane z = z0: [what lies ahead of it (z < z0), the rest]. Triangles across the plane are divided along it
+  function splitZ(d, z0) { const out = [[], []], V = k => d.slice(k, k + 12), mix = (a, b) => { const t = (z0 - a[2]) / (b[2] - a[2]), o = new Float32Array(12); for (let i = 0; i < 12; i++) o[i] = a[i] + (b[i] - a[i]) * t; o[5] = a[5]; const l = Math.hypot(o[6], o[7], o[8]) || 1; o[6] /= l; o[7] /= l; o[8] /= l; return o; };
+    const eq = (a, b) => Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]) < 1e-7, put = (s, a, b, c) => { if (eq(a, b) || eq(b, c) || eq(a, c)) return; for (const v of [a, b, c]) for (let i = 0; i < 12; i++) out[s].push(v[i]); };
+    for (let k = 0; k < d.length; k += 36) { const v = [V(k), V(k + 12), V(k + 24)], f = v.map(p => p[2] < z0 - 1e-5), n = f[0] + f[1] + f[2], bh = v.filter(p => p[2] > z0 + 1e-5).length;   // (a corner on the plane goes with the rest of its triangle)
+      if (n > 0 && !bh) put(0, v[0], v[1], v[2]); else if (n === 0) put(1, v[0], v[1], v[2]);
+      else { const lone = n === 1 ? f.indexOf(true) : f.indexOf(false), a = v[lone], b = v[(lone + 1) % 3], c = v[(lone + 2) % 3], ab = mix(a, b), ac = mix(a, c), sa = n === 1 ? 0 : 1; put(sa, a, ab, ac); put(1 - sa, ab, b, c); put(1 - sa, ab, c, ac); } }
+    return [new Float32Array(out[0]), new Float32Array(out[1])]; }
   const SUIT = [];
   function buildSuit(lod) {
     if (SUIT[lod]) return SUIT[lod];
@@ -7204,7 +7245,6 @@ const ASTRO = (() => {
         // D-rings on the waist, and the coiled tether and its hook on the left one
         for (const sg of [-1, 1]) { const x = sg * .105, z = -.178, q = (x0, y0, x1, y1) => plate(b, [x + x0, y0, z], [x + x1, y0, z], [x + x1, y1, z], [x + x0, y1, z], M, 1.25);
           q(-.02, -.012, -.014, -.064); q(.014, -.012, .02, -.064); q(-.02, -.058, .02, -.064); }
-        crate(b, [-.105, -.05, -.188], [.017, 0, 0], [0, .017, 0], [0, 0, .009], D, 1.7); plate(b, [-.111, -.067, -.189], [-.099, -.067, -.189], [-.097, -.118, -.189], [-.107, -.118, -.189], M, .95);
       }
       // the display and control module
       const cz = -.25, fz = cz - .062;
@@ -7231,18 +7271,20 @@ const ASTRO = (() => {
       else { pk(.098, .61, .255, .1, .262, .92, true); pk(-.075, .08, .24, .094, .262, .8, true); stub(b, [{ c: [0, .06, .262], rx: .222, rz: .084, sh: .9 }, { c: [0, .104, .262], rx: .222, rz: .084, sh: .9 }], { sides: 8, n: 7, layer: D, a0: PI / 8 }); }
       pk(.615, .79, .2, .078, .276, .86, false);
       b.box([0, .24, .362], [.13, 0, 0], [0, .075, 0], [0, 0, .006], M, .7, 0);                                                                             // access panel
-      b.seg([.17, .78, .29], [.175, 1.06, .3], .007, .004, 3, D, 2.2, 0, false);                                                                           // antenna
       loft(b, [{ c: [-.25, .2, .262], rx: .034, sh: .5 }, { c: [-.29, .2, .262], rx: .03, sh: .62 }], { sides: 6, layer: W, X: [0, 1, 0], Z: [0, 0, 1], cap1: true, capSh: .7 });   // side valve
       if (!lod) for (const sg of [-1, 1]) { const x = sg * .142, z = .3615, q = (x0, y0, x1, y1, l, sh) => plate(b, [x + x0, y0, z + (l === D ? 0 : .0008)], [x + x1, y0, z + (l === D ? 0 : .0008)], [x + x1, y1, z + (l === D ? 0 : .0008)], [x + x0, y1, z + (l === D ? 0 : .0008)], l, sh, 0);   // warning placards
         q(-.042, .59, .042, .535, D, 1.3); q(-.034, .58, .034, .57, W, .9); q(-.034, .561, .012, .553, W, .9); }
       // the roundel on the back cover of the pack and on the right breast
       patch(b, .08, (x, y) => [x, .47 + y, .3628], 1, NASA_L);
       patch(b, .05, (x, y) => { const X = .098 - x, Y = .392 + y; return [X, Y, chestZ(X, Y) - .006]; }, 1, NASA_L);
-      add(TOR, take(b)); }
+      add(TOR, take(b));
+      // what swings: the whip antenna on the pack (it stands from ANT_AT), and the coiled tether and its hook, hung from the left D-ring (TETH_AT)
+      { const a = nb(); a.seg([0, 0, 0], [.005, .28, .01], .007, .004, 3, D, 2.2, 0, false); add(ANT, take(a)); }
+      if (!lod) { const h = nb(); crate(h, [0, -.021, -.002], [.017, 0, 0], [0, .017, 0], [0, 0, .009], D, 1.7); plate(h, [-.006, -.038, -.003], [.006, -.038, -.003], [.008, -.089, -.003], [-.002, -.089, -.003], M, .95); add(TETH, take(h)); } }
 
     /* ---- pelvis: origin midway between the hip joints ---- */
     { const b = nb();
-      loft(b, [ring(0, -.13, .005, .09, .09, LU(0), .5), ring(0, -.06, .005, .19, .155, LU(.8), .74), ring(0, .03, 0, .204, .165, LU(1.7), .92), ring(0, .1, 0, .19, .153, LU(2.4), .9)], { sides: lod ? 8 : 10, n: 2.5, layer: S, u0: 0, u1: 1, cap0: true });
+      loft(b, [ring(0, -.13, .005, .09, .09, LU(0), .5), ring(0, -.06, .005, .19, .155, LU(.8), .74), ring(0, .03, 0, .204, .165, LU(1.7), .92), ring(0, .1, 0, .19, .153, LU(2.4), .9)].concat(lod ? [] : [ring(0, .19, .004, .168, .132, LU(3.2), .62)]), { sides: lod ? 8 : 10, n: 2.5, layer: S, u0: 0, u1: 1, cap0: true });   // the top ring is inside the torso: a lean opens onto cloth, not onto nothing
       add(PEL, take(b)); }
 
     /* ---- arms: built for the right side, mirrored for the left. Origins at shoulder, elbow, wrist; the limb runs down -Y ---- */
@@ -7288,17 +7330,22 @@ const ASTRO = (() => {
       limb(sn, P_SN(lod), { sides: LS, layer: S, u0: 0, u1: .5, shf: inner(.3) });
       // boot: origin at the ankle, toe toward -Z, sole bottom at -ANKLE
       const ft = nb(), YZ = { X: [1, 0, 0], Z: [0, 1, 0] };
-      loft(ft, [{ c: [0, -.058, .112], rx: 0, v: LU(0), sh: .44 }, { c: [0, -.042, .082], rx: .058, rz: .056, v: LU(.3), sh: .52 }, { c: [0, -.02, .012], rx: .072, rz: .082, v: LU(1), sh: .62 }, { c: [0, -.04, -.1], rx: .077, rz: .058, v: LU(2), sh: .6 }, { c: [0, -.054, -.2], rx: .07, rz: .042, v: LU(3), sh: .52 }, { c: [0, -.066, -.252], rx: 0, v: LU(3.4), sh: .42 }],
+      loft(ft, [{ c: [0, -.058, .112], rx: 0, v: LU(0), sh: .44 }, { c: [0, -.042, .082], rx: .058, rz: .056, v: LU(.3), sh: .52 }, { c: [0, -.02, .012], rx: .072, rz: .082, v: LU(1), sh: .62 }, lod ? { c: [0, -.04, -.1], rx: .077, rz: .058, v: LU(2), sh: .6 } : { c: [0, -.0464, -BALL], rx: .0745, rz: .0506, v: LU(2.46), sh: .565 } /* (close to, a station on the line the boot breaks along: nothing is cut across) */, { c: [0, -.054, -.2], rx: .07, rz: .042, v: LU(3), sh: .52 }, { c: [0, -.066, -.252], rx: 0, v: LU(3.4), sh: .42 }],
         { sides: LS, n: 2.5, layer: S, u0: 0, u1: .5, X: YZ.X, Z: YZ.Z });
-      loft(ft, [ring(0, -ANKLE, -.068, .084, .194, .5, 1.3), ring(0, -ANKLE + .034, -.068, .086, .196, .5, 1.8)], { sides: lod ? 8 : 10, n: 3.2, layer: D, cap0: true });
+      if (lod) loft(ft, [ring(0, -ANKLE, -.068, .084, .194, .5, 1.3), ring(0, -ANKLE + .034, -.068, .086, .196, .5, 1.8)], { sides: 8, n: 3.2, layer: D, cap0: true });
+      else { // the sole in two pieces that meet on that line: heel and waist, and the toe
+        const T = Math.asin(Math.pow((BALL - .068) / .194, 1.6)), rs = [ring(0, -ANKLE, -.068, .084, .194, .5, 1.3), ring(0, -ANKLE + .034, -.068, .086, .194, .5, 1.8)], dn = [0, -1, 0], c = rs[0].c, m = [0, -ANKLE, -BALL];
+        const tri = (a, p, q) => { ft.v(a, .5, .5, D, dn, 1.3, 0); ft.v(p, 0, .5, D, dn, 1.3, 0); ft.v(q, 1, .5, D, dn, 1.3, 0); };
+        const Pr = loft(ft, rs, { sides: 5, n: 3.2, layer: D, a0: -T, a1: PI + T, cap0: true }), Pt = loft(ft, rs, { sides: 4, n: 3.2, layer: D, a0: PI + T, a1: TAU - T });
+        tri(c, Pr[0][5], Pr[0][0]); for (let i = 0; i < 4; i++) tri(m, Pt[0][i], Pt[0][i + 1]); }
       loft(ft, [ring(0, .03, .012, .094, .094, LU(0), .5), ring(0, .07, .008, .097, .097, LU(.4), .62)], { sides: LS, layer: S, u0: 0, u1: .5 });   // boot top cuff
       loft(ft, [{ c: [0, -.033, -.045], rx: .08, rz: .072 }, { c: [0, -.04, -.085], rx: .081, rz: .064 }], { sides: 4, n: 2.5, layer: D, X: YZ.X, Z: YZ.Z, a0: -.25, a1: PI + .25, shf: () => 1.7 });   // instep strap
       // lugs: bars across the sole, and their ends showing as teeth along its edge
-      if (!lod) for (let k = 0; k < 5; k++) { const z = -.225 + k * .078, hw = .084 * Math.pow(1 - Math.pow(Math.abs(z + .068) / .194, 3.2), 1 / 3.2), y = -ANKLE, x = hw + .0035;
+      if (!lod) for (const z of [-.226, -.17, -.098, -.012, .074]) { const hw = .084 * Math.pow(1 - Math.pow(Math.abs(z + .068) / .194, 3.2), 1 / 3.2), y = -ANKLE, x = hw + .0035;
         plate(ft, [-hw, y - .0005, z - .016], [hw, y - .0005, z - .016], [hw, y - .0005, z + .016], [-hw, y - .0005, z + .016], M, .8, 0);
         for (const sg of [-1, 1]) plate(ft, [sg * x, y, z - .014], [sg * x, y, z + .014], [sg * x, y + .022, z + .014], [sg * x, y + .022, z - .014], M, .72, 0); }
-      const thR = take(th), snR = take(sn), ftR = take(ft);
-      add(THR, thR); add(SHR, snR); add(FTR, ftR); add(THL, mirror(thR)); add(SHL, mirror(snR)); add(FTL, mirror(ftR));
+      const thR = take(th), snR = take(sn), ftA = take(ft), ftS = lod ? [new Float32Array(0), ftA] : splitZ(ftA, -BALL), ftR = ftS[1], toR = ftS[0];   // the boot breaks at the ball: the toe is a piece of its own (far off it is left whole)
+      add(THR, thR); add(SHR, snR); add(FTR, ftR); add(TOER, toR); add(THL, mirror(thR)); add(SHL, mirror(snR)); add(FTL, mirror(ftR)); add(TOEL, mirror(toR));
       const pk = nb(); pk.box([-.122, -.17, .0], [.022, 0, 0], [0, .068, 0], [0, 0, .058], S, .8, 0);   // thigh pocket and the edge of its flap
       if (!lod) plate(pk, [-.1445, -.128, -.058], [-.1445, -.128, .058], [-.1445, -.135, .058], [-.1445, -.135, -.058], D, 1.5, 0);
       add(THL, take(pk)); }
@@ -7334,9 +7381,45 @@ const ASTRO = (() => {
       add(TOR, take(b)); }
     return MARKS[lod][crew] = parts;
   }
-
-  /* ------------------------------------------------------------------ rig ------------------------------------------------------------------ */
-  function mkFoot() { return { a0: 0, x: 0, y: 0, z: 0, yaw: 0, sp: 0, sw: false, u0: 0, w: 0, fx: 0, fy: 0, fz: 0, fyaw: 0, fsp: 0, tx: 0, ty: 0, tz: 0, tyaw: 0, tsp: 0, cx: 0, cy: 0, cz: 0, cyaw: 0, csp: 0, pitch: 0, q: 0 }; }
+  /* ------------------------------------------------------------------ the animator ------------------------------------------------------------------
+     What the motion is built on (the code below follows these; the sources are in the report that came with it).
+     THE BODY (Williams' walk: contact, down, passing, up; Saunders and Inman's determinants of gait; Thomas and Johnston's twelve principles)
+     1. The feet lead and everything else is read off them. A planted foot is fixed in the world. The pelvis rides where the loaded legs put it: it moves
+        over the foot that bears the weight BEFORE the other one lifts, sinks as a leg takes load (the knee gives), rises over the passing position, turns
+        its forward hip with the forward leg while the shoulders turn against it. Arms take their swing from the opposite leg. Nothing has a clock of its own.
+     2. A foot comes down heel first and rolls: heel strike, flat, heel off about the ball (the boot breaks there), toe off; in the air it trails, passes, reaches.
+     3. Nothing starts or stops at once. Every part is a mass on a damped spring (sco / spr): it is slow to start, runs past, comes back (ease in, follow
+        through, settle). What is carried is softer than what carries it, so it lags and overshoots: forearm behind upper arm, hand behind forearm, the heavy
+        torso behind the pelvis, the antenna and the tether behind everything. Rotations are driven as angles at the joint, so hands travel in arcs.
+     4. A move is prepared (the weight goes the other way first), made, held, and let go, and the head goes before the body.
+     5. No two steps and no two people alike: every figure has its own tempo, stance, favoured leg and arm, and every step and every idle act its own timing.
+     THE SUIT (Shuttle / ISS EMU, Apollo A7L and A7LB experience)
+     6. A pressurised suit is a spring with a neutral posture: knees and elbows a little bent, arms forward and out from the sides, never hanging. It takes
+        force to leave that posture and the suit puts you back. In free flight, with no weight on them, the arms float up toward it.
+     7. Helmet, hard upper torso, chest unit and pack are one rigid block. It does not bend or twist: looking round is done by the head inside the helmet,
+        then by the whole block turning on the waist bearing, then by the feet stepping round. The pack carries the centre of mass back, so the wearer
+        stands and travels leaning forward from the ankles. Hips and ankles bend little: the stance is wide, the stride short, the body rocks from foot to foot.
+     8. Getting down and up is slow and deliberate; a fall ends on hands and knees; rising is hands pushed back until the weight is over the feet, then up.
+     LOW GRAVITY (Apollo surface film and the 1/6 g simulator studies; Callisto is 1.24 m/s^2 against the Moon's 1.62)
+     9. Above a slow walk the gait is the lope: a short push from one foot, a long ballistic flight (the flight time and the height of the hop obey g: rise =
+        g t^2 / 8), a landing the knee and a forward pitch of the trunk absorb. Cadence stays near one step a second; speed comes from the length of the flight.
+     10. Everything that falls, falls slowly: a toppling man takes two or three seconds to reach the ground and things that hang swing at a third of their
+        earthly rate. A duplicate breaks these rules on purpose: earthly cadence, no weight shift, no settle, a clock where the living have none.
+     WHAT THE GAME DOES TO IT (the caller may change its mind on any frame)
+     11. Nothing the caller does may break a movement in two. The step clock follows the feet (a foot in the air keeps its own landing; the clock is paced to
+        it), so a change of pace or direction bends a stride. An act (struck down, dead, kneeling, sitting) begins where the feet are: struck at a run the
+        figure runs on, stumbling, as it goes down; made to travel before it is up, its first step is part of the getting up. A limb asked for beyond what
+        the suit allows goes as far as it can and no further: legs never cross or pass through one another, a boot is never left further behind than the leg
+        is long, an arm does not fold onto its own shoulder or point across behind its own back. */
+  const GRAV = 1.24;
+  // the springs: pairs of (value, rate) in rig.q
+  const Q_OX = 0, Q_OZ = 2, Q_BY = 4, Q_ABS = 6, Q_TP = 8, Q_TR = 10, Q_TY = 12, Q_LAT = 14, Q_HY = 16, Q_HP = 18, Q_ANP = 20, Q_ANR = 22, Q_TEP = 24, Q_TER = 26, Q_AIMY = 28, Q_AIMP = 30,
+    Q_RCW = 32, Q_RCE = 34, Q_RCT = 36, Q_LKT = 38, Q_HR = 40, Q_PY = 42, Q_PR = 44, Q_ARM = 48, NQ = 76;   // arms: Q_ARM + arm * 12 + channel * 2
+  const A_WF = 0, A_WS = 1, A_E = 2, A_RHO = 3, A_TW = 4, A_WX = 5;   // an arm at the joint: swing forward, swing out, elbow, turn of the upper arm inward, twist of the forearm, bend of the wrist
+  const KS = []; for (let i = 0; i < 16; i++) KS.push(new Float64Array(4)); const KZ = new Float64Array(4);
+  const TW_L = .27;   // how long a duplicate's twitch lasts: there in under a tenth of a second, held a moment, let go more slowly
+  function mkFoot() { return { sw: false, drop: 0, dq: 0, ll: 1, x: 0, y: 0, z: 0, yaw: 0, sp: 0, sr: 0, fx: 0, fy: 0, fz: 0, fyaw: 0, fsp: 0, fsr: 0, tx: 0, ty: 0, tz: 0, tyaw: 0, tsp: 0, tsr: 0, w: 0, rem: 0, T0: 1, kind: 0, k0: 0, fresh: false, d0x: 0, d0z: 0, p0: 0, ur: .5, ul: .5, lift: .05, lope: 0, cyc: -1, late: false, hb: 0, hs: false, pk0: .1, jx: 0, jz: 0,
+      cx: 0, cy: 0, cz: 0, cyaw: 0, csp: 0, csr: 0, pitch: 0, toe: 0, tl: 9, q: .5, hox: 0, hoz: 0, hoy: 0 }; }
   const AT_REST = k => k === K_PLAIN || k === K_FACE || k === K_HANDR || k === K_HANDL || k === K_STRAP0 || k === K_PISTOL;
   const partsOf = (crew, lod) => buildSuit(lod).concat(buildMarks(crew, lod), buildHead(crew, lod));
   function create(crewIndex, seed) {
@@ -7344,309 +7427,686 @@ const ASTRO = (() => {
     const r = rng((seed | 0) * 31 + 7), rig = {
       crew, seed: seed | 0, M: new Float32Array(NB * 12), N: new Float32Array(NB * 9), tris: 0, parts: [partsOf(crew, 0), null],
       sc: bd[0], kS: bd[1], kG: bd[2], kL: bd[3],
-      x: 0, z: 0, hd: 0, ready: false, dup: false, hop: 0, fw: 1, sd: 0, t: r() * 40, v: 0, ga: 0, gait: false, still: 0, phase: 0, mvx: 0, mvz: -1, py: 0,
-      feet: [mkFoot(), mkFoot()], down: 0, open: 0, jaw: 0, innerOn: false, hd0: 0, om: 0, headOff: 0, hy: 0, snap: true,
+      x: 0, z: 0, hd: 0, ready: false, dup: false, t: r() * 40, v: 0, vx: 0, vz: 0, mvx: 0, mvz: -1, fw: 1, sd: 0, acf: 0, acr: 0, trn: 0, hd0: 0, still: 0, slope: 0,
+      gait: false, ga: 0, phase: 0, phN: 0, gp: { T: 1, d: .7, lope: 0, S: .4, lf: .5, width: .13, lift: .05, hk: .1, pOff: .5, pHeel: .2, ext: .978, v0: 0, tf: 0, crouch: .012, fwd: 1, back: 0, q0: .5, y0: .77 },
+      feet: [mkFoot(), mkFoot()], ld: [.5, .5], yc: 0, hy: 0, hyo: 0, hop: 0, hopC: 0, hopM: 0, te: 0, vin: 0, sht: [0, 0], lh: 0, hpj: [[-HIP_X, HIP_Y, 0], [HIP_X, HIP_Y, 0]], snap: true, grf: 1, cool: 0, ffl: [], lastFoot: 0,
+      open: 0, jaw: 0, innerOn: false, om: 0, headOff: 0,
       side: r() < .5 ? -1 : 1, tilt: .2 + r() * .1, p1: r() * TAU, p2: r() * TAU, p3: r() * TAU, toe: (r() - .5) * .1,
       rnd: rng((seed | 0) * 977 + 13), twT: 1.5 + r() * 4, twL: 0, twK: 0, twS: 1,
-      gd: 0, gaim: 0, aimY: 0, aimP: 0, fire: 0, kick: 0, shot: false, flashA: r() * TAU, gripR: false, gripL: false, holst: true, muz: [0, 0, 0, 0, 0, -1], st: null, xf: new Float32Array(12), hide: 0, clay: false, calm: false,
-      gs: new Float32Array(8), gArm: 1, ptY: 0, fear: 0, hurt: 0, lkT: 0, lkH: 0, lkE: 0, lkP: 0, glT: 2 + r() * 3, glL: 0, glS: 1, acc: 0, trn: 0, stl: 0, two: 0 };
+      gd: 0, gaim: 0, aimY: 0, aimP: 0, fire: 0, kick: 0, shot: false, flashA: r() * TAU, gripR: false, gripL: false, holst: true, muz: [0, 0, 0, 0, 0, -1], pend: 0, fl: 0, trig: false, cmb: 0, st: null, xf: new Float32Array(12), hide: 0, clay: false, calm: false,
+      gs: new Float32Array(8), gt: new Float32Array(8), gArm: 1, ptY: 0, fear: 0, hurt: 0, two: 0, lkY: 0, lkP: 0, lkOn: 0, glT: 2 + r() * 3, glL: 0, glS: 1,
+      hfar: .3, lfar: .5, gfar: .3, pull: [0, 0], stb: false, cur: 0, lv: false, hur: 1, kd: 0, rr: 0, kn: 0, si: 0, de: 0, pw: 0, pk: 0, po: [[0, 0, 0], [0, 0, 0]], pf: [[0, 0, 0], [0, 0, 0]], pz: new Float64Array(NZ), deV: 0, stV: 0, wasDown: 0,
+      q: new Float64Array(NQ),
+      // the person: tempo, how unequal the two sides are, where the weight likes to sit
+      cad: .95 + r() * .1, stepK: [1 + (r() - .5) * .07, 1 + (r() - .5) * .07], armK: [.82 + r() * .36, .82 + r() * .36], tempo: .8 + r() * .5, stag: (r() - .5) * .06, wide: (r() - .3) * .03,
+      // standing: which leg has the weight, where it is looking, what the hands are doing
+      ws: 0, wsC: 0, wsT: 1 + r() * 5, igT: 1 + r() * 4, igL: 0, igY: 0, igP: 0, chT: 9 + r() * 22, chL: 0, chK: 0, fiT: 3 + r() * 7, fiL: 0, fiD: 1, fiA: 0, fiK: 0, adT: 6 + r() * 12, idl: 0, brT: r() * 4 };
     for (const P of rig.parts[0]) if (AT_REST(P.kind)) rig.tris += P.n / 3;
+    rig.deV = (seed | 0) * 7 + crew; rig.ws = rig.side * (.5 + .4 * r()); rig.wsC = rig.ws;
     place(rig, 0, 0, 0, flat); solve(rig, flat, 0);
     return rig;
   }
-  const WIDTH = 0.125;
-  function slopeAt(g, x, z, yaw) { const fx = Math.sin(yaw), fz = -Math.cos(yaw); return clamp(Math.atan2(g(x + fx * .17, z + fz * .17) - g(x - fx * .1, z - fz * .1), .27), -.4, .4); }
-  // put both feet down under the hips, here and now
+  const WIDTH = 0.135;
+  // the ground under a boot: its pitch along the foot and its roll across it
+  function slopeAt(g, x, z, yaw, o) { const fx = Math.sin(yaw), fz = -Math.cos(yaw), a = g(x + fx * .2, z + fz * .2), b = g(x - fx * .1, z - fz * .1); o[0] = clamp(Math.atan2(a - b, .3), -.42, .42); { const t = Math.tan(o[0]); o[2] = Math.max(a - .2 * t, b + .1 * t); }   // o[2]: where a flat sole resting on toe and heel has its middle
+    o[1] = clamp(Math.atan2(g(x - fz * .07, z + fx * .07) - g(x + fz * .07, z - fx * .07), .14), -.4, .4); return o; }
+  const SL = [0, 0, 0];
+  // put both feet down under the hips, here and now, and still every spring
   function place(rig, x, z, hd, g) {
     rig.x = x; rig.z = z; rig.hd = hd; rig.ready = true; rig.hd0 = hd; rig.om = 0; rig.headOff = 0; rig.snap = true; rig.mvx = Math.sin(hd); rig.mvz = -Math.cos(hd); rig.fw = 1; rig.sd = 0; rig.still = 0;
-    const rx = Math.cos(hd), rz = Math.sin(hd);
-    for (let i = 0; i < 2; i++) { const f = rig.feet[i], sg = i ? 1 : -1; f.x = x + rx * sg * WIDTH * rig.sc; f.z = z + rz * sg * WIDTH * rig.sc; f.y = g(f.x, f.z); f.yaw = hd + sg * (.1 + rig.toe * sg); f.sp = slopeAt(g, f.x, f.z, f.yaw); f.sw = false; f.w = 0; f.pitch = 0; f.q = .5;
-      f.cx = f.x; f.cy = f.y; f.cz = f.z; f.cyaw = f.yaw; f.csp = f.sp; }
-    rig.py = .5 * (rig.feet[0].y + rig.feet[1].y);
+    rig.vx = rig.vz = rig.v = 0; rig.acf = rig.acr = rig.trn = 0; rig.gait = false; rig.ga = 0; rig.cool = 0; rig.hop = 0; rig.hopC = 0; rig.hopM = 0; rig.te = 0; rig.vin = 0; rig.hyo = 0; rig.sht[0] = rig.sht[1] = 0; rig.ffl.length = 0; rig.q.fill(0);
+    const rx = Math.cos(hd), rz = Math.sin(hd), fx = Math.sin(hd), fz = -Math.cos(hd);
+    for (let i = 0; i < 2; i++) { const f = rig.feet[i], sg = i ? 1 : -1, wd = (WIDTH + rig.wide) * rig.sc, st = (rig.dup ? 0 : sg * rig.side * rig.stag) * rig.sc; f.hox = f.hoz = f.hoy = 0;
+      f.x = x + rx * sg * wd + fx * st; f.z = z + rz * sg * wd + fz * st; f.yaw = hd + sg * (.13 + rig.toe * sg); slopeAt(g, f.x, f.z, f.yaw, SL); f.y = Math.max(g(f.x, f.z), SL[2]); f.sp = SL[0]; f.sr = SL[1]; f.sw = false; f.late = false; f.hb = 0; f.hs = false; f.w = 0; f.pitch = 0; f.toe = 0; f.q = .5; f.tl = 9; f.cyc = -1;
+      f.cx = f.x; f.cy = f.y; f.cz = f.z; f.cyaw = f.yaw; f.csp = f.sp; f.csr = f.sr; }
+    rig.ld[0] = rig.ld[1] = .5; rig.yc = .5 * (rig.feet[0].y + rig.feet[1].y);
   }
   function pose(rig, s, groundY) {
     const g = groundY || flat; rig.dup = !!s.dup; rig.st = s; place(rig, +s.x || 0, +s.z || 0, +s.heading || 0, g);
-    rig.v = 0; rig.ga = 0; rig.gait = false; rig.phase = 0; rig.hop = 0; rig.down = s.stun > 0 ? 1 : 0; rig.open = clamp(+s.open || 0, 0, 1); rig.twL = 0;
-    { const gw = gunWanted(s); rig.gd = gw > 0 ? 1 : 0; rig.gaim = gw > 1 ? 1 : 0; const a = aimOf(s, rig.hd); rig.aimY = gw > 1 ? a[0] : 0; rig.aimP = gw > 1 ? a[1] : 0; rig.fire = gw > 0 ? clamp(+s.fire || 0, 0, 1) : 0; rig.kick = rig.fire; }
-    manner(rig, s, rig.hd, 0, true);
+    rig.phase = 0; rig.open = clamp(+s.open || 0, 0, 1); rig.twL = 0;
+    { const gw = gunWanted(s); rig.gd = gw > 0 ? 1 : 0; rig.gaim = rig.lh = gw > 1 ? 1 : 0; const a = aimOf(s, rig.hd); rig.aimY = gw > 1 ? a[0] : 0; rig.aimP = gw > 1 ? a[1] : 0; rig.q[Q_AIMY] = rig.aimY; rig.q[Q_AIMP] = rig.aimP; rig.fire = gw > 0 ? clamp(+s.fire || 0, 0, 1) : 0; rig.kick = rig.fire; }
+    rig.kd = s.stun > 0 && !(s.dead > 0) ? 1 : 0; rig.rr = 0; rig.de = s.dead > 0 ? 1 : 0;
+    rig.hur = 1; rig.lv = false; manner(rig, s, rig.hd, 0, true); tracks(rig, 0); gaitParams(rig, 0); rig.stb = false; for (const f of rig.feet) { f.hb = rig.pw > 0 ? 1 : 0; f.hs = false; }
     solve(rig, g, 0);
   }
 
-    // what the state asks of the pistol: 0 holstered, 1 low ready, 2 aiming. On hands and knees it stays where it is safe
-  const gunWanted = s => s.stun > 0 ? 0 : clamp(Math.round(+s.gun || 0), 0, 2);
+  // what the state asks of the pistol: 0 holstered, 1 low ready, 2 aiming. On the ground it stays where it is safe
+  const gunWanted = s => s.stun > 0 || s.dead > 0 || s.gest === 'down' || s.gest === 'kneel' ? 0 : clamp(Math.round(+s.gun || 0), 0, 2);
   const AIM_MAX = 1.75;
   const aimOf = (s, hd) => [clamp(wrapPi((Number.isFinite(+s.aim) ? +s.aim : hd) - hd), -AIM_MAX, AIM_MAX), clamp(+s.aimPitch || 0, -.9, .9)];
   /* Body language. s.gest: 'wave' | 'beckon' | 'point' (toward world yaw s.pointYaw) | 'halt' | 'down' (sat slumped against something) | 'kneel' (on one knee, working at
-     something about 0.9 m up) | 'check' (reads the panel on the left wrist) | null. s.lookYaw (world), s.lookPitch: where to look; the head leads, the helmet follows, the
-     shoulders come a part of the way. s.fear, s.hurt 0..1. Everything is eased in and out here, so the caller only sets and clears. */
+     something about 0.9 m up) | 'check' (reads the panel on the left wrist) | null. s.lookYaw (world), s.lookPitch: where to look. s.fear, s.hurt 0..1.
+     Here they are only timed: gs[i] is how far gesture i has come in (0..1), gt[i] how long it has been asked for; the solve turns that into a performance. */
   const GEST = { wave: 1, beckon: 2, point: 3, halt: 4, down: 5, kneel: 6, check: 7 };
+  const G_IN = [0, .55, .5, .5, .3, 1, 1, .6], G_OUT = [0, .6, .5, .55, .45, 1, 1, .55];
   function manner(rig, s, hd, dt, snap) {
-    const gk = s.stun > 0 || rig.dup ? 0 : GEST[s.gest] | 0, gs = rig.gs, ea = (tau) => snap ? 1 : damp(dt, tau), fin = Number.isFinite;
+    const dead = s.dead > 0, gk = s.stun > 0 || dead || rig.dup ? 0 : GEST[s.gest] | 0, gs = rig.gs, gt = rig.gt, ea = (tau) => snap ? 1 : damp(dt, tau), fin = Number.isFinite;
     const ptY = wrapPi((fin(+s.pointYaw) ? +s.pointYaw : hd) - hd), was = gs[1] + gs[2] + gs[3] + gs[4] + gs[7];
-    if (was < .04 || snap) rig.gArm = gk === 7 || rig.gd > .05 || (gk === 3 && ptY < -.35) ? 0 : 1;   // the right arm, unless it has the pistol, or the wrist panel or the thing pointed at is on the left
-    let arms = 0; for (let i = 1; i < 8; i++) { const T = i === 5 || i === 6 ? .5 : .42; gs[i] = snap ? (i === gk ? 1 : 0) : clamp(gs[i] + (i === gk ? dt : -dt) / T, 0, 1); if (i < 5 || i === 7) arms += gs[i]; }
-    if (gk === 3) rig.ptY += (clamp(ptY, -2.2, 2.2) - rig.ptY) * ea(.14);
-    rig.fear += (clamp(+s.fear || 0, 0, 1) - rig.fear) * ea(.35); rig.hurt += (clamp(+s.hurt || 0, 0, 1) - rig.hurt) * ea(.4);
-    rig.two += ((rig.fear > .4 ? 1 : 0) - rig.two) * ea(.18);   // the pistol at low ready: in one hand by the leg, or in both when frightened
+    // the right arm, unless it has the pistol, or the wrist panel or the thing pointed at is on the left; if that changes, the arm in use comes down first and the other goes up
+    const wantArm = gk === 7 || rig.gd > .05 || (rig.pw <= 0 && gunWanted(s) > 0) || (gk === 3 && ptY < (rig.gArm ? -.5 : .5)) ? 0 : 1, sw = wantArm !== rig.gArm && gk > 0;
+    if (was < .02 || snap) rig.gArm = wantArm;
+    for (let i = 1; i < 8; i++) { if (i === 5 || i === 6) continue; const on = i === gk && !(sw && was >= .02); gs[i] = snap ? (i === gk ? 1 : 0) : clamp(gs[i] + (on ? dt / G_IN[i] : -dt / G_OUT[i]), 0, 1); gt[i] = on ? (snap ? 9 : gt[i] + dt) : gs[i] > 0 ? gt[i] : 0; }
+    // getting down on one knee, or down onto the ground, and up again: slow in a pressurised suit
+    rig.kn = snap ? (gk === 6 ? 1 : 0) : clamp(rig.kn + (gk === 6 ? dt / 1.25 : -dt * rig.hur / 1.5), 0, 1); rig.si = snap ? (gk === 5 ? 1 : 0) : clamp(rig.si + (gk === 5 ? dt / 1.7 : -dt * rig.hur / 2.6), 0, 1);
+    gs[5] = rig.si; gs[6] = rig.kn;
+    if (gk === 3) rig.ptY += (clamp(ptY, -2.2, 2.2) - rig.ptY) * ea(.16);
+    rig.fear += (clamp(+s.fear || 0, 0, 1) - rig.fear) * ea(.35); rig.hurt += (clamp(+s.hurt || 0, 0, 1) - rig.hurt) * ea(.45);
+    rig.two += ((rig.fear > .4 ? 1 : 0) - rig.two) * ea(.3);   // the pistol at low ready: in one hand by the leg, or in both when frightened
     // glances over the shoulder when frightened: sooner and more often the more frightened
-    if (dt > 0) { if (rig.glL > 0) rig.glL -= dt; else if ((rig.glT -= dt * (.15 + rig.fear)) <= 0) { const r = rig.rnd; rig.glT = 1.1 + r() * 1.6; rig.glL = .55 + r() * .5; rig.glS = r() < .5 ? -1 : 1; } }
-    let rel = fin(+s.lookYaw) ? clamp(wrapPi(+s.lookYaw - hd), -1.9, 1.9) : 0; const pit = clamp(+s.lookPitch || 0, -.7, .7);
-    if (rig.glL > 0 && rig.fear > .15 && !rig.dup) rel = clamp(rel + rig.glS * (1.1 + .6 * rig.fear), -1.9, 1.9);
-    // shoulders slowest and least, helmet next, the head inside quickest: each takes what the ones before it have left
-    const qk = 1 + .8 * rig.fear; rig.lkT += (clamp(rel * .36, -.5, .5) - rig.lkT) * ea(.34 / qk); rig.lkH += (clamp(rel - rig.lkT, -.62, .62) - rig.lkH) * ea(.15 / qk); rig.lkE += (clamp(rel - rig.lkT - rig.lkH, -.55, .55) - rig.lkE) * ea(.07 / qk); rig.lkP += (pit - rig.lkP) * ea(.12);
+    if (dt > 0) { if (rig.glL > 0) rig.glL -= dt; else if ((rig.glT -= dt * (.15 + rig.fear)) <= 0) { const r = rig.rnd; rig.glT = 1.1 + r() * 1.6; rig.glL = .5 + r() * .55; rig.glS = r() < .5 ? -1 : 1; } }
+    // where it has been told to look, relative to the heading
+    const on = fin(+s.lookYaw); rig.lkOn += ((on ? 1 : 0) - rig.lkOn) * ea(.12);
+    if (on) { rig.lkY = clamp(wrapPi(+s.lookYaw - hd), -1.9, 1.9); } rig.lkP = clamp(+s.lookPitch || 0, -.7, .7);
   }
-  const GP = { width: .125, fwd: 1, fw: 1, L: 1, d: .6, S: .4, lf: .5, lope: 0, lift: .06, pOff: .3, pHeel: .1, bobW: 0, bobL: 0, lat: 0, yaw: 0, roll: 0, hip: HIP_Y };
-  // fw: how much of the travel is forward (1) or backward (-1); sd: how much is sideways (0..1)
-  function gaitParams(v, dup, fw, sd, sc, fear, hurt) {
-    const o = GP;
-    if (dup) { // an earthbound three-steps-a-second cadence on locked knees and flat feet: it does not move like something that weighs an eighth of what it should
-      const f = Math.min(3.3, 1.6 + .55 * v); o.L = Math.max(.45, 2 * v / f); o.S = Math.min(.52, .32 + .22 * v); o.d = clamp(o.S / o.L, .12, .58); o.S = o.d * o.L;
-      o.lope = sstep(.5, .36, o.d); o.lf = lerp(.5, .44, o.lope); o.lift = .026; o.pOff = .1 + .12 * o.lope; o.pHeel = 0;
-      o.bobW = 0; o.bobL = -.02 * o.lope; o.lat = .036 - .014 * o.lope; o.yaw = .04; o.roll = .12 - .04 * o.lope; o.hip = HIP_Y + .008;
-    } else { // low gravity: a careful walk below about 0.7 m/s, then the slow floating lope with long flights between short contacts
-      const f = .95 + .12 * Math.min(v, 2.5) + .03 * Math.max(0, v - 2.5); o.L = Math.max(.55, 2 * v / f); o.S = Math.min(.8, .42 + .3 * v); o.d = clamp(o.S / o.L, .08, .64); o.S = o.d * o.L;
-      o.lope = sstep(.54, .42, o.d); o.lf = lerp(.5, .37, o.lope); o.lift = lerp(.07, .2, o.lope); o.pOff = lerp(.3, .5, o.lope); o.pHeel = lerp(.16, .05, o.lope);
-      const tf = v > .1 ? Math.max(0, .5 - o.d) * o.L / v : 0;      // time in the air per step; the hop it allows under Callisto gravity, drawn a little large
-      o.bobW = .016 * (1 - o.lope); o.bobL = -Math.min(.1, .016 + 1.235 * tf * tf / 16 * 2.6) * o.lope; o.lat = lerp(.03, .012, o.lope); o.yaw = lerp(.1, .16, o.lope); o.roll = .035; o.hip = HIP_Y - lerp(.022, .045, o.lope);
-    }
-    if (!dup && (fear > 0 || hurt > 0)) { const q = (1 - .27 * fear) * (1 - .16 * hurt); o.L *= q; o.S *= q; o.lift *= 1 - .25 * fear - .3 * hurt; o.bobL *= 1 - .3 * fear - .3 * hurt; o.hip -= .018 * fear; }   // frightened or hurt: shorter, quicker, lower
-    // backing up and side-stepping: shorter, quicker, flatter steps, and a wider stance so side-steps do not cross
-    const fwd = Math.max(0, fw), k = (1 - .3 * Math.max(0, -fw)) * lerp(1, Math.min(1, .34 / o.S), sd * sd);
-    o.L *= k; o.S *= k; o.pOff *= fwd; o.pHeel *= fwd; o.lift *= .55 + .45 * fwd; o.bobL *= .4 + .6 * fwd; o.width = lerp(lerp(WIDTH, .085, o.lope * fwd), .19, sd * sd); o.fwd = fwd; o.fw = fw;
-    if (sc !== 1) { o.L *= sc; o.S *= sc; o.lift *= sc; o.bobW *= sc; o.bobL *= sc; o.lat *= sc; o.width *= sc; o.hip *= sc; }   // a taller figure takes longer steps
+  /* The whole-body acts: thrown down onto hands and knees and getting up again (kd, with rr = how much of it is the getting up), and dead (de).
+     Each is a track of poses (70-solve.js); here they only keep time. A fall in this gravity cannot be quick; getting up in this suit cannot be either. */
+  function tracks(rig, dt) { const s = rig.st || {}, dead = s.dead > 0, stunned = s.stun > 0 && !dead, dup = rig.dup;
+    if (dt > 0) { const dn = dup ? 1.15 : 1.75, up = dup ? 2.4 : 3.1;
+      if (stunned) { rig.rr = Math.max(0, rig.rr - dt / .6); rig.kd = Math.min(1, rig.kd + dt / dn * (1 - rig.rr)); } /* (struck again while getting up: it goes back down from where it had got to, not through the getting up run backwards) */ else if (rig.kd > 0) { rig.rr = Math.min(1, rig.rr + dt / .45); rig.kd = Math.max(0, rig.kd - dt / up); if (rig.kd <= 0) rig.rr = 0; }
+      rig.de = clamp(rig.de + (dead ? dt / (dup ? 2.2 : 2.9) : -dt / 3.5), 0, 1); }
+    { const cur = Math.max(rig.kd, rig.de, rig.si, rig.kn); if (dt > 0) rig.lv = cur < rig.cur; rig.cur = cur; }   // (lv: it is on its way up out of the act)
+    rig.pw = Math.max(sstep(0, .1, rig.kd), sstep(0, .1, rig.de), sstep(0, .08, rig.si), sstep(0, .08, rig.kn));
+    rig.pk = rig.pw > 0 ? Math.max(rig.pk, rig.kd, rig.de, rig.si, rig.kn) : 0; }   // how far into an act it has ever been since it stood: the feet begin an act where they are
+
+  /* How it travels at v m/s. T is the time of one step and d the share of a stride each foot is on the ground (over a half they overlap: a walk; under, both
+     are in the air between: the lope). The suit decides how far a planted foot can be left behind (S, the length of a stance); gravity decides the rest.
+     At a crawl the feet overlap in a flat-footed walk. From about 0.55 m/s (a Froude number of a third for this leg in this gravity, where Apollo's crews
+     changed too) the stance can no longer cover the step and the rest of it is flown: v0 = g tf / 2 up at toe-off, g tf^2 / 8 of rise, about a step a second
+     at any speed. y0 is how high the hips are when a flight ends and begins: as high as the reaching leg allows with its knee still bent. */
+  function gaitParams(rig, v) {
+    const o = rig.gp, sc = rig.sc, fear = rig.fear, hurt = rig.hurt, fw = rig.fw, sd = Math.abs(rig.sd), back = Math.max(0, -fw), fwd = Math.max(0, fw), u = v / sc, ue = Math.max(u, .1), sl = Math.min(.5, Math.abs(rig.slope));
+    o.fwd = fwd; o.back = back;
+    if (rig.dup) { // an earthbound cadence on locked knees and flat feet, at a height that never changes: it does not move like something that weighs an eighth of what it should
+      const f = Math.min(3.3, 1.6 + .55 * u), ve = Math.max(v, .15), T = Math.min(Math.max(.45, 2 * u / f) * sc / (2 * ve), .62) /* (never slower than that, however slowly it goes: then the steps are smaller) */, L = 2 * ve * T; let S = Math.min(.5, .32 + .2 * u) * sc; o.d = clamp(S / L, .12, .58); S = o.d * L;
+      o.T = T; o.lope = sstep(.5, .36, o.d); o.S = S; o.lf = lerp(.5, .44, o.lope); o.lift = .026 * sc; o.hk = .045 * sc; o.pOff = (.25 + .3 * o.lope) * fwd; o.pHeel = 0;
+      o.width = (.105 + .08 * sd * sd) * sc; o.tf = Math.max(0, 1 - 2 * o.d) * o.T; o.v0 = 0; o.crouch = -.004; o.q0 = .6; o.y0 = HIP_Y - ANKLE + .004; return o; }
+    const lope = sstep(.5, 1.25, u), kT = rig.cad * (1 - .2 * fear) * (1 + .1 * hurt) * (1 - .45 * sl) * (1 - .4 * back), kS = (1 - .25 * back) * (1 - .3 * sd * sd) * (1 - .9 * Math.tan(sl)) * (1 - .1 * hurt), us = sd * u;
+    // (sideways the feet cannot pass one another: each step is as long as the legs can be parted and no longer, so the steps come quicker)
+    const T = Math.min(lerp(lerp(1.05, .84, sstep(.2, .65, u)), clamp(.98 - .035 * (u - 1.3), .8, 1), sstep(.6, 1.3, u)) * kT, Math.max(.26, .19 / Math.max(us, .01))), Smax = lerp(.44, Math.min(.5 + .04 * u, .66), lope) * kS;
+    const d = clamp(Math.min(lerp(.66, .58, sstep(.25, .6, u)), Smax / (2 * T * ue)), .06, .9);
+    o.T = T; o.d = d; o.lope = lope; o.S = v * 2 * T * d; o.lf = lerp(.5, .26, lope) - .12 * back;
+    o.tf = Math.max(0, 1 - 2 * d) * T; o.v0 = GRAV * o.tf / 2;
+    o.lift = (.05 + .02 * Math.min(u, 1)) * sc * (1 - .3 * hurt) * (.6 + .4 * fwd + .2 * sd); o.hk = (.04 + .006 * Math.min(u, 5)) * sc * (1 - .25 * fear) * (.5 + .5 * fwd);
+    o.pOff = .85 * fwd; o.pHeel = lerp(.2, .08, lope) * fwd * (1 - 2 * sstep(.03, .25, rig.slope)) - .16 * back;   /* (up a hill the boot comes down on its toe) */ o.q0 = lerp(.5, .25, lope);
+    o.width = (lerp(WIDTH + rig.wide, .1, lope * fwd) + Math.min(.16, .5 * us * T)) * sc; o.crouch = .012 + .02 * fear + .01 * hurt + .08 * sl;
+    { const a = o.S / sc * o.lf + .025 + .03 * Math.max(0, u - 2), L = LEG * .985; o.y0 = Math.sqrt(Math.max(L * L - a * a, .3)) - .1 * sl - .015 * fear; }
     return o;
   }
-  const EA = .28, ease = w => w < EA ? w * w / (2 * EA * (1 - EA)) : w > 1 - EA ? 1 - (1 - w) * (1 - w) / (2 * EA * (1 - EA)) : (w - EA / 2) / (1 - EA);   // quick pick-up, steady carry, quick set-down
-  function startSwing(f, u0, a0) { f.sw = true; f.a0 = a0 || 0; f.u0 = clamp(u0, 0, .9); f.w = 0; f.fx = f.x; f.fy = f.y; f.fz = f.z; f.fyaw = f.yaw; f.fsp = f.sp; f.tx = f.x; f.ty = f.y; f.tz = f.z; f.tyaw = f.yaw; f.tsp = f.sp; }
-  function land(f) { f.sw = false; f.w = 0; f.x = f.tx; f.y = f.ty; f.z = f.tz; f.yaw = f.tyaw; f.sp = f.tsp; f.q = 0; }
+  function startSwing(rig, f, kind, T0, v) { f.sw = true; f.late = false; f.drop = 0; f.kind = f.k0 = kind; f.fresh = true; f.w = 0; f.rem = T0; f.T0 = T0; f.fx = f.x; f.fy = f.y; f.fz = f.z; f.fyaw = f.yaw; f.fsp = f.sp; f.fsr = f.sr; f.tx = f.x; f.ty = f.y; f.tz = f.z; f.tyaw = f.yaw; f.tsp = f.sp; f.tsr = f.sr;
+    f.d0x = f.x - rig.x; f.d0z = f.z - rig.z; f.lope = kind ? 0 : rig.gp.lope;
+    // how long it is let go of the ground and how long it is set down onto it: brief against a long flight, half and half in a walk
+    f.ur = clamp(clamp(.2 / Math.max(v, .3), .05, .3) / T0, .04, .5); f.ul = clamp(clamp(.25 / Math.max(v, .3), .06, .3) / T0, .04, .5);
+    const r = rig.rnd; f.jx = (r() - .5) * .03; f.jz = (r() - .5) * .04; }
+  // a foot comes down: it is fixed where it is, and the game is told (ASTRO.footfalls): [x, y, z, yaw, side, impact] at the middle of the sole
+  function land(rig, f, i, impact) { f.sw = false; f.late = false; f.w = 0; f.x = f.tx; f.y = f.ty; f.z = f.tz; f.yaw = f.tyaw; f.sp = f.tsp; f.sr = f.tsr; f.q = 0; f.tl = 0; rig.lastFoot = i;
+    const c = .068 * rig.sc * Math.cos(f.sp), L = rig.ffl; if (L.length >= 24) L.shift(); L.push([f.x + Math.sin(f.yaw) * c, f.y + Math.tan(f.sp) * c, f.z - Math.cos(f.yaw) * c, f.yaw, i ? 1 : -1, clamp(impact, 0, 1)]);
+    rig.q[Q_ABS + 1] -= .16 * impact * rig.sc; rig.q[Q_TP + 1] += 1.1 * impact * (rig.dup ? 0 : 1) * (.3 + .7 * rig.gp.fwd); }
+  // the foot's height through a swing. K_W: a walking step, over the ground. K_L: a lope's, under the hips as they fly: it trails and lifts, passes low, reaches, and comes down with the body
+  const K_W = curve([[0, 0], [.1, .32], [.3, .95], [.45, 1], [.7, .62], [.88, .2], [1, 0]]), K_L = curve([[0, 0], [.07, .28], [.2, 1], [.35, .86], [.5, .6], [.65, .46], [.8, .3], [.92, .1], [1, 0]]);
+
+  /* Standing. Nobody stands still and nobody stands the same way twice: the weight goes from one leg to the other, the head looks about (the horizon, the
+     ground, round at the others), a wrist or the chest display gets read, a hand flexes its glove, a foot is shifted. Each has its own irregular timer drawn
+     from the figure's own generator, so no two figures agree and nothing comes round again on a beat. */
+  function idle(rig, dt, on) {
+    const r = rig.rnd, tp = rig.tempo; rig.idl += ((on ? 1 : 0) - rig.idl) * damp(dt, .5);
+    if (!(dt > 0)) return;
+    if (on) {
+      if ((rig.wsT -= dt * tp) <= 0) { rig.wsT = 3.5 + r() * 9; const a = r(); rig.ws = a < .72 ? -Math.sign(rig.ws || 1) * (.55 + .45 * r()) : a < .86 ? (r() - .5) * .3 : rig.ws * (.5 + r() * .5); }
+      if (rig.igL > 0) { if ((rig.igL -= dt) <= 0) { rig.igY = (r() - .5) * .16; rig.igP = (r() - .5) * .06; rig.igT = .8 + r() * 4 / tp; } }
+      else if ((rig.igT -= dt) <= 0) { const a = r(); rig.igL = .7 + r() * 2.4;
+        if (a < .5) { rig.igY = (r() < .5 ? -1 : 1) * (.25 + r() * .6); rig.igP = (r() - .4) * .12; }                                      // along the horizon
+        else if (a < .72) { rig.igY = (r() < .5 ? -1 : 1) * (.95 + r() * .55); rig.igP = (r() - .5) * .1; rig.igL += .5; }                    // right round, at the others
+        else if (a < .9) { rig.igY = (r() - .5) * .5; rig.igP = -.3 - r() * .2; }                                                             // the ground in front
+        else { rig.igY = (r() - .5) * .7; rig.igP = .3 + r() * .25; rig.igL += .6; } }                                                         // up
+      if (rig.chL > 0) rig.chL -= dt; else if ((rig.chT -= dt * tp) <= 0) { rig.chT = 16 + r() * 30; rig.chL = 2.2 + r() * 2; rig.chK = r() < .6 ? 0 : 1; }
+      if (rig.fiL > 0) rig.fiL -= dt; else if ((rig.fiT -= dt * tp) <= 0) { rig.fiT = 2.5 + r() * 8; rig.fiD = rig.fiL = .9 + r() * 1.6; rig.fiA = r() < .5 ? 0 : 1; rig.fiK = Math.floor(r() * 3); }
+      if ((rig.adT -= dt * tp) <= 0) { rig.adT = 7 + r() * 16; const f = rig.feet[rig.ws > 0 ? 1 : 0]; f.hox = (r() - .5) * .07; f.hoz = (r() - .35) * .12; f.hoy = (r() - .5) * .16; }   // shift the foot that is not carrying
+    } else { rig.igL = Math.min(rig.igL, .2); rig.chL = Math.min(rig.chL, .3); rig.fiL = Math.min(rig.fiL, .2); rig.igY *= 1 - damp(dt, .4); rig.igP *= 1 - damp(dt, .4); }
+    rig.wsC += (rig.ws - rig.wsC) * damp(dt, .75 / tp);
+  }
 
   function update(rig, s, dt, groundY) {
     if (!(dt > 0)) dt = 0; else if (dt > .1) dt = .1;
     rig.st = s;
-    const g = groundY || flat, hd = +s.heading || 0, sx = +s.x || 0, sz = +s.z || 0, dup = !!s.dup;
+    const g = groundY || flat, hd = +s.heading || 0, sx = +s.x || 0, sz = +s.z || 0, dup = !!s.dup, q = rig.q;
     let dx = sx - rig.x, dz = sz - rig.z, dist = Math.hypot(dx, dz);
-    if (!rig.ready || dist > .5 + 9 * dt) { place(rig, sx, sz, hd, g); dist = 0; }
+    if (!rig.ready || dist > .5 + 9 * dt) { rig.dup = dup; place(rig, sx, sz, hd, g); dx = dz = dist = 0; }
+    const dh = wrapPi(hd - rig.hd);
+    if (!(dt > 0) && !rig.snap && dist === 0 && dh === 0) { rig.st = s; return; }   // no time has passed and it has not been moved: nothing changes (a paused game may go on calling)
     rig.dup = dup; rig.x = sx; rig.z = sz; rig.hd = hd; rig.t += dt;
-    rig.open = clamp(+s.open || 0, 0, 1);
-    const stunned = s.stun > 0;
-    // the pistol: out of the holster in about a third of a second, up to the aim in a quarter; down and away the same
-    { const gw = gunWanted(s), a = aimOf(s, hd);
-      if (dt > 0) { if (gw > 0) rig.gd = Math.min(1, rig.gd + dt / .32); else if (rig.gaim < .3) rig.gd = Math.max(0, rig.gd - dt / (stunned ? .16 : .32));
-        rig.gaim = clamp(rig.gaim + (gw > 1 && rig.gd > .75 ? dt : -dt) / .24, 0, 1);
-        if (gw > 1) { const kd = rig.gaim > 0 ? damp(dt, .07) : 1; rig.aimY += (a[0] - rig.aimY) * kd; rig.aimP += (a[1] - rig.aimP) * kd; } else if (rig.gaim <= 0) { rig.aimY = 0; rig.aimP = 0; }
-        const f = rig.gd >= 1 ? clamp(+s.fire || 0, 0, 1) : 0; if (f > .02 && !rig.shot) rig.flashA += 2.399963; rig.shot = f > .02;   // every shot's flash is turned differently
-        rig.fire = f; rig.kick = Math.max(f, rig.kick - dt / .1); } }
-    rig.down = clamp(rig.down + (stunned ? dt / .5 : -dt / 1.25), 0, 1);
-    if (dt > 0) manner(rig, s, hd, dt, false);
-    const v0 = rig.v;
-    // how fast it means to go, and which way it is actually going
-    let vT = s.active && !stunned ? clamp(+s.speed || 0, 0, 7) : 0;
-    if (dt > 0) { const ve = dist / dt; if (ve > vT + .4) vT = Math.min(ve, 7); rig.still = dist < 1e-5 ? rig.still + dt : 0; if (rig.still > .25) vT = 0; rig.v += (vT - rig.v) * damp(dt, .15); }
-    if (dist > 1e-5) { const k = Math.max(damp(dt, .07), .25); let mx = lerp(rig.mvx, dx / dist, k), mz = lerp(rig.mvz, dz / dist, k); const l = Math.hypot(mx, mz); if (l > 1e-4) { rig.mvx = mx / l; rig.mvz = mz / l; } else { rig.mvx = dx / dist; rig.mvz = dz / dist; } }
-    { const fx = Math.sin(hd), fz = -Math.cos(hd), kd = damp(dt, .12); rig.fw += (rig.mvx * fx + rig.mvz * fz - rig.fw) * kd; rig.sd += (Math.abs(rig.mvx * -fz + rig.mvz * fx) - rig.sd) * kd; }
-    const v = rig.v, gp = gaitParams(v, dup, rig.fw, rig.sd, rig.sc, rig.fear, rig.hurt), fL = rig.feet[0], fR = rig.feet[1];
-    // what the body has to lean against: the change of speed and the rate of turn, both from one update to the next
-    if (dt > 0) { rig.acc += (clamp((v - v0) / dt, -6, 6) - rig.acc) * damp(dt, .22); rig.trn += (clamp(wrapPi(hd - rig.hd0) / dt, -4, 4) - rig.trn) * damp(dt, .25); }
-    const gait = rig.gait ? v > .08 : v > .15;
-    if (gait && !rig.gait) { // set off with whichever foot is further back
-      const pl = (fL.x - sx) * rig.mvx + (fL.z - sz) * rig.mvz, pr = (fR.x - sx) * rig.mvx + (fR.z - sz) * rig.mvz; rig.phase = frac(gp.d + (pl <= pr ? 0 : .5) + 1e-3); }
-    if (!gait && rig.gait && !dup) rig.stl = 1;   // it has just stopped: the weight comes forward over the feet and settles back
-    if (rig.stl > 0) rig.stl = Math.max(0, rig.stl - dt / 1.1);
+    rig.open += (clamp(+s.open || 0, 0, 1) - rig.open) * (dt > 0 ? damp(dt, .05) : 0);   // (eased a little: a caller that snaps it shut does not snap the neck)
+    const stunned = s.stun > 0 || s.dead > 0;
+    // ---- how it is really moving: velocity, acceleration and rate of turn, all from the change in x, z and heading
+    if (dt > 0) { const k = damp(dt, .07), ovx = rig.vx, ovz = rig.vz; rig.vx += (dx / dt - rig.vx) * k; rig.vz += (dz / dt - rig.vz) * k;
+      rig.still = dist < 1e-6 ? rig.still + dt : 0; if (rig.still > .3 && Math.hypot(rig.vx, rig.vz) < .05) rig.vx = rig.vz = 0;
+      const ax = (rig.vx - ovx) / dt, az = (rig.vz - ovz) / dt, fx = Math.sin(hd), fz = -Math.cos(hd), ka = damp(dt, .12);
+      rig.acf += (clamp(ax * fx + az * fz, -9, 9) - rig.acf) * ka; rig.acr += (clamp(ax * -fz + az * fx, -9, 9) - rig.acr) * ka;
+      rig.trn += (clamp(dh / dt, -5, 5) - rig.trn) * damp(dt, .12);
+      // the body is a mass carried along by the root: when the root's velocity changes the body is left behind, or carries on, and is drawn back
+      const kp = dup ? 0 : .8; q[Q_OX + 1] -= kp * (rig.vx - ovx); q[Q_OZ + 1] -= kp * (rig.vz - ovz); }
+    const v = Math.hypot(rig.vx, rig.vz); rig.v = v;
+    if (v > .05) { rig.mvx = rig.vx / v; rig.mvz = rig.vz / v; }
+    // ---- the body turns after the heading (the head goes first, in the solve); travelling, it keeps close to it
+    if (dup) { q[Q_BY] = 0; q[Q_BY + 1] = 0; } else { q[Q_BY] = clamp(q[Q_BY] - dh, -1.25, 1.25); spr(q, Q_BY, 0, sco(KS[0], lerp(6.5, 15, Math.max(sstep(.25, 1.3, v), rig.gaim)), 1, dt)); }
+    const by = hd + q[Q_BY], rx = Math.cos(by), rz = Math.sin(by), fxh = Math.sin(by), fzh = -Math.cos(by);
+    { const kd = damp(dt, .1); rig.fw += (rig.mvx * fxh + rig.mvz * fzh - rig.fw) * kd; rig.sd += (rig.mvx * rx + rig.mvz * rz - rig.sd) * kd; }
+    // ---- the pistol: out of the holster in under half a second, up to the aim in a quarter; down and away the same
+    { const gw = rig.pw > 0 ? 0 : gunWanted(s), a = aimOf(s, hd);   // (going down, down, and getting up, it is in the holster: put away first, at its own pace, and not drawn again until the figure is on its feet)
+      if (dt > 0) { const fr = clamp(+s.fire || 0, 0, 1) > .02 && gw > 0; if (fr && !rig.trig && (rig.gaim < .9 || rig.gd < 1)) rig.pend = .9; rig.trig = fr; if (rig.pend > 0) rig.pend -= dt;
+        const quick = rig.pend > 0 ? .75 : 1,   // with a shot waiting it comes up as fast as the suit allows
+          far = rig.gd < .38 ? clamp(.266 / Math.max(rig.hfar, .05), .3, dup ? .8 : 1.2) : rig.gd > .46 ? clamp(.4 / Math.max(rig.gfar, .05), .6, 1.2) : 1;   // and a hand that is far from the holster (swung forward in a stride, up in a wave) takes the longer to get to it: an arm in a suit goes a metre and a half in a second, no more
+        const busyR = rig.gArm === 1 ? Math.max(rig.gs[1], rig.gs[2], rig.gs[3], rig.gs[4]) : 0;   // (a right arm that is in the middle of a gesture comes down from it before it goes for the pistol)
+        if (gw > 0) { if (rig.gd > 0 || busyR < .12) rig.gd = Math.min(1, rig.gd + far * dt / (.5 * quick)); } else if (rig.gaim < .3) rig.gd = Math.max(0, rig.gd - far * dt / (rig.pw > 0 && rig.gd < .46 ? 1.2 : .55));   // (struck down too: it is put away at the pace an arm can go, and that hand comes late to the ground)
+        rig.gaim = clamp(rig.gaim + (gw > 1 && rig.gd > .75 ? dt / (.5 * quick) : -dt / .6), 0, 1);
+        rig.lh = clamp(rig.lh + ((gw > 1 && rig.gd > .4) || (gw === 1 && rig.two > .5 && rig.gd > .5) ? dt / (.72 * quick) : -dt / (stunned ? .58 : .66)), 0, 1);   // the left hand sets off for the pistol as soon as it is clear of the holster: it has further to go
+        if (gw > 1) { const K = sco(KS[1], rig.gaim > 0 ? 15 : 60, 1, dt); rig.aimY = spr(q, Q_AIMY, a[0], K); rig.aimP = spr(q, Q_AIMP, a[1], K); } else if (rig.gaim <= 0) { rig.aimY = rig.aimP = 0; q[Q_AIMY] = q[Q_AIMY + 1] = q[Q_AIMP] = q[Q_AIMP + 1] = 0; }
+        // the shot: at once if the pistol is on aim; if not, held until it is (the game fires on the frame it first asks for the aim)
+        const up = rig.gd >= 1 && rig.gaim > .86; let f = up && rig.pend <= 0 ? clamp(+s.fire || 0, 0, 1) : 0; if (rig.pend > 0 && up) { rig.pend = 0; rig.fl = 1; } if (rig.fl > 0) { f = Math.max(f, rig.fl); rig.fl -= dt / .09; }
+        if (f > .02 && !rig.shot) { rig.flashA += 2.399963; q[Q_RCW + 1] += 12; q[Q_RCE + 1] += 4.4; q[Q_RCT + 1] += 1.4; }   // every shot's flash is turned differently; the kick goes in at the wrist and travels up the arm
+        rig.shot = f > .02; rig.fire = f; rig.kick = Math.max(f, rig.kick - dt / .1); } }
+    /* Getting up takes a suited man seconds. One that is made to travel before he is up cannot be left sliding along the ground on his knees: he scrambles up,
+       as fast as it can be done at all (in this gravity the legs can throw him to his feet; it is the suit that takes the time) */
+    if (dt > 0) { rig.hur += (1 + 1.6 * (rig.lv ? sstep(.3, 1.5, v / rig.sc) : 0) - rig.hur) * damp(dt, .15); manner(rig, s, hd, dt, false); }
+    tracks(rig, dt);
+    /* Whose the feet are. In an act they are the pose's. But a figure that is still travelling when the act begins (struck down at a run) cannot be put on
+       the spot: it runs on, stumbling, the body already going down over its feet, until it has slowed or the fall has got too far for feet to matter; and one
+       that is made to travel before it is quite up has its feet under it and stepping as soon as it is nearly upright. */
+    { const vs = v / rig.sc; if (!(rig.pw > 0)) rig.stb = false; else if (rig.stb) { if (rig.lv ? vs < .15 : vs < .8 || rig.pk > .3) rig.stb = false; } else if (rig.lv ? vs > .3 && (rig.cur < .25 || (rig.de <= 0 && (rig.kd > 0 ? rig.rr >= 1 && rig.hy - g(sx, sz) > (dup ? .68 : .62) * rig.sc : rig.hy - g(sx, sz) > .45 * rig.sc))) /* (from a knee, from sitting once the hips are off the ground, from hands and knees once the hands have pushed it up, the first step is part of the getting up) */ : rig.pk <= .15 && vs > 1) rig.stb = true; }
+    const posed = rig.pw > 0 && !rig.stb;
+    // ---- the gait
+    const gp = gaitParams(rig, v), feet = rig.feet, fL = feet[0], fR = feet[1];
+    { const e = .45, a = v > .1 ? Math.atan2(g(sx + rig.mvx * e, sz + rig.mvz * e) - g(sx - rig.mvx * e, sz - rig.mvz * e), 2 * e) : 0; rig.slope += (a - rig.slope) * damp(dt, .25); }   // the lie of the ground along the way it is going
+    const gait = !posed && (rig.gait ? v > .08 : v > .16);
+    if (gait && !rig.gait) { // the clock is set by the feet: one already in the air keeps its landing; else the one further back goes first, after a beat in which the weight comes off it
+      let i0 = fL.sw ? (fR.sw && fR.rem < fL.rem ? 1 : 0) : fR.sw ? 1 : -1, p;
+      if (i0 >= 0) { const f = feet[i0], o = feet[1 - i0]; p = clamp(1 - f.rem / (2 * gp.T), gp.d, .98); f.kind = 0; o.late = o.sw; }   // (if both are in the air, the one that comes down second comes down in its own time, whatever the clock says of it)
+      else { const al = (fL.x - sx) * rig.mvx + (fL.z - sz) * rig.mvz, ar = (fR.x - sx) * rig.mvx + (fR.z - sz) * rig.mvz; i0 = Math.abs(rig.sd) > .6 ? (rig.sd > 0 ? 1 : 0) : Math.abs(al - ar) < .02 ? (rig.ld[0] < rig.ld[1] ? 0 : 1) : al < ar ? 0 : 1; /* (sideways, the foot on the side it is going to: it cannot step through the other) */
+        if (gp.d < .5 && Math.abs(rig.sd) <= .6) { /* (set off at a pace that is already a lope, as when it is made to run before it is quite up: the rear foot comes through at once
+             as the first step, and the front one stays down under the body for the better part of a stance and pushes it off) */ i0 = 1 - i0; p = .4 * gp.d; }
+        else p = Math.max(0, gp.d - (dup ? 0 : .14) / (2 * gp.T)); }
+      rig.phase = frac(p - i0 * .5 + 1); rig.phN = 0; for (let i = 0; i < 2; i++) feet[i].cyc = Math.floor(rig.phase + i * .5) - (i === i0 && feet[i].sw ? 0 : 1); }
     rig.gait = gait;
-    if (gait) rig.phase = frac(rig.phase + dist / gp.L);
+    // a foot's place in its cycle: the left leads, the right is half a stride after it (a duplicate's sides are unequal; a hurt leg is got off as soon as may be)
+    const phOf = i => rig.phase + i * .5 + (dup ? .03 * rig.side * Math.sin(TAU * rig.phase) : rig.hurt > .01 ? .06 * rig.hurt * Math.sin(TAU * (rig.phase - .08)) : 0);
+    if (gait && dt > 0) { /* The clock follows the feet, not the feet the clock. A foot in the air has its own time left to run (rem): it only ever runs down, a little
+         faster if the pace has quickened, never slower; the clock is paced so that it comes round exactly as the next foot lands. So a change of speed or of
+         direction in mid step bends the rhythm and never snatches a foot out of the air or holds one up in it. */
+      let dph = dt / (2 * gp.T), lead = -1;
+      for (let i = 0; i < 2; i++) { const f = feet[i]; if (!f.sw) continue; if (!f.fresh) f.rem = f.late ? Math.max(0, f.rem - dt) : Math.max(Math.min(f.rem - dt, (1 - frac(phOf(i))) * 2 * gp.T - dt), f.rem - 2.5 * dt, 0); if (!f.late && (lead < 0 || f.rem < feet[lead].rem)) lead = i; }
+      if (lead >= 0) { const left = 1 - frac(phOf(lead)), r = feet[lead].rem; dph = r > 1e-4 ? clamp(left * dt / (r + dt), .25 * dph, 4 * dph) : left + 1e-6; }
+      rig.phase += dph; if (rig.phase >= 1) { rig.phase -= 1; rig.phN++; } }
     rig.ga += ((gait ? 1 : 0) - rig.ga) * damp(dt, .16);
+    if (rig.cool > 0) rig.cool -= dt;
     // twitch clock (duplicates only)
-    if (dup && dt > 0) { if (rig.twL > 0) rig.twL -= dt; else if ((rig.twT -= dt) <= 0) { const r = rig.rnd; rig.twT = 2.2 + r() * 5.5; rig.twL = .045; rig.twK = Math.floor(r() * 4); rig.twS = r() < .5 ? -1 : 1; } }
+    if (dup && dt > 0) { if (rig.twL > 0) rig.twL -= dt; else if ((rig.twT -= dt) <= 0) { const r = rig.rnd; rig.twT = 2.2 + r() * 5.5; rig.twL = TW_L; rig.twK = Math.floor(r() * 4); rig.twS = r() < .5 ? -1 : 1; } }
     // a duplicate's head goes first: it turns toward where the body is turning, slowly, and the body follows
-    if (dup && dt > 0) { rig.om += (wrapPi(hd - rig.hd0) / dt - rig.om) * damp(dt, .3); rig.headOff += (clamp(rig.om * 2.2, -.75, .75) - rig.headOff) * damp(dt, .55); } else if (!dup) { rig.om = 0; rig.headOff = 0; }
+    if (dup && dt > 0) { rig.om += (dh / dt - rig.om) * damp(dt, .3); rig.headOff += (clamp(rig.om * 2.2, -.75, .75) - rig.headOff) * damp(dt, .55); } else if (!dup) { rig.om = 0; rig.headOff = 0; }
     rig.hd0 = hd;
-    { const c = Math.cos(TAU * (rig.phase - gp.d * gp.lf)); rig.hop = dup ? 0 : -1.6 * rig.ga * gp.bobL * (1 - Math.abs(c * c * c)); }   // how far the body is above its contact height: the feet in the air ride up with it
-    // feet
-    const rx = Math.cos(hd), rz = Math.sin(hd), fxh = Math.sin(hd), fzh = -Math.cos(hd), kneel = rig.down > .02;
-    for (let i = 0; i < 2; i++) { const f = rig.feet[i], o = rig.feet[1 - i], sg = i ? 1 : -1, toe = .1 + rig.toe * sg + (dup ? (sg * rig.side > 0 ? -.3 : .16) : 0);
-      let pT = 0;
-      if (gait && !kneel) {
-        let ph = frac(rig.phase + i * .5); if (dup) ph = frac(ph + .03 * rig.side * Math.sin(TAU * rig.phase)); else if (rig.hurt > .01) ph = frac(ph + .055 * rig.hurt * Math.sin(TAU * (rig.phase - .08)));   // a limp: off the bad (left) leg as soon as may be
-        const d = gp.d, want = ph >= d;
-        if (!f.sw && want && ph < .96) startSwing(f, (ph - d) / (1 - d), (f.x - sx) * rig.mvx + (f.z - sz) * rig.mvz);
-        if (f.sw) { const u = want ? (ph - d) / (1 - d) : 1; f.w = Math.max(f.w, clamp((u - f.u0) / (1 - f.u0), 0, 1));
-          const ahead = (1 - u) * (1 - d) * gp.L + gp.S * gp.lf * (dup && sg * rig.side > 0 ? .8 : 1), wd = gp.width;
-          f.tx = sx + rig.mvx * ahead + rx * sg * wd; f.tz = sz + rig.mvz * ahead + rz * sg * wd; f.tyaw = hd + sg * toe;
-          pT = lerp(gp.pOff, -gp.pHeel, sstep(.1, .85, f.w));
-        } else { f.q = ph / d; pT = f.q < .16 ? -gp.pHeel * (1 - f.q / .16) : f.q > .55 ? gp.pOff * Math.pow((f.q - .55) / .45, 1.6) : 0; }
+    // ---- the flight of the lope. With both feet off the ground the hips are a thrown thing: te seconds after the last foot left and tr before the next
+    // one lands they are g te tr / 2 above where they left and will land (a parabola under this gravity, whatever the step). On the one foot between
+    // flights they sink and are thrown up again: down at the speed they came in with, up at the speed the next flight needs
+    { let hop = 0; const fly = gait && fL.sw && fR.sw, tr = Math.min(fL.rem, fR.rem);
+      if (dup) rig.te = 0; else if (fly) { rig.te += dt; hop = .5 * GRAV * rig.te * tr; rig.vin = .5 * GRAV * (rig.te + tr); }
+      else { rig.te = 0; const f = fL.sw ? fR : fL; if (gait && gp.tf > 1e-3 && fL.sw !== fR.sw) { const xi = f.q, vo = GRAV * gp.tf / 2; hop = -gp.d * 2 * gp.T * xi * (1 - xi) * (Math.min(rig.vin, 2 * vo + .15) * (1 - xi) + vo * xi); } }
+      // (when a foot leaves early or late the two do not quite meet: the difference is carried over and let go)
+      const mode = !gait ? 0 : fly ? 1 : 2; if (mode !== rig.hopM) { rig.hopC += rig.hop - hop; rig.hopM = mode; } rig.hopC *= 1 - damp(dt, .09); rig.hop = hop + rig.hopC; }
+    // ---- feet
+    // the shooting stance is taken with the first aim and kept while the pistol is out: nobody shuffles in and out of it between shots
+    rig.cmb = dup ? 0 : Math.max(sstep(0, 1, rig.gaim), rig.cmb - dt / (rig.gd > .5 ? 6 : 1.2)); const aimSt = rig.cmb;
+    let need = -1, needE = 0;
+    for (let i = 0; i < 2; i++) { const f = feet[i], o = feet[1 - i], sg = i ? 1 : -1, toe = .13 + rig.toe * sg + (dup ? (sg * rig.side > 0 ? -.3 : .16) : 0);
+      let pT = 0, wx = 0, wz = 0, wyaw = 0; f.tl += dt;
+      // where this foot belongs when the figure stands: under its hip, a little staggered, shifted now and then; set for the shot when the pistol is up
+      const wd = (WIDTH + rig.wide + .06 * aimSt + .015 * rig.fear) * rig.sc, stg = ((dup ? 0 : sg * rig.side * rig.stag * (1 - aimSt)) - sg * .13 * aimSt) * rig.sc, hx = sx + rx * (sg * wd + f.hox) + fxh * (stg + f.hoz), hz = sz + rz * (sg * wd + f.hox) + fzh * (stg + f.hoz), hyaw = by + sg * toe + f.hoy * (1 - aimSt);
+      if (!posed) f.hb = rig.pw > 0 ? Math.max(0, f.hb - dt / .18) : 0;
+      if (posed) { // on the ground the feet are the pose's (handed over to it in a fifth of a second). One caught in the air is put down where it is, quickly, not snatched; they will be found under the hips when it gets up
+        if (f.hb <= 0) f.hs = true; f.hb = Math.min(1, f.hb + dt / .18);
+        if (f.sw) { slopeAt(g, f.cx, f.cz, f.cyaw, SL); let gy = Math.max(g(f.cx, f.cz), SL[2]); if (!(f.drop > 0)) { f.drop = Math.max(1e-4, f.cy - gy); f.dq = 0; }
+          f.dq = Math.min(1, f.dq + dt / .17); const e = f.dq * f.dq * (3 - 2 * f.dq), k = damp(dt, .05); f.cx += rig.vx * dt * (1 - e); f.cz += rig.vz * dt * (1 - e); gy = Math.max(g(f.cx, f.cz), SL[2]);
+          f.cy = gy + f.drop * (1 - e); f.csp += (SL[0] - f.csp) * k; f.csr += (SL[1] - f.csr) * k;
+          if (f.dq >= 1) { f.tx = f.cx; f.tz = f.cz; f.ty = gy; f.tyaw = f.cyaw; f.tsp = f.csp = SL[0]; f.tsr = f.csr = SL[1]; f.drop = 0; land(rig, f, i, .22); f.tl = 9; } }
+        else if (f.hb >= 1) { const pf = rig.pf[i]; f.x = pf[0]; f.z = pf[1]; f.yaw = pf[2]; slopeAt(g, f.x, f.z, f.yaw, SL); f.y = Math.max(g(f.x, f.z), SL[2]); f.sp = SL[0]; f.sr = SL[1]; } f.q = .5; }
+      else if (gait) {
+        const ph = phOf(i), cyc = rig.phN + Math.floor(ph), p = frac(ph), d = gp.d, st = p < d, beh = -((f.x - sx) * rig.mvx + (f.z - sz) * rig.mvz);
+        if (!f.sw && cyc > f.cyc && p < .97) { // it leaves the ground when its time comes, or sooner if the body has gone on further than the leg is long
+          let go = !st && f.tl > .08 /* (however the clock is hurried, a boot that has come down is down long enough to take the weight) */; if (!go && p > d * .45 && beh > 0) { const pc = clamp(f.pitch, 0, 1), hh = Math.hypot(f.x - sx, f.z - sz) - .1 * rig.sc * pc, hv = rig.hy - f.y - (ANKLE + .09 * pc) * rig.sc, L = LEG * rig.sc * .996; go = hh * hh + hv * hv > L * L; }
+          if (!go && f.tl > .1 && rig.pull[i] > (p > d * .45 ? .055 : .085) * rig.sc) go = true;   // or, whichever way it has been left, than the hips can follow it down (a reversal, a lurch aside)
+          if (!go && f.tl > .1) { // or than the hip brief lets a leg be crossed under the body or spread from it (going sideways, or turning as it goes)
+            const hp = rig.hpj[i], lat = sg * ((f.x - sx - hp[0] - rig.vx * .12) * rx + (f.z - sz - hp[2] - rig.vz * .12) * rz), hv = Math.max(.3 * rig.sc, hp[1] - f.y - ANKLE * rig.sc); go = !o.sw || Math.abs(rig.vx * rx + rig.vz * rz) > 1.1 * rig.sc ? lat < -.2 * hv || lat > .7 * hv : lat < -.4 * hv; }   // (with the other foot in the air it is left down as long as the hip can bear it at all)
+          if (go) { startSwing(rig, f, 0, (1 - p) * 2 * gp.T, v); f.cyc = cyc; } }
+        if (f.sw) { f.kind = 0; if (f.late) { if (!st) { f.late = false; f.cyc = cyc; } } else if (st && cyc > f.cyc) f.rem = 0;
+          const ahead = v * f.rem + gp.S * gp.lf * rig.stepK[i] * (dup && sg * rig.side > 0 ? .8 : 1), wdg = gp.width + f.jx * (1 - gp.lope);
+          wx = sx + rig.mvx * (ahead + f.jz * gp.S) + rx * sg * wdg; wz = sz + rig.mvz * (ahead + f.jz * gp.S) + rz * sg * wdg; wyaw = by + clamp(rig.trn * f.rem * .5, -.5, .5) + sg * toe; }
+        else { // down: heel first (hardly at all in a lope: flat-footed), flat, and the heel comes off as the body leaves the foot behind
+          f.q = Math.min(1, p / d); const tq = f.tl / Math.min(.11 + .05 * (1 - gp.lope), .28 * d * 2 * gp.T);
+          if (tq < 1) pT = Math.max(-gp.pHeel * (1 - tq * tq * (3 - 2 * tq)), Math.min(.6, rig.sht[i] + f.sp - .64));
+          else if (dup) pT = Math.max(gp.pOff * sstep(.05, .45, beh / rig.sc), Math.min(.6, rig.sht[i] + f.sp - .64));
+          else { /* heel-off is geometry, not a clock: the heel rises when the leg can no longer reach the hip from a flat boot, and by just what the leg
+               lacks. So the knee is driven straight through the push, and the boot leaves the ground from its toe with the leg long behind it */
+            const sc = rig.sc, hp = rig.hpj[i], sy = Math.sin(f.yaw), cw = Math.cos(f.yaw), cs = Math.cos(f.sp), ss = Math.sin(f.sp), BL = BALL * sc;
+            const ex = sx + hp[0] + rig.vx * .03 - f.x - sy * cs * BL, ez = sz + hp[2] + rig.vz * .03 - f.z + cw * cs * BL, ey = hp[1] - f.y - ss * BL, hf = ex * sy - ez * cw;
+            const D = hf * cs + ey * ss, H = ey * cs - hf * ss, W = ex * cw + ez * sy, r = Math.hypot(BALL, ANKLE) * sc, R = Math.hypot(D, H), Lx = LEG * sc * gp.ext;
+            const c = (Lx * Lx - W * W - R * R - r * r) / (2 * r * R);
+            pT = c >= 1 ? 0 : clamp(Math.acos(Math.max(c, -1)) - Math.atan2(H, D) - Math.atan2(ANKLE, BALL), 0, .95) * sstep(0, .12, beh / sc) * gp.fwd;
+            pT = Math.max(pT, Math.min(.6, rig.sht[i] + f.sp - .64)); } }   // and when the suit's ankle will fold no further (a climb): up onto the ball of the foot
       } else {
-        const st = rig.side * sg * .012, hx = sx + rx * sg * WIDTH * rig.sc + fxh * st, hz = sz + rz * sg * WIDTH * rig.sc + fzh * st, hyaw = hd + sg * toe;
-        if (f.sw) { f.w = Math.min(1, f.w + dt / (dup ? .42 : .3)); f.tx = hx; f.tz = hz; f.tyaw = hyaw; pT = .12 * Math.sin(PI * f.w); }
-        else { const e = Math.hypot(f.x - hx, f.z - hz); if (kneel ? e > .3 : (!o.sw && (e > .11 || Math.abs(wrapPi(f.yaw - hyaw)) > .5))) { startSwing(f, 0); f.tx = hx; f.tz = hz; f.tyaw = hyaw; if (kneel) f.w = 1; } }
+        if (f.sw) { f.kind = 1; f.rem = Math.max(0, f.rem - (f.fresh ? 0 : dt)); const pr = clamp(rig.trn * f.rem * .6 + q[Q_BY] * -.5, -.6, .6), c = Math.cos(pr), sn = Math.sin(pr), ox = hx - sx, oz = hz - sz;   // it is put down where the body will be facing when it lands
+          wx = sx + ox * c - oz * sn; wz = sz + ox * sn + oz * c; wyaw = hyaw + pr; }
+        else if (!o.sw && f.tl > .2) { const e = Math.hypot(f.x - hx, f.z - hz) / (.105 * rig.sc) + Math.abs(wrapPi(f.yaw - hyaw)) / .4, pref = (rig.trn * sg > .25 ? .25 : 0) + (i !== rig.lastFoot ? .12 : 0) + (rig.ld[i] < .5 ? .1 : 0); if (e > 1 && e + pref > needE) { need = i; needE = e + pref; } }
+        if (!f.sw && f.tl > .25) f.q = .5;
       }
-      if (f.sw) { f.ty = g(f.tx, f.tz); f.tsp = slopeAt(g, f.tx, f.tz, f.tyaw); if (f.w >= 1) land(f); }
-      if (f.sw) { const w = f.w, e = ease(w), arc = 1 - Math.pow(Math.abs(2 * w - 1), 2 + 2 * gp.lope); f.cx = lerp(f.fx, f.tx, e); f.cz = lerp(f.fz, f.tz, e);
-        if (gait) { // mid-swing the foot is carried with the body (so a long flight is one slow reach, not a foot left behind and then thrown ahead); it is world-fixed only where it leaves and meets the ground
-          const m = sstep(0, .22, w) * (1 - sstep(.78, 1, w)), al = (f.cx - sx) * rig.mvx + (f.cz - sz) * rig.mvz, a2 = lerp(al, lerp(f.a0, gp.S * gp.lf, w * w * (3 - 2 * w)), m);
-          f.cx += rig.mvx * (a2 - al); f.cz += rig.mvz * (a2 - al); }
-        if (gait && dup) { const c = sg * .09 * arc; f.cx += rx * c; f.cz += rz * c; }   // a leg that will not bend has to swing out round the other one
-        f.cy = Math.max(lerp(f.fy, f.ty, e) + (gait ? gp.lift + rig.hop : .05) * arc, g(f.cx, f.cz) + .02 * arc); f.cyaw = f.fyaw + wrapPi(f.tyaw - f.fyaw) * e; f.csp = lerp(f.fsp, f.tsp, e); }
-      else { f.cx = f.x; f.cy = f.y; f.cz = f.z; f.cyaw = f.yaw; f.csp = f.sp; }
-      f.pitch += (pT - f.pitch) * damp(dt, .035);
+      if (f.sw && !posed) { // through the air: let go of the ground, carried with the body (so a long flight is one slow reach, not a foot left behind and then thrown ahead), set down onto the spot
+        { const ox = o.sw ? o.tx : o.x, oz = o.sw ? o.tz : o.z, sep = ((wx - ox) * rx + (wz - oz) * rz) * sg, min = .21 * rig.sc; if (sep < min) { wx += rx * sg * (min - sep); wz += rz * sg * (min - sep); } }   // never onto, or across, the other boot
+        // where it will come down is eased toward where it is wanted, so that a change of mind (a stop, a start, a turn) bends its path and does not break it
+        { const k = f.fresh ? 1 : damp(dt, .07); f.tx += (wx - f.tx) * k; f.tz += (wz - f.tz) * k; f.tyaw += wrapPi(wyaw - f.tyaw) * k; }
+        { /* (and never further from where its hip will be than the leg can be put down with the hips riding as they are: a change of mind late in a step, or a
+             lurch of the body away from it, is not allowed to leave the foot out of reach and the hips to be dropped onto it) */
+          const hp = rig.hpj[i], hx = sx + hp[0] + rig.vx * f.rem, hz = sz + hp[2] + rig.vz * f.rem, rr = LEG * rig.sc * .992, hv = Math.max(.3 * rig.sc, rig.yc - f.ty - (ANKLE + .03) * rig.sc), m = Math.sqrt(Math.max(.01 * rig.sc * rig.sc, rr * rr - hv * hv)), d = Math.hypot(f.tx - hx, f.tz - hz);
+          if (d > m) { const k = m / d; f.tx = hx + (f.tx - hx) * k; f.tz = hz + (f.tz - hz) * k; } }
+        f.w = f.fresh ? 0 : f.rem <= 1e-4 ? 1 : Math.min(1, f.w + (1 - f.w) * dt / (f.rem + dt)); f.fresh = false;
+        slopeAt(g, f.tx, f.tz, f.tyaw, SL); f.ty = Math.max(g(f.tx, f.tz), SL[2]); f.tsp = SL[0]; f.tsr = SL[1];
+        if (f.w >= 1) { land(rig, f, i, dup ? .5 : f.k0 ? .16 : .2 + 1.5 * gp.v0 * rig.ga + .07 * v); pT = f.k0 ? 0 : -gp.pHeel; }
+        else { const u = f.w, e = u * u * (3 - 2 * u), m0 = 1 - sstep(0, f.ur, u), m1 = f.k0 ? sstep(1 - f.ul, 1, u) : 1 - sstep(0, Math.min(clamp(.25 / Math.max(v, .3), .06, .3), .5 * f.T0), f.rem) /* (by the pace it lands at, which may not be the one it left at) */, d1x = f.tx - (sx + rig.vx * f.rem), d1z = f.tz - (sz + rig.vz * f.rem);
+          const lo = f.lope, rch = f.k0 ? 0 : .13 * rig.sc * lo * gp.fwd * sstep(.45, .76, u) * (1 - sstep(.8, 1, u));   // a lope's leading leg reaches out ahead of where it will land, and is drawn back onto it
+          const rk = rch / Math.max(v, 1.2 * rig.sc) /* (along the way it is going, and fading with the pace: a stop that turns into a start the other way must not throw the foot across) */, bx = sx + lerp(f.d0x, d1x, e) + rig.vx * rk, bz = sz + lerp(f.d0z, d1z, e) + rig.vz * rk, qx = lerp(bx, f.tx, m1), qz = lerp(bz, f.tz, m1); f.cx = lerp(qx, f.fx, m0); f.cz = lerp(qz, f.fz, m0);
+          if (gait && dup) { const c = sg * .09 * bump(u); f.cx += rx * c; f.cz += rz * c; }   // a leg that will not bend has to swing out round the other one
+          { /* and no leg goes through the other: however the body has turned over them in the meantime, the boot in the air keeps to its own side of the other boot */
+            const hp = rig.hpj[i], lat = ((f.cx - sx - hp[0]) * rx + (f.cz - sz - hp[2]) * rz) * sg, hv = Math.max(.3 * rig.sc, hp[1] - f.cy - ANKLE * rig.sc);   // (nor further across under the body than the hip brief lets a thigh be drawn)
+            const p = Math.max(.16 * rig.sc - ((f.cx - o.cx) * rx + (f.cz - o.cz) * rz) * sg, -.27 * hv - lat), m = .03 * rig.sc, k = (p <= -m ? 0 : p >= m ? p : (p + m) * (p + m) / (4 * m)) * sstep(0, .2, u) * (1 - sstep(.75, 1, u)); f.cx += rx * sg * k; f.cz += rz * sg * k; }
+          const hgt = f.k0 ? f.lift * K_W(u)[0] : (1 - lo) * gp.lift * K_W(u)[0] + lo * gp.hk * K_L(u)[0] + rig.hop, cl = .012 * bump(u) + .26 * rig.sc * Math.max(0, Math.sin(f.pitch)) * sstep(0, .3, u) * (1 - sstep(.72, 1, u)), tl = .25 * rig.sc;
+          f.cyaw = f.fyaw + (f.tyaw - f.fyaw) * e /* (tyaw has been carried round from fyaw without a break, so this is the way the body turned, however far) */; f.csp = lerp(f.fsp, f.tsp, e); f.csr = lerp(f.fsr, f.tsr, e);
+          f.cy = Math.max(lerp(f.fy, f.ty, e) + hgt, g(f.cx, f.cz) + cl, g(f.cx + Math.sin(f.cyaw) * tl, f.cz - Math.cos(f.cyaw) * tl) - Math.tan(f.csp) * tl + cl);
+          // the boot hangs from the shin, as far as the suit's ankle lets it: toe down while the leg trails, coming level as it passes, toe up to meet the ground
+          // (a step taken standing is a small thing: the heel peels up, the boot is carried low and nearly level, and set down flat)
+          pT = f.k0 ? clamp((rig.sht[i] + f.csp - .3) * .6, -.1, .45) * sstep(0, .3, u) * (1 - sstep(.6, .95, u)) : lerp(clamp(rig.sht[i] + f.csp - .38, -.15, .9), -gp.pHeel, sstep(.6, .95, u)); } }
+      if (!f.sw) { f.cx = f.x; f.cy = f.y; f.cz = f.z; f.cyaw = f.yaw; f.csp = f.sp; f.csr = f.sr; }
+      f.pitch += (pT - f.pitch) * damp(dt, posed ? .1 : f.sw ? lerp(.085, .03, sstep(0, .4, f.w)) : .03);   // (an ankle that has just pushed off lets go of the push; it does not snap back)
     }
-    // the height the hips ride at follows the ground under the feet
-    { const ref = f => f.sw ? lerp(f.fy, f.ty, ease(f.w)) : f.y; rig.py += (.5 * (ref(fL) + ref(fR)) - rig.py) * damp(dt, .1); }
+    // standing: the foot that most needs it is picked up and put where it belongs (turning on the spot is done this way, a foot at a time)
+    if (need >= 0 && rig.cool <= 0 && dt > 0) { const f = feet[need], big = needE > 2.2; startSwing(rig, f, 1, dup ? .34 : (big ? .4 : .5) * (1 - .2 * rig.fear), 0); f.lift = (dup ? .03 : big ? .06 : .04) * rig.sc; f.jx = f.jz = 0; rig.cool = dup ? .1 : .16; }
+    // ---- how the weight is shared between the feet
+    { let l0, l1; const walk = 1 - gp.lope;
+      if (gait) { const e = clamp((2 * gp.d - 1) / (2 * gp.d) + .06, .1, .42), en = f => f.sw ? 0 : sstep(0, e, f.q) * (1 - sstep(1 - e, 1, f.q)); l0 = en(fL); l1 = en(fR); }
+      else { const w = dup ? 0 : rig.wsC * rig.idl; l0 = fL.sw ? 0 : fR.sw ? 1 : .5 + .42 * w; l1 = fR.sw ? 0 : fL.sw ? 1 : .5 - .42 * w; }
+      // a foot about to be picked up is unloaded first
+      if (!gait && need >= 0 && !posed) { if (need) l1 *= .3; else l0 *= .3; }
+      const k = damp(dt, gait ? .035 + .03 * walk : .11); rig.ld[0] += (l0 - rig.ld[0]) * k; rig.ld[1] += (l1 - rig.ld[1]) * k; }
+    // ---- what the ground is giving back, in body weights: nothing in flight, a hard push in a lope's short stance. The arms and whatever hangs feel it
+    { let gr = 1; if (gait && !dup && gp.tf > 0) { const psi = frac(2 * rig.phase), d2 = Math.min(1, 2 * gp.d); gr = lerp(1, psi < d2 ? Math.min(3.2, 1.5708 / d2 * Math.sin(PI * psi / d2)) : 0, sstep(0, .25, gp.tf)); }
+      rig.grf += (lerp(1, gr, rig.ga) - rig.grf) * damp(dt, .04); }
+    idle(rig, dt, !gait && !posed && !dup && !rig.calm && rig.gd < .05 && rig.fear < .3 && v < .05);
     solve(rig, g, dt);
   }
-
+  // what has been set down since this was last asked: [[x, y, z, yaw, side, impact], ...]. side -1 left, +1 right; impact 0..1. The list is handed over and emptied
+  function footfalls(rig) { const a = rig.ffl; rig.ffl = []; return a; }
   const setBone = (rig, i, R, T, sx, sy, sz) => { const M = rig.M, N = rig.N, o = i * 12, p = i * 9; sx = sx || 1; sy = sy || 1; sz = sz || 1;
     M[o] = R[0] * sx; M[o + 1] = R[1] * sx; M[o + 2] = R[2] * sx; M[o + 3] = R[3] * sy; M[o + 4] = R[4] * sy; M[o + 5] = R[5] * sy; M[o + 6] = R[6] * sz; M[o + 7] = R[7] * sz; M[o + 8] = R[8] * sz; M[o + 9] = T[0]; M[o + 10] = T[1]; M[o + 11] = T[2];
     for (let k = 0; k < 9; k++) N[p + k] = R[k]; };
+  // the frame R turned by angle a about the world axis k (a unit vector)
+  const turn = (R, k, a) => { const c = Math.cos(a), s = Math.sin(a), o = [0, 0, 0, 0, 0, 0, 0, 0, 0]; for (let j = 0; j < 9; j += 3) { const x = R[j], y = R[j + 1], z = R[j + 2], d = (k[0] * x + k[1] * y + k[2] * z) * (1 - c); o[j] = x * c + (k[1] * z - k[2] * y) * s + k[0] * d; o[j + 1] = y * c + (k[2] * x - k[0] * z) * s + k[1] * d; o[j + 2] = z * c + (k[0] * y - k[1] * x) * s + k[2] * d; } return o; };
+  // which way an elbow bends: the part of p square to the line a from shoulder to wrist, at unit length (so that an arm held nearly straight, whose elbow is hardly
+  // off that line at all, is not spun about its own length by the least change in what is asked of it)
+  const bendOf = (p, a, fb) => { const k = V3.dot(p, a) / Math.max(V3.dot(a, a), 1e-9), x = p[0] - a[0] * k, y = p[1] - a[1] * k, z = p[2] - a[2] * k, l = Math.hypot(x, y, z); return l > 1e-6 ? [x / l, y / l, z / l] : fb; };
   const boneAt = (rig, i, v) => { const M = rig.M, o = i * 12; return [M[o] * v[0] + M[o + 3] * v[1] + M[o + 6] * v[2] + M[o + 9], M[o + 1] * v[0] + M[o + 4] * v[1] + M[o + 7] * v[2] + M[o + 10], M[o + 2] * v[0] + M[o + 5] * v[1] + M[o + 8] * v[2] + M[o + 11]]; };
-  // ankle position and boot orientation for a foot's current placement
-  function footFrame(rig, f, extraPitch) {
-    const sc = rig.sc, BL = BALL * sc, HL = HEEL * sc, AK = ANKLE * sc;
-    const p = f.pitch + extraPitch, R = mm(rY(-f.cyaw), rX(f.csp - p)), fx = Math.sin(f.cyaw), fz = -Math.cos(f.cyaw), ts = Math.tan(f.csp);
-    const piv = p >= 0 ? [f.cx + fx * BL, f.cy + ts * BL, f.cz + fz * BL] : [f.cx - fx * HL, f.cy - ts * HL, f.cz - fz * HL];
-    return { R, A: V3.add(piv, mv(R, p >= 0 ? [0, AK, BL] : [0, AK, -HL])) };
+  /* The boot for a foot's current placement: the ankle, the orientation of the boot (R) and of its toe (Rt). The sole lies on the ground's own pitch and roll.
+     pitch < 0: heel strike, the boot turns about the back of the heel. pitch > 0: heel off, it turns about the ball while the toe stays flat; past what the
+     boot will bend, the whole rolls on over the tip. All three pivots are points fixed on the ground, so a planted boot rolls without sliding. */
+  function footFrame(rig, f) { const sc = rig.sc, AK = ANKLE * sc, BL = BALL * sc, TP = TIP * sc, HL = HEEL * sc;
+    const p = f.pitch, Rg = mm(rY(-f.cyaw), mm(rX(f.csp), rZ(f.csr))), fw = [-Rg[6], -Rg[7], -Rg[8]], c = [f.cx, f.cy, f.cz];
+    let R, A, Rt;
+    if (p <= 0) { R = mm(Rg, rX(-p)); A = V3.add(V3.mad(c, fw, -HL), mv(R, [0, AK, -HL])); Rt = R; }
+    else { const con = f.sw ? 1 - sstep(0, .3, f.w) : 1, pt = lerp(p, Math.max(0, p - .55), con); Rt = mm(Rg, rX(-pt)); R = mm(Rg, rX(-p)); A = V3.add(V3.add(V3.mad(c, fw, TP), mv(Rt, [0, 0, TP - BL])), mv(R, [0, AK, BL])); }
+    // in the air nothing holds the sole: the boot hangs from the ankle and turns about it
+    if (f.sw) { const free = sstep(0, .3, f.w) * (1 - sstep(.72, 1, f.w)); if (free > 0) A = V3.lerp(A, [c[0] + Rg[3] * AK, c[1] + Rg[4] * AK, c[2] + Rg[5] * AK], free); }
+    return { R, A, Rt };
   }
 
+  /* ---- the acts that take the whole body: tracks of poses. A pose is NZ numbers in the figure's own frame (metres for a figure of scale 1; forward, up from the
+     ground, right; radians): pelvis [fwd, up, right], its pitch, the torso's lean, roll and yaw, the pelvis's roll; each foot's ankle [fwd, right, up], the boot's
+     pitch (toe down positive) and yaw; which way each knee points (0 forward, +1.57 up, -1.57 down); each hand [fwd, right, up, how much it is placed], where
+     up is from the ground (or, in a track marked so, the three are in the torso's frame from the waist); the head's pitch; how slack the arms are. */
+  const NZ = 32, Z_P = 0, Z_PP = 3, Z_TL = 4, Z_TR = 5, Z_TY = 6, Z_PR = 7, Z_FL = 8, Z_FR = 13, Z_KL = 18, Z_KR = 19, Z_HL = 20, Z_HR = 24, Z_HP = 28, Z_SLK = 29, Z_HY = 30;
+  const STAND = { P: [0, .888, 0], pp: .04, tl: .1, tr: 0, ty: 0, pr: 0, L: [0, -.137, .115, 0, -.13], R: [0, .137, .115, 0, .13], kL: 0, kR: 0, hL: [0, 0, 0, 0], hR: [0, 0, 0, 0], hp: 0, slk: 0, hy: 0 };
+  const zrow = (x, o) => { const p = Object.assign({}, STAND, o); return [x, p.P[0], p.P[1], p.P[2], p.pp, p.tl, p.tr, p.ty, p.pr, p.L[0], p.L[1], p.L[2], p.L[3], p.L[4], p.R[0], p.R[1], p.R[2], p.R[3], p.R[4], p.kL, p.kR, p.hL[0], p.hL[1], p.hL[2], p.hL[3], p.hR[0], p.hR[1], p.hR[2], p.hR[3], p.hp, p.slk, p.hy, 0]; };
+  const ztrack = keys => curve(keys.map(k => zrow(k[0], k[1])));
+  // the same act the other way round: left for right
+  const zflip = o => { const p = Object.assign({}, STAND, o), m = f => [f[0], -f[1], f[2], f[3], -f[4]], h = a => [a[0], -a[1], a[2], a[3]]; return Object.assign({}, p, { P: [p.P[0], p.P[1], -p.P[2]], tr: -p.tr, ty: -p.ty, pr: -p.pr, L: m(p.R), R: m(p.L), kL: p.kR, kR: p.kL, hL: h(p.hR), hR: h(p.hL), hy: -p.hy }); };
+  // on hands and knees: the hips over the knees, the back level under its pack, the weight forward on straight arms, the toes dug in
+  const HK = { P: [.3, .508, 0], pp: 1.15, tl: 1.45, L: [-.054, -.15, .226, 1.42, -.08], R: [-.054, .15, .226, 1.42, .08], kL: -.5, kR: -.5, hL: [.85, -.27, .085, 1], hR: [.85, .27, .085, 1], hp: .35 };
+  // thrown down: a flinch, the knees go, the hands come out, the ground arrives slowly: the knees first, then the hands, and the elbows take it
+  const T_FALL = ztrack([[0, {}], [.1, { P: [-.03, .862, 0], tl: .0, pp: 0, hp: .1 }], [.3, { P: [.06, .74, 0], pp: .25, tl: .42, L: [0, -.14, .18, .35, -.13], R: [0, .14, .18, .35, .13], hL: [.5, -.3, .62, .35], hR: [.5, .3, .62, .35], hp: -.1 }],
+    [.55, { P: [.2, .58, 0], pp: .6, tl: .9, L: [-.03, -.15, .215, 1.0, -.1], R: [-.03, .15, .215, 1.0, .1], kL: -.3, kR: -.3, hL: [.76, -.29, .34, .8], hR: [.76, .29, .34, .8], hp: -.1 }],
+    [.74, { P: [.28, .5, 0], pp: .95, tl: 1.25, L: [-.05, -.15, .224, 1.3, -.08], R: [-.05, .15, .224, 1.3, .08], kL: -.5, kR: -.5, hL: [.84, -.27, .15, 1], hR: [.84, .27, .15, 1], hp: .1 }],
+    [.87, { P: [.32, .5, 0], pp: 1.22, tl: 1.6, L: HK.L, R: HK.R, kL: -.5, kR: -.5, hL: HK.hL, hR: HK.hR, hp: 0 }], [1, HK]]);
+  /* Getting up, as it was done on the Moon. Nobody in a pressurised suit squats: the knees will not fold that far. The arms do it: sink onto them, push off
+     hard, and in this gravity the push throws the body up and back off its knees; the feet are brought under it in the air and it comes down standing,
+     knees giving, and straightens */
+  const T_RISE = ztrack([[1, HK], [.9, { P: [.32, .5, 0], pp: 1.22, tl: 1.58, L: HK.L, R: HK.R, kL: -.5, kR: -.5, hL: HK.hL, hR: HK.hR, hp: .25 }],
+    [.82, { P: [.27, .53, 0], pp: 1.0, tl: 1.25, L: HK.L, R: HK.R, kL: -.5, kR: -.5, hL: HK.hL, hR: HK.hR, hp: .3 }],
+    [.7, { P: [.2, .66, 0], pp: .55, tl: .78, L: [-.05, -.15, .21, .95, -.08], R: [-.05, .15, .21, .95, .08], kL: -.3, kR: -.3, hL: [.62, -.3, .5, .3], hR: [.62, .3, .5, .3], hp: .15 }],
+    [.56, { P: [.1, .8, 0], pp: .25, tl: .45, L: [0, -.14, .24, .5, -.1], R: [-.02, .14, .24, .5, .1], hp: .05 }],
+    [.42, { P: [.03, .79, 0], pp: .14, tl: .3, L: [.02, -.14, .125, .05, -.13], R: [-.02, .14, .125, .05, .13] }],
+    [.3, { P: [.02, .75, 0], pp: .16, tl: .34 }], [.14, { P: [0, .85, 0], pp: .08, tl: .18 }], [0, {}]]);
+  // down on the right knee to work: the weight goes onto the left foot, the right goes back onto its toes, the knee is let down
+  const T_KNEEL = ztrack([[0, {}], [.22, { P: [.0, .85, -.03], tl: .14, R: [-.12, .14, .19, .45, .13] }], [.45, { P: [-.01, .76, -.03], tl: .22, L: [.08, -.15, .115, 0, -.15], R: [-.3, .13, .2, .9, .16], kR: -.2 }],
+    [.75, { P: [-.02, .56, -.01], pp: .06, tl: .26, L: [.2, -.15, .115, 0, -.17], R: [-.38, .12, .2, 1.2, .18], kL: .15, kR: -.6 }],
+    [.9, { P: [-.03, .485, 0], pp: .08, tl: .24, L: [.3, -.15, .115, 0, -.18], R: [-.39, .12, .2, 1.25, .2], kL: .2, kR: -.7, hp: -.18 }], [1, { P: [-.03, .5, 0], pp: .08, tl: .2, L: [.33, -.15, .115, 0, -.2], R: [-.39, .12, .2, 1.25, .2], kL: .2, kR: -.7, hp: -.22 }]]);
+  // let down onto the ground, slumped back: a squat, a hand back for the ground, the seat arrives, the legs go out
+  const T_SIT = ztrack([[0, {}], [.28, { P: [-.1, .68, 0], pp: .1, tl: .42, hp: -.1 }], [.52, { P: [-.2, .44, 0], pp: -.1, tl: .3, L: [.14, -.15, .115, 0, -.15], R: [.1, .16, .115, 0, .15], kL: .5, kR: .5, hL: [-.34, -.36, .3, .6], hp: -.1 }],
+    [.72, { P: [-.14, .24, 0], pp: -.36, tl: -.05, L: [.42, -.15, .12, -.4, -.18], R: [.32, .17, .115, -.05, .18], kL: 1, kR: 1.1, hL: [-.3, -.37, .08, 1], hp: -.15 }],
+    [.86, { P: [-.03, .19, 0], pp: -.5, tl: -.36, tr: .04, L: [.6, -.15, .1, -.95, -.2], R: [.5, .17, .115, 0, .2], kL: 1.2, kR: 1.3, hL: [-.2, -.37, .07, 1], hp: -.2 }],
+    [1, { P: [-.03, .19, 0], pp: -.48, tl: -.3, tr: .07, L: [.7, -.15, .1, -1.1, -.2], R: [.54, .17, .115, 0, .2], kL: 1.3, kR: 1.4, hL: [-.18, -.37, .07, 1], hp: -.3 }]]);
+  /* Dead. A pressurised suit does not crumple: it keeps its shape, the knees give, and the whole figure topples like something stuffed, slowly, and rocks once
+     where it lands. Three ways down (onto the pack, onto the chest, onto a side), either hand, at the figure's own pace and sprawl: no two fall alike. */
+  function deadTrack(seed) { const r = rng(seed * 131 + 5), kind = Math.floor(r() * 3), flip = r() < .5, j = () => .85 + r() * .3, a = (r() - .5) * .5, m = flip ? zflip : (o => o);
+    let K;
+    if (kind === 0) { const e = { P: [-.5 * j(), .335, .04], pp: -1.25, tl: -1.34, tr: .05 * j(), ty: a * .3, L: [.12 * j(), -.2, .16, -.5, -.5 * j()], R: [.3 * j(), .24, .15, -1.15, .5 * j()], kL: 1.1, kR: .9, hL: [-.6, -.62 * j(), .09, 1], hR: [-.3 * j(), .66, .09, 1], hp: .25, slk: 1, hy: a };   // onto the pack
+      K = [[0, {}], [.1, { P: [-.02, .85, 0], tl: .02, pp: .0, hp: .15, slk: .4 }], [.3, { P: [-.14, .72, .01], pp: -.2, tl: -.22, kL: .2, kR: .2, hL: [.1, -.5, 1.0, .3], hR: [.1, .5, 1.0, .3], hp: .2, slk: .8 }],
+        [.55, { P: [-.34, .5, .02], pp: -.75, tl: -.8, L: [.02, -.17, .14, -.3, -.3], R: [.06, .19, .13, -.2, .3], kL: .7, kR: .6, hL: [-.2, -.62, .7, .5], hR: [-.1, .64, .75, .5], hp: .3, slk: 1 }],
+        [.74, { P: [-.47, .345, .04], pp: -1.2, tl: -1.38, L: [.1, -.19, .22, -.5, -.4], R: [.22, .22, .2, -.75, .4], kL: 1.2, kR: 1, hL: [-.5, -.64, .3, .8], hR: [-.26, .66, .35, .8], hp: .35, slk: 1 }],
+        [.86, { P: [-.5, .36, .04], pp: -1.16, tl: -1.26, L: [.12, -.2, .24, -.5, -.5], R: [.28, .24, .2, -1.05, .5], kL: 1.2, kR: 1, hL: [-.58, -.62, .14, 1], hR: [-.3, .66, .16, 1], hp: .2, slk: 1 }], [1, e]]; }
+    else if (kind === 1) { const e = { P: [.5 * j(), .285, .03], pp: 1.3, tl: 1.43, tr: -.06, ty: a * .4, L: [-.2, -.2 * j(), .2, 1.25, -.4], R: [-.3 * j(), .22, .2, 1.3, .5 * j()], kL: -.9, kR: -1, hL: [.95, -.5 * j(), .08, 1], hR: [.7 * j(), .6, .08, 1], hp: -.15, slk: 1, hy: .5 * (flip ? -1 : 1) };   // onto the chest
+      K = [[0, {}], [.1, { P: [.0, .85, 0], tl: .18, hp: -.15, slk: .4 }], [.3, { P: [.08, .68, 0], pp: .3, tl: .5, L: [0, -.14, .185, .45, -.13], R: [0, .14, .185, .45, .13], kL: -.2, kR: -.2, hp: -.3, slk: .9 }],
+        [.52, { P: [.24, .47, .01], pp: .7, tl: .95, L: [-.06, -.16, .22, 1.2, -.2], R: [-.08, .17, .22, 1.25, .25], kL: -.6, kR: -.6, hL: [.7, -.4, .5, .4], hR: [.6, .45, .55, .4], hp: -.35, slk: 1 }],
+        [.72, { P: [.42, .3, .02], pp: 1.05, tl: 1.4, L: [-.16, -.19, .22, 1.2, -.3], R: [-.22, .2, .22, 1.25, .4], kL: -.9, kR: -1, hL: [.9, -.48, .2, .8], hR: [.68, .56, .22, .8], hp: -.3, slk: 1 }],
+        [.85, { P: [.49, .3, .03], pp: 1.22, tl: 1.34, L: e.L, R: e.R, kL: -.9, kR: -1, hL: [.94, -.5, .1, 1], hR: [.7, .6, .1, 1], hp: -.1, slk: 1 }], [1, e]]; }
+    else { /* onto its right side: over the leg that gave, the whole figure rolling as it goes (the boots roll with it), the upper leg left stiffly in the air */
+      const e = { P: [.06, .24, .62 * j()], pp: .3, tl: .35, tr: -1.36, ty: a * .3, pr: -1.3, L: [-.14 * j(), -.03, .27, .3, -.2], R: [.12 * j(), .1, .085, .75, .3], kL: 0, kR: .1, hL: [.3 * j(), 1.0, .2, .8], hR: [.6, 1.12, .07, 1], hp: 0, slk: 1, hy: a };
+      K = [[0, {}], [.1, { P: [0, .85, -.02], tr: .05, pr: .03, slk: .4 }], [.32, { P: [.02, .72, .12], pp: .1, tl: .2, tr: -.3, pr: -.25, L: [0, -.137, .15, .25, -.13], R: [0, .137, .14, .2, .13], kL: .1, kR: .1, hR: [.36, .5, .78, .4], slk: .9 }],
+        [.55, { P: [.04, .5, .36], pp: .2, tl: .28, tr: -.85, pr: -.8, L: [-.03, -.1, .17, .3, -.15], R: [.04, .13, .16, .6, .2], hL: [.3, .3, .7, .4], hR: [.52, .86, .46, .7], slk: 1 }],
+        [.75, { P: [.06, .27, .56], pp: .28, tl: .34, tr: -1.42, pr: -1.3, L: [-.1, -.04, .3, .3, -.2], R: [.1, .1, .1, .65, .3], hL: [.3, .9, .4, .7], hR: [.62, 1.06, .15, 1], slk: 1 }],
+        [.87, { P: [.06, .26, .6], pp: .3, tl: .36, tr: -1.3, pr: -1.24, L: e.L, R: e.R, hL: [.3, .98, .26, .8], hR: e.hR, slk: 1 }], [1, e]]; }
+    return curve(K.map(k => zrow(k[0], m(k[1])))); }
+  const DEADT = new Map();
+  const ZT = new Float64Array(NZ), ZW = [0, 0, 0, 0];
+  // the pose asked of the body by the acts in progress: rig.pz, and for each hand where the acts want it in the world
+  function evalTracks(rig, Tp0, torR0, by, g) { const Z = rig.pz, kd = rig.kd, sc = rig.sc;
+    let wD = sstep(0, .1, rig.de), wS = sstep(0, .1, kd) * (1 - wD), wSi = sstep(0, .08, rig.si) * (1 - wD) * (1 - wS), wK = sstep(0, .08, rig.kn) * (1 - wD) * (1 - wS) * (1 - wSi); const tot = wD + wS + wSi + wK; Z.fill(0); if (tot <= 0) return;
+    const acc = (w, a) => { if (w > 0) for (let i = 0; i < NZ; i++) Z[i] += w / tot * a[i]; };
+    if (wD > 0) { let T = DEADT.get(rig.deV); if (!T) { T = deadTrack(rig.deV); DEADT.set(rig.deV, T); } acc(wD, T(rig.de)); }
+    if (wS > 0) { const a = T_FALL(kd), b = T_RISE(kd), r = rig.rr * rig.rr * (3 - 2 * rig.rr); for (let i = 0; i < NZ; i++) ZT[i] = lerp(a[i], b[i], r); acc(wS, ZT); }
+    if (wSi > 0) acc(wSi, T_SIT(rig.si)); if (wK > 0) acc(wK, T_KNEEL(rig.kn)); }
+
+  const ARMK = [0, 0, 0, 0, 0, 0];
   // everything from the state to the bone matrices
   function solve(rig, g, dt) {
-    const sc = rig.sc, kL = rig.kL, dup = rig.dup, t = rig.t, hd = rig.hd, v = rig.v, gp = gaitParams(v, dup, rig.fw, rig.sd, sc, rig.fear, rig.hurt), ga = rig.ga, fL = rig.feet[0], fR = rig.feet[1];
-    const k = sstep(0, 1, rig.down), o1 = sstep(0, .5, rig.open), o2 = sstep(.5, 1, rig.open), live = dup ? 0 : 1;
-    const H = rY(-hd), Rv = col(H, 0), Bv = col(H, 2), Fv = [-Bv[0], 0, -Bv[2]];
-    const tw = dup && rig.twL > 0 ? rig.twS : 0, twK = rig.twK;
-    const gdr = rig.gd * (1 - k), aim = sstep(0, 1, rig.gaim) * (1 - k), aTor = clamp(rig.aimY * .55, -.8, .8) * aim;   // how much of the aim the shoulders take
-    // ---- pelvis
-    const th = TAU * (rig.phase - gp.d * gp.lf), c1 = Math.cos(th), s1 = Math.sin(th);
-    let bob = ga * (gp.bobW * Math.cos(2 * th) - gp.bobL * (1.6 - 2 * Math.abs(c1 * c1 * c1)));   // walking vaults over the planted leg; the lope dips a little in contact and floats well above it
-    let lat = -ga * gp.lat * c1, yawP = ga * gp.yaw * s1, rollP = ga * gp.roll * c1 * (dup ? 1 : -1), pitchP = live * (.04 + .012 * Math.min(v, 5) * gp.fwd) * (.4 + .6 * ga);
-    let leanT = dup ? -.035 + .03 * Math.min(v, 5.6) * ga : .09 + (.05 * Math.min(v, 5.6) + .06 * gp.lope) * ga * (gp.fw > 0 ? gp.fw : .35 * gp.fw), rollT = rollP * (dup ? .4 : -.5), yawT = -yawP * (dup ? .3 : 1.3);   // the living counter-roll their shoulders; a duplicate rocks in one piece
-    let px = 0, pz = 0;   // pelvis offset in body space (right, back)
-    if (dup) { // stands like a plank, swaying from the ankles
-      const a = (.011 * Math.sin(t * .83 + rig.p1) + .006 * Math.sin(t * .31 + rig.p2)) * (1 - .6 * ga), b = (.009 * Math.sin(t * .67 + rig.p2) + .005 * Math.sin(t * .23 + rig.p3)) * (1 - .6 * ga);
-      lat += a * HIP_Y * sc; rollP -= a; rollT -= a + .03 * rig.side; pz -= b * HIP_Y * sc; pitchP += b; leanT += b;
-    } else { // breathes, shifts its weight
-      const br = Math.sin(t * 1.5 + rig.p1); lat += .012 * Math.sin(t * .37 + rig.p2) * (1 - ga); leanT += .008 * br; bob += .003 * br * (1 - ga); rollT += .012 * Math.sin(t * .37 + rig.p2) * (1 - ga); }
-    leanT += .2 * o2 + .06 * o1 + .05 * aim;
-    // ---- manner: what the body does besides getting from one place to another
-    const fear = rig.fear, hurt = rig.hurt, gs = rig.gs, wSit = sstep(0, 1, gs[5]) * (1 - k), wKn = sstep(0, 1, gs[6]) * (1 - k), low = Math.max(wSit, wKn), qS = low > 0 ? wSit / (wSit + wKn) : 0;
-    if (!dup) {
-      yawT += .035 * Math.sin(t * .19 + rig.p3) * (1 - ga);                                                                              // standing: the shoulders drift about
-      leanT += clamp(rig.acc * .045, -.11, .15) + .13 * fear; rollT -= clamp(rig.trn * (.05 + .035 * v), -.15, .15); yawP -= clamp(rig.trn * .05, -.12, .12);   // into the acceleration and into the turn; hunched when afraid
-      if (rig.stl > 0) { const e = 1 - rig.stl, a = rig.stl * rig.stl; leanT += .1 * Math.sin(e * 5.2) * a; bob -= .035 * sc * Math.sin(e * PI) * a; lat += rig.side * .02 * sc * Math.sin(e * PI) * a; }   // the stop: forward over the feet, down, and back
-      bob -= .022 * sc * fear;
-      if (hurt > 0) { const on = Math.max(0, c1); rollT += hurt * (.1 * on * ga + .03); bob -= hurt * sc * .035 * on * ga; lat += hurt * sc * .02 * (1 - ga); leanT += .06 * hurt; }                 // down onto the bad leg, and off it quickly
-      yawT -= rig.lkT + clamp(rig.ptY * .3, -.45, .45) * sstep(0, 1, gs[3]); yawP -= .25 * rig.lkT;
-    }
+    const sc = rig.sc, kL = rig.kL, dup = rig.dup, live = dup ? 0 : 1, t = rig.t, q = rig.q, snap = rig.snap, v = rig.v, gp = rig.gp, ga = rig.ga, fL = rig.feet[0], fR = rig.feet[1];
+    const K = (i, w, z) => snap ? KZ : sco(KS[i], w, z, dt);
+    const by = rig.hd + q[Q_BY], H = rY(-by), Rv = col(H, 0), Bv = col(H, 2), Fv = [-Bv[0], 0, -Bv[2]], pw = rig.pw, up1 = 1 - pw;
+    const o1 = sstep(0, .5, rig.open), o2 = sstep(.5, 1, rig.open), twU = dup && rig.twL > 0 ? 1 - rig.twL / TW_L : 1, ta = twU < 1 ? sstep(0, .3, twU) * (1 - sstep(.48, 1, twU)) : 0, tw = ta > 0 ? rig.twS : 0, twK = rig.twK;   // (the twitch: its size 0..1 and its side)
+    const gdr = rig.gd, aim = sstep(0, 1, rig.gaim), aTor = clamp((rig.aimY - q[Q_BY]) * .55, -.8, .8) * aim;   // how much of the aim the shoulders take
+    const fear = rig.fear, hurt = rig.hurt, gs = rig.gs, gt = rig.gt, idl = rig.idl * live, lope = gp.lope * ga, walk = (1 - gp.lope) * ga, br = Math.sin(t * 1.55 + rig.p1), br2 = Math.sin(t * 1.55 + rig.p1 - .9);
+    // ---- where the feet are, about the body
+    const ff = [footFrame(rig, fL), footFrame(rig, fR)], rx = rig.x, rz = rig.z;
+    const b0 = ((fL.cx - rx) * Fv[0] + (fL.cz - rz) * Fv[2]) / sc, b1 = ((fR.cx - rx) * Fv[0] + (fR.cz - rz) * Fv[2]) / sc, l0 = (fL.cx - rx) * Rv[0] + (fL.cz - rz) * Rv[2], l1 = (fR.cx - rx) * Rv[0] + (fR.cz - rz) * Rv[2];
+    const ld0 = rig.ld[0], ld1 = rig.ld[1], lds = ld0 + ld1, dld = (ld0 - ld1) * Math.min(1, lds * 3);
+    // ---- pelvis: over the foot that has the weight; the forward hip goes with the forward leg; the free hip is hitched in the walk and let drop standing
+    const latT = lds > .06 ? live * lerp(.48, lerp(.38, .15, gp.lope), ga) * (ld0 * l0 + ld1 * l1) / Math.max(lds, .4) : q[Q_LAT], lat = spr(q, Q_LAT, latT, K(2, 7.5, .85));
+    const K3 = K(3, 7.5, .75); let ox = spr(q, Q_OX, 0, K3), oz = spr(q, Q_OZ, 0, K3); { const l = Math.hypot(ox, oz); if (l > .17) { ox *= .17 / l; oz *= .17 / l; } } 
+    const K4 = K(4, 14, 1); let yawP = spr(q, Q_PY, clamp((dup ? .1 : .27) * (b1 - b0), -.21, .21) * ga * (1 - .3 * gp.lope) * up1, K4);
+    let rollP = spr(q, Q_PR, live * (lerp(-.03, .04, ga) * dld), K4), pitchP = live * (.04 + .012 * Math.min(v, 5) * gp.fwd) * (.4 + .6 * ga);
+    // ---- the torso block (hard upper torso, pack, chest unit, helmet): it leans to balance the pack, into its speed, its acceleration, its turn and the hill; it rocks over the loaded foot; it turns against the hips
+    const spd = Math.min(v, 5.6);
+    let leanS = dup ? -.035 + .03 * spd * ga : .1 + (.042 * spd + .05 * gp.lope) * ga * (rig.fw > 0 ? rig.fw : .35 * rig.fw) + clamp(rig.acf * .03, -.1, .13) + .4 * rig.slope * ga + .12 * fear + .008 * br + .07 * aim + .05 * hurt - .1 * Math.max(0, rig.lkP) * rig.lkOn;
+    let rollS = dup ? 0 : .026 * dld * (1 + .3 * ga) - clamp(rig.trn * (.045 + .03 * v) * ga + rig.acr * .02, -.26, .26);
+    if (!dup && hurt > 0) { rollS += hurt * (.09 * ld0 * ga + .03); leanS += .0; }                                                    // down onto the bad leg, and off it quickly
+    if (!dup && gs[1] + gs[2] + gs[4] + gs[7] > 0) { /* a gesture is made with the whole figure: it stands up and leans away from a raised arm and rocks with the wave; goes out with the reach
+         of a beckon and back with the pull; sets its weight back behind the hand that says stop; bends to the wrist it is reading */
+      const ag = rig.gArm ? 1 : -1, wv = sstep(0, 1, gs[1]), bk = sstep(0, 1, gs[2]), ht = sstep(0, 1, gs[4]), ck = sstep(0, 1, gs[7]);
+      if (wv > 0) { const on = sstep(.5, .9, gt[1]); rollS += ag * (.05 + .022 * Math.sin(wavePh(rig) - .5) * on) * wv; leanS -= .035 * wv; }
+      if (bk > 0) { const u = .5 - .5 * Math.cos(Math.max(0, gt[2] - .4) * 4.4 * rig.tempo); leanS += (.06 - .1 * u) * bk; }
+      if (ht > 0) leanS += (.05 * bump(gt[4] / .16) - .07 * sstep(.15, .5, gt[4])) * ht;
+      leanS += .035 * ck; }
+    const K5 = K(5, 8.5, .55); let leanT = spr(q, Q_TP, leanS, K5), rollT = spr(q, Q_TR, rollS, K5), yawT = -yawP * (dup ? .3 : 1.25);
+    let px = 0, pzo = 0, bob = 0;   // pelvis offset in body space (right, back), and up
+    if (dup) { // stands like a plank, swaying from the ankles; rocks in one piece when it walks
+      const a = (.011 * Math.sin(t * .83 + rig.p1) + .006 * Math.sin(t * .31 + rig.p2)) * (1 - .6 * ga), b = (.009 * Math.sin(t * .67 + rig.p2) + .005 * Math.sin(t * .23 + rig.p3)) * (1 - .6 * ga), rk = .1 * (ld0 - ld1) * ga;
+      px += a * HIP_Y * sc + .03 * sc * (ld1 - ld0) * ga; rollP = rk - a; rollT = rk * .4 - a - .03 * rig.side; pzo -= b * HIP_Y * sc; pitchP += b; leanT += b;
+    } else { // alive: breathing, and never quite still (slow sway from the ankles: noise, not a cycle)
+      const n1 = noise3(t * .23, rig.p1, 1.5), n2 = noise3(t * .19, rig.p2, 7.5), st = 1 - ga; bob += .0035 * br * st * sc; px += .011 * n1 * st * sc; pzo += .012 * n2 * st * sc; leanT -= .012 * n2 * st; rollT += .008 * n1 * st; yawT += .03 * noise3(t * .13, rig.p3, 3.5) * st; }
+    leanT += .2 * o2 + .06 * o1;
+    // ---- where it looks: told to, or glancing about; the head inside the helmet goes first, the block follows on the waist bearing, slowly, and only for a far look
+    let lkY = 0, lkP = 0;
+    if (!dup) { lkY = rig.lkOn * (rig.lkY - q[Q_BY]) + (1 - rig.lkOn) * (rig.igY * idl - q[Q_BY] * .9 + clamp(rig.trn * .14, -.3, .3) + .35 * Math.atan2(rig.sd, Math.max(.2, rig.fw)) * ga * (1 - aim));
+      lkP = rig.lkP * rig.lkOn + (1 - rig.lkOn) * rig.igP * idl; if (rig.glL > 0 && fear > .15) lkY += rig.glS * (1.1 + .6 * fear) * sstep(0, .12, rig.glL); lkY = clamp(lkY, -1.9, 1.9) * up1 * (1 - .7 * aim); }
+    const lkT = dup ? 0 : spr(q, Q_LKT, Math.sign(lkY) * clamp((Math.abs(lkY) - .3) * .6, 0, .52) * (1 - gdr * .5), K(6, 4.2 * (1 + .8 * fear), .9));
+    yawT -= lkT + clamp(rig.ptY * .3, -.45, .45) * sstep(0, 1, gs[3]) * sstep(.12, .5, gt[3]); yawP -= .22 * lkT;
     yawT *= 1 - .6 * gdr; yawT -= aTor; yawP -= .18 * aTor;
-    pz += .05 * Math.sin(leanT);
-    if (tw && twK === 2) { rollT += .13 * tw; yawT += .1 * tw; }
-    // kneeling target: knees on the ground ahead of the feet, hips low between them
-    const mx = .5 * (fL.cx + fR.cx), mz = .5 * (fL.cz + fR.cz);
-    let P = [rig.x + Rv[0] * (lat + px) + Bv[0] * pz, rig.py + gp.hip + bob, rig.z + Rv[2] * (lat + px) + Bv[2] * pz];
-    if (k > 0) { const kf = sstep(0, .7, rig.down); const K = [mx + Fv[0] * .285 * sc, .5 * (fL.cy + fR.cy) + .39 * sc, mz + Fv[2] * .285 * sc];
-      P = [lerp(P[0], K[0], kf), lerp(P[1], K[1], k), lerp(P[2], K[2], kf)]; pitchP = lerp(pitchP, .3, k); leanT = lerp(leanT, .95 + (dup ? .1 : 0), k); rollT = lerp(rollT, .09 * rig.side, k); yawT *= 1 - k; rollP *= 1 - k; yawP *= 1 - k; }
-    // sat on the ground with the back against something, or down on the right knee
-    if (low > 0) { const gy = g(rig.x, rig.z), b = (1 - qS) * .03 * sc, br = Math.sin(t * 1.1 + rig.p1);
-      P = V3.lerp(P, [rig.x - Fv[0] * b, gy + lerp(.5, .15, qS) * sc, rig.z - Fv[2] * b], low); pitchP = lerp(pitchP, lerp(.08, -.42, qS), low); leanT = lerp(leanT, lerp(.2, -.3 + .02 * br, qS), low);
-      rollT = lerp(rollT, .07 * rig.side * qS, low); yawT = lerp(yawT, -rig.lkT * .5, low * .7); rollP *= 1 - low; yawP *= 1 - low; }
-    const pelR = mm(H, mm(rY(yawP), mm(rZ(rollP), rX(-pitchP))));
-    // ---- legs. The hips come down as far as the planted feet need, never the feet up
-    const ff = [footFrame(rig, fL, 1.25 * k), footFrame(rig, fR, 1.25 * k)], hipL = mv(pelR, [-HIP_X * sc, 0, 0]), hipR = mv(pelR, [HIP_X * sc, 0, 0]), hips = [hipL, hipR], Lt = THIGH * sc, Ls = SHIN * sc;
-    if (low > 0) for (let i = 0; i < 2; i++) { const sg = i ? 1 : -1;   // sat: the left leg out straight with the toe up, the right knee drawn up. On one knee: right knee and toe on the ground, left foot flat in front
-      const f = lerp(i ? -.37 : .33, i ? .5 : .73, qS) * sc, sd = lerp(i ? .12 : -.15, i ? .17 : -.15, qS) * sc, ax = rig.x + Fv[0] * f + Rv[0] * sd, az = rig.z + Fv[2] * f + Rv[2] * sd;
-      const Rt = mm(rY(-(hd + sg * .2 * qS)), rX(lerp(i ? -1.25 : 0, i ? 0 : 1.1, qS))); ff[i] = { R: mixR(ff[i].R, Rt, low), A: V3.lerp(ff[i].A, [ax, g(ax, az) + lerp(i ? .085 : ANKLE, i ? ANKLE : .1, qS) * sc, az], low) }; }
-    { let top = 1e9; const rr = LEG * sc * .992; for (let i = 0; i < 2; i++) { const f = rig.feet[i], A = ff[i].A;
-        if (f.sw) { const ld = rig.gait ? gp.S * gp.lf : 0, room = Math.sqrt(Math.max(.04, rr * rr - ld * ld - .01)); top = Math.min(top, f.ty + ANKLE * sc + room + .6 * (1 - sstep(.8, 1, f.w))); }
-        else { const hx = P[0] + hips[i][0] - A[0], hz = P[2] + hips[i][2] - A[2]; top = Math.min(top, A[1] + Math.sqrt(Math.max(.04, rr * rr - hx * hx - hz * hz)) - hips[i][1]); } }
-      if (P[1] > top) P[1] = top;
-      if (rig.snap || P[1] < rig.hy) rig.hy = P[1]; else rig.hy += (P[1] - rig.hy) * damp(dt, .06);   // down at once when a planted leg needs it, eased back up
-      P[1] = rig.hy; rig.snap = false; }
-    const legs = [];
-    for (let pass = 0; pass < 2; pass++) { let lift = 0; legs.length = 0;
-      for (let i = 0; i < 2; i++) { const sg = i ? 1 : -1, f = rig.feet[i], A = ff[i].A, hip = V3.add(P, hips[i]);
-        let pole = V3.norm([Fv[0] + Math.sin(f.cyaw) + Rv[0] * sg * .22, .1 - .5 * k, Fv[2] - Math.cos(f.cyaw) + Rv[2] * sg * .22]);
-        if (low > 0) pole = V3.norm(V3.lerp(pole, qS > .5 ? [Fv[0] * .2, 1, Fv[2] * .2] : i ? [Fv[0] * .7, -.7, Fv[2] * .7] : [Fv[0], .5, Fv[2]], low));
-        const kn = ik2(hip, A, Lt, Ls, pole); legs.push([hip, kn, A]);
-        if (k > 0) lift = Math.max(lift, g(kn[0], kn[2]) + .088 * sc * kL - kn[1]); }
-      if (!(k > 0 && lift > 1e-4 && pass === 0)) break; P[1] += lift; }
+    leanT -= q[Q_RCT] * aim; spr(q, Q_RCT, 0, K(7, 9, .6)); spr(q, Q_RCE, 0, K(8, 15, .5)); spr(q, Q_RCW, 0, K(9, 26, .42));
+    pzo += .05 * Math.sin(leanT) * sc + .03 * aim * sc;
+    if (tw && twK === 2) { rollT += .13 * tw * ta; yawT += .1 * tw * ta; }
+    { const d = yawT - yawP, m = .5, e = Math.abs(d) - m; if (e > 0) yawT = yawP + Math.sign(d) * (m + .1 * Math.tanh(e / .1)); }   // the waist bearing turns so far and no further, whatever is asked of it at once (a stride, a look behind, an aim)
+    // ---- the height of the hips. Walking, it is what the loaded legs give: highest over the foot, lower with the feet apart (the vault). Loping, it is the
+    // height the reaching leg allows, carried from the ground the last foot left to the ground the next will meet, with the flight (rig.hop) on top
+    const Lv0 = (HIP_Y - ANKLE - gp.crouch - .035 * rig.cmb * up1) * sc, Lr = LEG * sc * .985, kv = .55 * live;
+    let P = [rx + Rv[0] * (lat + px) + Bv[0] * pzo + ox, 0, rz + Rv[2] * (lat + px) + Bv[2] * pzo + oz];
+    let pelR = mm(H, mm(rY(yawP), mm(rZ(rollP), rX(-pitchP)))), hips = [mv(pelR, [-HIP_X * sc, 0, 0]), mv(pelR, [HIP_X * sc, 0, 0])];
+    { /* the ground the hips ride over is that of the places the feet stand on, have left and are going to, each counted by how near the hips are to it: so
+         on a slope, or from one level to another, the hips are carried across from foot to foot and never jump when a boot is picked up */
+      let s = 0, sw = 0, gsum = 0, gw = 0; const spot = (x, z, y, k) => { k /= Math.hypot(x - P[0], z - P[2]) + .05 * sc; gsum += k * y; gw += k; };
+      for (let i = 0; i < 2; i++) { const f = rig.feet[i], w = i ? ld1 : ld0;
+        if (f.sw) { const e = f.w * f.w * (3 - 2 * f.w); spot(f.fx, f.fz, f.fy, 1 - e); spot(f.tx, f.tz, f.ty, e); }
+        else { const A = ff[i].A, hx = P[0] + hips[i][0] - A[0], hz = P[2] + hips[i][2] - A[2]; spot(f.x, f.z, f.y, 1); sw += w; s += w * (Lv0 - kv * (Lr - Math.sqrt(Math.max(Lr * Lr - hx * hx - hz * hz, .2 * Lr * Lr)))); } }
+      const tg = (gw > 1e-4 ? gsum / gw : g(P[0], P[2])) + ANKLE * sc + lerp(sw > .06 ? s / sw : Lv0, gp.y0 * sc, gp.lope * ga * live); if (snap) rig.yc = tg; else rig.yc += (tg - rig.yc) * damp(dt, .05); }
+    const ab = spr(q, Q_ABS, 0, K(10, 10.5, .5));
+    P[1] = rig.yc + rig.hop + clamp(ab, -.06, .03) * live + bob;
+    // ---- the acts: thrown down, dead, sat, kneeling. Their pose takes over from the standing one
+    const Z = rig.pz; let kpL = 0, kpR = 0, slack = 0, hpZ = 0, hyZ = 0;
+    if (pw > 0) { evalTracks(rig);
+      if (live && rig.kd > .8 && rig.de <= 0) { // down and dazed, but alive: heaving for breath, the head hanging and coming up, the weight going from arm to arm
+        const a = sstep(.8, 1, rig.kd) * (1 - rig.rr), n1 = noise3(t * .31, rig.p1, 2.5), n2 = noise3(t * .23, rig.p2, 6.5);
+        Z[Z_TL] += .03 * br * a; Z[Z_PP] += .015 * br * a; Z[1] += .007 * br2 * a; Z[2] += .022 * n1 * a; Z[Z_TR] += .05 * n1 * a; Z[Z_HP] += (.32 * n2 - .12) * a; Z[Z_HY] += .4 * noise3(t * .19, rig.p3, 1.5) * a; }
+      const w = pw, gx = rx + (Fv[0] * Z[0] + Rv[0] * Z[2]) * sc, gz = rz + (Fv[2] * Z[0] + Rv[2] * Z[2]) * sc;
+      P = V3.lerp(P, [gx, g(gx, gz) + Z[1] * sc, gz], w); pitchP = lerp(pitchP, Z[Z_PP], w); leanT = lerp(leanT, Z[Z_TL] + .012 * br * (rig.de > 0 ? 0 : 1), w); rollT = lerp(rollT, Z[Z_TR], w); yawT = lerp(yawT, Z[Z_TY], w); yawP *= 1 - w; rollP = lerp(rollP, Z[Z_PR], w);
+      pelR = mm(H, mm(rY(yawP), mm(rZ(rollP), rX(-pitchP)))); hips = [mv(pelR, [-HIP_X * sc, 0, 0]), mv(pelR, [HIP_X * sc, 0, 0])];
+      for (let i = 0; i < 2; i++) { const o = i ? Z_FR : Z_FL, sg = i ? 1 : -1, f = rig.feet[i], po = rig.po[i], pf = rig.pf[i];
+        // an act begins with the feet where they are, not where a standing figure's would be: what they are out by is kept, and given up as the act moves them
+        // (taken when the foot is handed over to the pose, and while it is still the gait's)
+        if (snap) { po[0] = po[1] = po[2] = 0; f.pk0 = .1; } else if (f.hs || f.hb <= 0) { const dx = f.cx - rx, dz = f.cz - rz; po[0] = (dx * Fv[0] + dz * Fv[2]) / sc; po[1] = (dx * Rv[0] + dz * Rv[2]) / sc - sg * .137; po[2] = wrapPi(f.cyaw - by - sg * .13); f.pk0 = Math.max(.1, rig.pk); f.hs = false; }
+        const w = Math.min(pw, f.hb * f.hb * (3 - 2 * f.hb)), pk = 1 - sstep(f.pk0, f.pk0 + .4, rig.pk), zf = Z[o] + po[0] * pk, zr = Z[o + 1] + po[1] * pk, zy = Z[o + 4] + po[2] * pk;
+        const ax = rx + (Fv[0] * zf + Rv[0] * zr) * sc, az = rz + (Fv[2] * zf + Rv[2] * zr) * sc, Rt = mm(rY(-(by + zy)), mm(rZ(Z[Z_PR]), rX(-Z[o + 3] - clamp(-po[0] * pk * 1.6, 0, .5) * sstep(f.pk0, f.pk0 + .2, rig.pk))));   /* (a foot left behind is up on its toe) */   /* (lying on its side, the boots lie on theirs) */ pf[0] = ax; pf[1] = az; pf[2] = by + zy;
+        const R = mixR(ff[i].R, Rt, w), A = V3.lerp(ff[i].A, [ax, g(ax, az) + Z[o + 2] * sc, az], w), bend = clamp(Z[o + 3] * w - .2, 0, .75), Rb = bend > 0 ? mm(R, rX(bend)) : R;   // up on its toes the boot breaks at the ball
+        const AK = ANKLE * sc, hl = V3.add(A, mv(R, [0, -AK, HEEL * sc])), bl = V3.add(A, mv(R, [0, -AK, -BALL * sc])), tp = V3.add(bl, mv(Rb, [0, 0, (BALL - TIP) * sc]));
+        const low = Math.min(hl[1] - g(hl[0], hl[2]), bl[1] - g(bl[0], bl[2]), tp[1] - g(tp[0], tp[2])) - Math.abs(R[1]) * .07 * sc; if (low < 0) A[1] -= low * Math.min(1, w * 3);
+        if (w > 0) ff[i] = { R, A, Rt: w < 1 ? mixR(ff[i].Rt, Rb, w) : Rb }; if (i) kpR = Z[Z_KR] * w; else kpL = Z[Z_KL] * w; }
+      slack = Z[Z_SLK] * w; hpZ = Z[Z_HP] * w; hyZ = Z[Z_HY] * w; }
+    // ---- legs. The hips come down as far as the planted feet need, at once, and are let back up gently; a foot in the air is drawn after the hips sooner than
+    // its knee is pulled straight (so a leg reaching for the ground reaches bent, and comes down with the body)
+    const Lt = THIGH * sc, Ls = SHIN * sc;
+    { let top = 1e9, soft = 1e9; const rr = LEG * sc * .992, pwf = rig.stb ? 0 : pw; for (let i = 0; i < 2; i++) { const f = rig.feet[i], A = ff[i].A; let pull = 0;
+        if (f.sw && (pw < 1 || rig.stb)) { const ld = Math.min(.8 * rr, Math.hypot(f.tx - rx - rig.vx * f.rem, f.tz - rz - rig.vz * f.rem)), room = Math.sqrt(Math.max(.04, rr * rr - ld * ld)); soft = Math.min(soft, f.ty + ANKLE * sc + room + .3 * (1 - sstep(.6, 1, f.w)) + .6 * f.rem + 2 * pwf);   // (a walking step down is prepared for; a lope's landing is in the flight already)
+          // (and whatever the gait, the hips are already where a foot coming down out of reach will need them when it lands: they are never dropped onto it in one frame)
+          const hx = P[0] + hips[i][0] + rig.vx * f.rem - f.tx, hz = P[2] + hips[i][2] + rig.vz * f.rem - f.tz; top = Math.min(top, f.ty + ANKLE * sc + Math.sqrt(Math.max(.04, rr * rr - hx * hx - hz * hz)) - hips[i][1] + f.rem + .5 * (1 - f.w) * (1 - f.w) + 2 * pwf); }
+        else { const hx = P[0] + hips[i][0] - A[0], hz = P[2] + hips[i][2] - A[2], lim = A[1] + Math.sqrt(Math.max(.04, rr * rr - hx * hx - hz * hz)) - hips[i][1]; top = Math.min(top, lim); pull = Math.max(0, P[1] - lim); }
+        rig.pull[i] = pull; }   // (how far this foot, where it stands, drags the hips down from where they would ride: past a point it is the foot that gives, not the hips)
+      const need = Math.min(0, top - P[1], (soft - P[1]) * (1 - gp.lope * ga)); rig.hyo = snap || need < rig.hyo ? need : rig.hyo + (need - rig.hyo) * damp(dt, .09); P[1] += rig.hyo; rig.hy = P[1]; }
+    const legs = [], kps = [kpL, kpR];
+    for (let pass = 0; pass < 4; pass++) { let lift = 0; legs.length = 0;
+      for (let i = 0; i < 2; i++) { const sg = i ? 1 : -1, f = rig.feet[i], A = ff[i].A, hip = V3.add(P, hips[i]), kp = kps[i], ck = Math.cos(kp), fwx = -ff[i].R[6], fwz = -ff[i].R[8];
+        if (f.sw && (pw <= 0 || rig.stb)) { const dx = A[0] - hip[0], dz = A[2] - hip[2], dy = A[1] - hip[1], h2 = dx * dx + dz * dz; if (pass < 1) f.ll = snap ? 1 : Math.min(1, f.ll + 1.5 * dt); /* (the leg it has just pushed off with is not thrown straight in one frame) */ const Lm = LEG * sc * Math.min(f.ll, .992 - .024 * sstep(0, .12, f.w) * (1 - sstep(.88, 1, f.w)));
+          if (h2 + dy * dy > Lm * Lm) { // the leg is not long enough: a foot left behind is drawn in after the hip along the leg; one reaching for its spot stays over it, higher
+            const k = Lm / Math.sqrt(h2 + dy * dy), e = sstep(.3, .6, f.w) * sstep(.86 * Lm * Lm, .7 * Lm * Lm, h2), yr = e > 0 ? hip[1] - Math.sqrt(Lm * Lm - h2) : 0;
+            A[0] = lerp(hip[0] + dx * k, A[0], e); A[1] = lerp(hip[1] + dy * k, yr, e); A[2] = lerp(hip[2] + dz * k, A[2], e); }
+          else { const dn = .364 * sc, d2 = h2 + dy * dy; if (d2 < dn * dn) { const k = dn / Math.sqrt(d2 + 1e-9); A[0] = hip[0] + dx * k; A[1] = hip[1] + dy * k; A[2] = hip[2] + dz * k; } } }   // nor folded tighter than the suit's knee will go
+        const pole = V3.norm([(Fv[0] + fwx) * ck + Rv[0] * sg * .22, .1 + 2 * Math.sin(kp), (Fv[2] + fwz) * ck + Rv[2] * sg * .22]);
+        const kn = ik2(hip, A, Lt, Ls, pole); legs.push([hip, kn, A]); if (!f.sw) f.ll = V3.dist(hip, A) / (LEG * sc); { const h = rig.hpj[i]; h[0] = hip[0] - rx; h[1] = hip[1]; h[2] = hip[2] - rz; }
+        if (pw > 0) lift = Math.max(lift, g(kn[0], kn[2]) + .088 * sc * kL - kn[1]); }
+      if (!(pw > 0 && lift > 1e-3 && pass < 3)) break; P[1] += 1.5 * lift * Math.min(1, pw * 4); }   // (a knee comes up by about half of what its hip does)
     let thR = null;
     for (let i = 0; i < 2; i++) { const [hip, kn, A] = legs[i], yT = V3.norm(V3.sub(hip, kn)), sd = V3.norm(V3.sub(A, kn)), an = V3.mad(kn, sd, Ls);
       const back = V3.add(V3.mul(col(pelR, 2), .12), V3.sub(sd, V3.mul(yT, V3.dot(sd, yT)))), Rt = fromYZ(yT, back), Rs = fromXY(col(Rt, 0), V3.mul(sd, -1)); if (i) thR = Rt;
-      setBone(rig, i ? THR : THL, Rt, hip, sc * kL, sc, sc * kL); setBone(rig, i ? SHR : SHL, Rs, kn, sc * kL, sc, sc * kL); setBone(rig, i ? FTR : FTL, ff[i].R, an, sc * (.5 + .5 * kL), sc, sc); }
+      setBone(rig, i ? THR : THL, Rt, hip, sc * kL, sc, sc * kL); setBone(rig, i ? SHR : SHL, Rs, kn, sc * kL, sc, sc * kL);
+      const F = ff[i], sf = sc * (.5 + .5 * kL);
+      if (pw > 0) { // in an act the boot lies where the pose puts it; where that asks more of the suit's ankle than it has, the boot goes with the shin: its toe or its heel leaves the ground
+        const xS = col(Rs, 0), yF = col(F.R, 1), a = Math.atan2(-V3.dot(V3.cross(sd, yF), xS), -V3.dot(sd, yF)), e = Math.abs(a) - .78;
+        if (e > 0) { const c = -Math.sign(a) * e, low = R => Math.min(R[4] * -ANKLE + R[7] * HEEL, R[4] * -ANKLE + R[7] * -BALL) * sc, y0 = low(F.R); F.R = turn(F.R, xS, c); F.Rt = turn(F.Rt, xS, c); an[1] += Math.max(0, y0 - low(F.R)); } }
+      setBone(rig, i ? FTR : FTL, F.R, an, sf, sc, sc);
+      { const cy = rig.feet[i].cyaw; rig.sht[i] = Math.atan2((kn[0] - an[0]) * Math.sin(cy) - (kn[2] - an[2]) * Math.cos(cy), Math.max(.05, kn[1] - an[1])); }   // how far the shin leans forward over the boot
+      // the toe of the boot: hinged to the rest at the ball
+      const bl = [0, -ANKLE * sc, -BALL * sc], ball = V3.add(an, mv(F.R, bl)); setBone(rig, i ? TOER : TOEL, F.Rt, V3.sub(ball, mv(F.Rt, bl)), sf, sc, sc); }
     { const kp = sc * (.4 + .6 * rig.kG); setBone(rig, PEL, pelR, P, kp, sc, kp); }
     // ---- torso
     const torR = mm(H, mm(rY(yawT), mm(rZ(rollT), rX(-leanT)))), Tp = V3.add(P, mv(pelR, [0, WAIST * sc, 0]));
     setBone(rig, TOR, torR, Tp, sc * rig.kS, sc, sc * rig.kG);
-    // ---- arms: first as they hang, swing or crawl ...
-    const armS = dup ? 1.1 : 1, Lu = UPPER * armS * sc, Lf = FORE * armS * sc, swA = ga * (dup ? 0 : lerp(.36, .6, gp.lope)) * (.35 + .65 * gp.fwd), tback = col(torR, 2), hS = [sc, sc * (dup ? 1.16 : 1), sc];
-    const arm = (Sh, Wt, pole, xref, xw) => { const El = ik2(Sh, Wt, Lu, Lf, pole), fdw = V3.norm(V3.sub(Wt, El)), Wr = V3.mad(El, fdw, Lf), yU = V3.norm(V3.sub(Sh, El));
-      const zh = V3.add(V3.mul(tback, .08), V3.mul(V3.sub(fdw, V3.mul(yU, V3.dot(fdw, yU))), -1)), Ru = fromYZ(yU, zh); return { Sh, El, Wr, Ru, Rf: fromXY(xref ? (xw === undefined ? xref : V3.lerp(col(Ru, 0), xref, xw)) : col(Ru, 0), V3.mul(fdw, -1)) }; };
-    const A = [null, null], Rh = [null, null], pole0 = [null, null];
-    for (let i = 0; i < 2; i++) { const sg = i ? 1 : -1;
-      let a = dup ? -.03 - .05 * ga * Math.min(v, 4) * .25 : -.02 + sg * swA * Math.cos(th + .3) + .06 * gp.lope * ga, b = dup ? .075 : .24 + .05 * gp.lope * ga, e = dup ? .07 : .4 + ga * (.1 + .3 * gp.lope) + sg * swA * .55 * Math.cos(th + .3), bi = dup ? .02 : .2;
-      if (!dup) { const br = Math.sin(t * 1.5 + rig.p1); b += .012 * br - .09 * fear; e += .03 * Math.sin(t * .29 + rig.p3 + i * 2) * (1 - ga) + .55 * fear; a += .12 * fear; }
-      if (tw && twK === 1 && sg === tw) { e += 1.0; a += .35; b += .2; }
-      if (tw && twK === 3) { b += .12; }
-      const ud = [sg * Math.sin(b) * Math.cos(a), -Math.cos(b) * Math.cos(a), -Math.sin(a)], fd = [sg * Math.sin(b - bi) * Math.cos(a + e), -Math.cos(b - bi) * Math.cos(a + e), -Math.sin(a + e)];
-      const Sh = V3.add(Tp, mv(torR, [sg * SH_X * sc * rig.kS, (SH_Y + (tw && twK === 3 ? .02 : 0) + live * .005 * Math.sin(t * 1.5 + rig.p1)) * sc, 0])), E0 = V3.add(Sh, V3.mul(mv(torR, ud), Lu));
-      let Wt = V3.add(E0, V3.mul(mv(torR, fd), Lf)), pole = V3.sub(E0, Sh);
-      if (k > 0) { const hx = mx + (Fv[0] * .78 + Rv[0] * sg * .27) * sc, hz = mz + (Fv[2] * .78 + Rv[2] * sg * .27) * sc, G = [hx, g(hx, hz) + .09 * sc, hz]; Wt = V3.lerp(Wt, G, k); pole = V3.lerp(pole, V3.add(V3.mul(Bv, .25), V3.add(V3.mul(Rv, sg * .16), [0, .1, 0])), k); }
-      A[i] = arm(Sh, Wt, pole); pole0[i] = pole; Rh[i] = mm(A[i].Rf, mm(rX(dup ? .04 : .16 + .9 * k), rY(sg * (dup ? -.1 : .15)))); }
-    // ---- ... then as they are asked to speak: sat or kneeling, a hand to the hurt side, and the gestures (with the left arm when the right has the pistol)
+    // ---- arms. First at the joint: the suit's own posture (forward, out from the sides, elbows bent), the swing taken from the opposite leg, the float and
+    // the press of each step, the frightened hunch, the small business of standing about, and the gestures; each angle follows on its own spring, the elbow
+    // softer than the shoulder and the wrist softer again, so the arm moves in arcs and its end arrives last
+    const armS = dup ? 1.1 : 1, Lu = UPPER * armS * sc, Lf = FORE * armS * sc, tback = col(torR, 2), hS = [sc, sc * (dup ? 1.16 : 1), sc];
+    // a wrist is never let into the chest unit or the body behind it: it is eased round the front (the surface it is kept outside is smooth, so the path is)
+    const clear = Wt => { const d = V3.sub(Wt, Tp), z = (d[0] * torR[6] + d[1] * torR[7] + d[2] * torR[8]) / (sc * rig.kG); if (z > .1 || z < -.46) return Wt;
+      const x = Math.abs(d[0] * torR[0] + d[1] * torR[1] + d[2] * torR[2]) / (sc * rig.kS), y = (d[0] * torR[3] + d[1] * torR[4] + d[2] * torR[5]) / sc; if (x > .3 || y < -.12 || y > .56) return Wt;
+      const zb = x < .24 ? -(.19 * Math.sqrt(1 - x * x / .0576) + .05) : -.05 + (x - .24) * 4, w = sstep(.27, .11, x) * sstep(-.04, .08, y) * sstep(.5, .3, y);
+      const zf = lerp(.3, lerp(zb, Math.min(zb, -.41), w), sstep(-.12, -.02, y) * (1 - sstep(.46, .56, y))); const dp = z - zf, m = .035; if (dp <= -m) return Wt;   // (taken up over the last few centimetres before the surface, so that the hand is turned aside and not struck aside)
+      const k = -(dp >= m ? dp : (dp + m) * (dp + m) / (4 * m)) * sstep(.1, 0, z) * sc * rig.kG; return [Wt[0] + torR[6] * k, Wt[1] + torR[7] * k, Wt[2] + torR[8] * k]; };
+    // (nor is an arm ever snapped straight: as what it reaches for gets to the end of its reach the elbow opens more and more slowly, and the hand falls a little short)
+    const Lmx = Lu + Lf, Lk = .92 * Lmx, Lmn = .335 * Lmx, Lsf = 1.25 * Lmn, reach = (Sh, Wt) => { let dx = Wt[0] - Sh[0], dy = Wt[1] - Sh[1], dz = Wt[2] - Sh[2], L = Math.hypot(dx, dy, dz);
+      if (L < Lsf) { /* (the nearer its shoulder a hand is asked for, the less the asking says about which way the arm should lie, and the more a small change in it would
+           swing the whole arm round: so the nearer it is, the more the arm is simply held forward, down and a little out, where a folded arm in a suit lies) */
+        const sgn = (Sh[0] - Tp[0]) * torR[0] + (Sh[1] - Tp[1]) * torR[1] + (Sh[2] - Tp[2]) * torR[2] > 0 ? 1 : -1, b = .8 * (Lsf - L), rx = sgn * .33, ry = -.47, rz = -.82;
+        dx += (torR[0] * rx + torR[3] * ry + torR[6] * rz) * b; dy += (torR[1] * rx + torR[4] * ry + torR[7] * rz) * b; dz += (torR[2] * rx + torR[5] * ry + torR[8] * rz) * b; L = Math.hypot(dx, dy, dz);
+        const u = Math.min(1, L / Lsf), k = Lmn * (1 + .25 * u * u * u * u * u) / Math.max(L, 1e-4); if (L >= Lsf) return [Sh[0] + dx, Sh[1] + dy, Sh[2] + dz]; return L > 1e-4 ? [Sh[0] + dx * k, Sh[1] + dy * k, Sh[2] + dz * k] : [Sh[0] - tback[0] * Lmn, Sh[1] - tback[1] * Lmn, Sh[2] - tback[2] * Lmn]; }   // (nor folded tighter than the suit's elbow goes: a hand asked for at its own shoulder is held off it)
+      if (L <= Lk) return Wt; const r = Lmx * .995 - Lk, k = (Lk + r * (1 - Math.exp(-(L - Lk) / r))) / L; return [Sh[0] + dx * k, Sh[1] + dy * k, Sh[2] + dz * k]; };
+    // (nor, in an act, where the arms fall as they will, does a forearm lie through the chest unit or the trunk: if its middle is inside, the whole arm is swung
+    // on its shoulder, forward over the face of the unit or out from the body's axis, until it is not. Swung as it is, not solved again: an elbow cannot flip)
+    const trunk = (Sh, El, Wt) => { const mx = (El[0] + Wt[0]) * .5 - Tp[0], my = (El[1] + Wt[1]) * .5 - Tp[1], mz = (El[2] + Wt[2]) * .5 - Tp[2], y = (mx * torR[3] + my * torR[4] + mz * torR[5]) / sc; if (y <= -.04 || y >= .5) return null;
+      const kx = sc * rig.kS, kz = sc * rig.kG, x = (mx * torR[0] + my * torR[1] + mz * torR[2]) / kx, z = (mx * torR[6] + my * torR[7] + mz * torR[8]) / kz, xa = Math.abs(x); let ax = 0, az = 0;
+      if (xa < .16 && y > .08 && y < .3 && z > -.335 && z < -.1) az = -Math.min(z + .335, 3 * (.16 - xa), 3 * (y - .08), 3 * (.3 - y)) * sstep(-.1, -.17, z);
+      if (xa < .22 && Math.abs(z) < .17) { const e = Math.pow(Math.pow(xa / .22, 2.7) + Math.pow(Math.abs(z) / .17, 2.7), 1 / 2.7); if (e < 1) { const k = (1 / Math.max(e, .5) - 1) * sstep(-.04, .03, y) * sstep(.5, .43, y); ax = x * k; az += z * k; } }
+      if (ax === 0 && az === 0) return null; ax *= 1.15 * pw * kx; az *= 1.15 * pw * kz;
+      const d = [torR[0] * ax + torR[6] * az, torR[1] * ax + torR[7] * az, torR[2] * ax + torR[8] * az], m = [mx + Tp[0] - Sh[0], my + Tp[1] - Sh[1], mz + Tp[2] - Sh[2]], k = V3.cross(m, d), kl = V3.len(k), ml2 = V3.dot(m, m); if (kl < 1e-9 || ml2 < 1e-6) return null;
+      const an = Math.min(.9, kl / ml2), c = Math.cos(an), sn = Math.sin(an), kn = V3.mul(k, 1 / kl), rot = P => { const v = V3.sub(P, Sh), kv = V3.cross(kn, v), kd = V3.dot(kn, v) * (1 - c); return [Sh[0] + v[0] * c + kv[0] * sn + kn[0] * kd, Sh[1] + v[1] * c + kv[1] * sn + kn[1] * kd, Sh[2] + v[2] * c + kv[2] * sn + kn[2] * kd]; };
+      return [rot(El), rot(Wt)]; };
+    const arm = (Sh, Wt, pole, xref, xw) => { if (!dup) Wt = clear(Wt); const Wq = Wt; Wt = reach(Sh, Wt); let El = ik2(Sh, Wt, Lu, Lf, pole); if (pw > 0) { const t2 = trunk(Sh, El, Wt); if (t2) { El = t2[0]; Wt = t2[1]; } }
+      const fdw = V3.norm(V3.sub(Wt, El)), Wr = V3.mad(El, fdw, Lf), yU = V3.norm(V3.sub(Sh, El));
+      const zh = V3.add(V3.mul(tback, .08), V3.mul(V3.sub(fdw, V3.mul(yU, V3.dot(fdw, yU))), -1)), Ru = fromYZ(yU, zh); return { Sh, El, Wr, Wq /* (where the wrist was asked to be, before the reach was softened: a hand that is taken over is taken from there, or the softening would be applied twice) */, Ru, Rf: fromXY(xref ? (xw === undefined ? xref : V3.lerp(col(Ru, 0), xref, xw)) : col(Ru, 0), V3.mul(fdw, -1)) }; };
+    const A = [null, null], Rh = [null, null], pole0 = [null, null], ftwA = [0, 0], wA = gs[1] + gs[2] + gs[3] + gs[4] + gs[7];
+    const flt = clamp(1 - rig.grf, -1.6, 1) * lope, chk = sstep(0, .5, Math.min(rig.chL, 1.2)) * idl, fid = rig.fiL > 0 ? bump(1 - rig.fiL / rig.fiD) * idl : 0;
+    for (let i = 0; i < 2; i++) { const sg = i ? 1 : -1, T = ARMK, qa = Q_ARM + i * 12;
+      if (dup) { T[0] = -.03 - .0125 * ga * Math.min(v, 4); T[1] = .075; T[2] = .07; T[3] = .0; T[4] = 0; T[5] = .04;
+        if (tw && twK === 1 && sg === tw) { T[2] += 1.0 * ta; T[0] += .35 * ta; T[1] += .2 * ta; } if (tw && twK === 3) T[1] += .12 * ta; }
+      else { const sw = clamp((i ? b0 - b1 : b1 - b0), -1.1, 1.1) * rig.armK[i] * (.32 * walk + .5 * lope) * (.35 + .65 * gp.fwd);
+        T[0] = .17 + sw + .24 * lope + .2 * flt + .12 * fear - .05 * slack; T[1] = .3 + .012 * br2 + .12 * flt - .1 * fear + .05 * lope + .25 * slack; T[2] = .62 + .5 * Math.max(0, sw) + .2 * sw + .2 * lope + .2 * flt + .5 * fear + .03 * noise3(t * .17, rig.p3 + i * 9, 2.5) * (1 - ga) - .3 * slack; T[3] = .3 - .2 * lope + .15 * fear - .2 * slack; T[4] = 0; T[5] = .16 - .2 * flt;
+        // standing about: flex a glove, a hand to the chest unit, shake an arm out
+        if (fid > 0 && rig.fiA === i) { const k = rig.fiK, w = Math.sin(t * 5.3 + rig.p2); if (k === 0) { T[2] += .55 * fid; T[4] += (.5 + .35 * w) * fid; T[5] += .3 * w * fid; T[0] += .1 * fid; } else if (k === 1) { T[0] += .28 * fid; T[2] += .95 * fid; T[3] += .7 * fid; } else { T[1] += .22 * fid; T[2] -= .3 * fid; T[5] += .25 * w * fid; } }
+        // reading the cuff (left) or a hand at the chest unit's switches (right), unasked
+        if (chk > 0 && (rig.chK === 0 ? i === 0 : i === 1)) { if (i === 0) { T[0] = lerp(T[0], 1.0, chk); T[1] = lerp(T[1], .22, chk); T[2] = lerp(T[2], 1.7, chk); T[3] = lerp(T[3], 1.0, chk); T[4] = lerp(T[4], 1.1, chk); } else { T[0] = lerp(T[0], .62, chk); T[1] = lerp(T[1], .2, chk); T[2] = lerp(T[2], 1.45, chk); T[3] = lerp(T[3], .62, chk); T[5] = lerp(T[5], .5, chk); } }
+        if (wA > 0 && i === rig.gArm) gesture(rig, T, sg, torR, by); }
+      const st = rig.gArm === i && gs[4] > 0 ? 1.7 : 1, KA = K(11, 9.5 * st, .68), KE = K(12, 8 * st, .6), KW = K(13, 7, .55);
+      const wf = spr(q, qa, T[0], KA), ws = spr(q, qa + 2, T[1], KA), e = Math.max(.03, spr(q, qa + 4, T[2], KE)), rho = spr(q, qa + 6, T[3], KE), ftw = spr(q, qa + 8, T[4], KW), wx = spr(q, qa + 10, T[5], KW);
+      // from the angles to where the elbow and wrist are
+      const th = Math.hypot(wf, ws); let ud, fl;
+      if (th < 1e-5) { ud = [0, -1, 0]; const cr = Math.cos(rho), sr = Math.sin(rho); fl = [-sg * sr, 0, -cr]; }
+      else { const nx = sg * ws / th, nz = -wf / th, s = Math.sin(th), c = Math.cos(th), k0 = -nz, k2 = nx, rot = x => { const kx = k0 * x[0] + k2 * x[2]; return [x[0] * c - k2 * x[1] * s + k0 * kx * (1 - c), x[1] * c + (k2 * x[0] - k0 * x[2]) * s, x[2] * c + k0 * x[1] * s + k2 * kx * (1 - c)]; };
+        ud = [nx * s, -c, nz * s]; const f = rot([0, 0, -1]), o = rot([sg, 0, 0]), cr = Math.cos(rho), sr = Math.sin(rho); fl = [f[0] * cr - o[0] * sr, f[1] * cr - o[1] * sr, f[2] * cr - o[2] * sr]; }
+      const ce = Math.cos(e), se = Math.sin(e), fd = [ud[0] * ce + fl[0] * se, ud[1] * ce + fl[1] * se, ud[2] * ce + fl[2] * se];
+      const Sh = V3.add(Tp, mv(torR, [sg * SH_X * sc * rig.kS, (SH_Y + (tw && twK === 3 ? .02 * ta : 0) + live * .005 * br) * sc, 0])), E0 = V3.add(Sh, V3.mul(mv(torR, ud), Lu)), Wt = V3.add(E0, V3.mul(mv(torR, fd), Lf)), pole = bendOf(V3.sub(E0, Sh), V3.sub(Wt, Sh), tback);
+      A[i] = arm(Sh, Wt, pole); pole0[i] = pole; ftwA[i] = -sg * ftw; if (ftw) A[i].Rf = mm(A[i].Rf, rY(-sg * ftw)); Rh[i] = mm(A[i].Rf, mm(rX(wx), rY(sg * (dup ? -.1 : .15)))); }
+    // ---- ... then where a hand has to be somewhere: on the ground, at the work, on the hurt side, on the pistol
     let leftBusy = 0;
-    if (!dup && k < 1) { const T3 = v => V3.add(Tp, mv(torR, [v[0] * sc, v[1] * sc, v[2] * sc])), D3 = v => mv(torR, v);
-      const put = (i, w, Wt, pole, xr) => { w *= 1 - k; if (w <= 0) return; const q = A[i]; A[i] = arm(q.Sh, V3.lerp(q.Wr, Wt, w), V3.lerp(pole0[i], pole, w), xr, w); Rh[i] = mixR(Rh[i], mm(A[i].Rf, rX(.1)), w); pole0[i] = V3.lerp(pole0[i], pole, w); };
-      if (wSit > 0) { put(1, wSit * (1 - gdr), T3([.07, .17, -.31]), D3([1, -.6, 0]), D3([0, 0, -1])); put(0, wSit, [P[0] - (Rv[0] * .37 - Fv[0] * .1) * sc, g(P[0], P[2]) + .07 * sc, P[2] - (Rv[2] * .37 - Fv[2] * .1) * sc], D3([-1, 0, .6])); }
-      if (wKn > 0) for (let i = 0; i < 2; i++) { const sg = i ? 1 : -1; if (i && gdr > 0) continue; put(i, wKn, T3([sg * .13 + .03 * Math.sin(t * 2.3 + rig.p1 + i * 2.1), .31 + .025 * Math.sin(t * 1.9 + rig.p2 + i), -.45]), D3([sg * .7, -1, .2])); }
-      if (hurt > 0) put(0, sstep(0, 1, hurt) * (1 - low), T3([-.19, .1 + .006 * Math.sin(t * 1.5 + rig.p1), -.22]), D3([-1, -.3, .5]), D3([.6, 0, .8]));
-      const wA = gs[1] + gs[2] + gs[3] + gs[4] + gs[7];
-      if (wA > 0) { const i = rig.gArm, sg = i ? 1 : -1, sx = sg * SH_X * rig.kS; let W = [0, 0, 0], Pl = [0, 0, 0], X = [0, 0, 0]; const acc = (w, a, p, x) => { W = V3.mad(W, a, w); Pl = V3.mad(Pl, p, w); X = V3.mad(X, x, w); };
-        if (gs[1] > 0) { const a = .55 + .42 * Math.sin(t * 2.5 + rig.p1); acc(gs[1], [sx + sg * Math.sin(a) * .53, SH_Y + Math.cos(a) * .53, -.12], [sg, -.2, .5], [0, 0, sg]); }                    // the whole arm, overhead, slowly, side to side
-        if (gs[2] > 0) { const u = .5 - .5 * Math.cos(t * 4.2 + rig.p1), e = u * u * (3 - 2 * u); acc(gs[2], [sx + sg * lerp(.14, -.1, e), lerp(.26, .44, e), lerp(-.46, -.2, e)], [sg * .6, -1, .2], [0, -sg, 0]); }   // reach out, palm up, and draw it in
-        if (gs[3] > 0) { const yw = hd + rig.ptY, d = mtv(torR, [Math.sin(yw), .05, -Math.cos(yw)]); acc(gs[3], [sx + d[0] * .545, SH_Y + d[1] * .545, d[2] * .545], [0, -1, .2], [0, sg, 0]); }           // straight out at it, and held
-        if (gs[4] > 0) acc(gs[4], [sx + sg * .05, SH_Y + .03, -.44], [sg * .3, -1, .1], [0, 0, sg]);                                                                                                   // the flat of the hand, out in front
-        if (gs[7] > 0) acc(gs[7], [sg * .03, .35 + .004 * Math.sin(t * 1.5), -.37], [sg, -.35, 0], [0, sg, .3 * sg]);                                                                                // forearm across the chest, panel up
-        const iw = 1 / wA, w = sstep(0, 1, Math.min(1, wA)); put(i, w, T3(V3.mul(W, iw)), D3(V3.mul(Pl, iw)), D3(V3.norm(X)));
-        if (gs[4] > 0) Rh[i] = mixR(Rh[i], fromXY(D3([0, 0, sg]), D3(V3.norm([0, -.94, .34]))), sstep(0, 1, gs[4]) * (1 - k));   // fingers up, palm to whoever is to stop
-        if (!i) leftBusy = w; }
-      leftBusy = Math.max(leftBusy, wSit, wKn); }
+    const T3 = v => V3.add(Tp, mv(torR, [v[0] * sc, v[1] * sc, v[2] * sc])), D3 = v => mv(torR, v);
+    const put = (i, w, Wt, pole, xr) => { if (w <= 0) return; const a = A[i]; A[i] = arm(a.Sh, V3.lerp(a.Wq, Wt, w), V3.lerp(pole0[i], pole, w), xr, w); ftwA[i] *= 1 - w; if (ftwA[i]) A[i].Rf = mm(A[i].Rf, rY(ftwA[i]));   /* (what twist the forearm had is given up as the hand is taken over, not dropped) */
+      Rh[i] = mixR(Rh[i], mm(A[i].Rf, rX(.1)), w); pole0[i] = V3.lerp(pole0[i], pole, w); };
+    if (pw > 0) { const sit = sstep(0, .08, rig.si), kn = sstep(.55, 1, rig.kn), onG = Math.max(sstep(0, .1, rig.kd), sstep(0, .1, rig.de));
+      for (let i = 0; i < 2; i++) { const sg = i ? 1 : -1, o = i ? Z_HR : Z_HL, w = Z[o + 3] * pw; if (w > 0) { const hx = rx + (Fv[0] * Z[o] + Rv[0] * Z[o + 1]) * sc, hz = rz + (Fv[2] * Z[o] + Rv[2] * Z[o + 1]) * sc;
+          put(i, w, [hx, g(hx, hz) + Z[o + 2] * sc, hz], V3.add(V3.mul(Bv, .25), V3.add(V3.mul(Rv, sg * .3), [0, .25, 0]))); Rh[i] = mixR(Rh[i], mm(A[i].Rf, rX(lerp(.2, 1.0, onG))), w * sstep(.5, .1, Z[o + 2])); if (!i) leftBusy = Math.max(leftBusy, w); } }
+      if (sit > 0 && rig.de < .2) put(1, sit * sstep(.5, .9, rig.si) * (1 - gdr) * (1 - sstep(0, .2, rig.de)), T3([.07, .17, -.4]), D3([1, -.6, 0]), D3([0, 0, -1]));   // a hand on the suit
+      if (kn > 0) for (let i = 0; i < 2; i++) { const sg = i ? 1 : -1; put(i, i ? kn * (1 - sstep(0, .34, gdr)) : kn, T3([sg * .13 + .035 * noise3(t * .9, rig.p1 + i * 5, .5), .31 + .03 * noise3(t * .7, rig.p2 + i * 3, 4.5), -.45 + .02 * noise3(t * 1.1, i * 7, rig.p3)]), D3([sg * .7, -1, .2])); leftBusy = Math.max(leftBusy, kn); } }
+    if (!dup && hurt > 0) { const w = sstep(0, 1, hurt) * up1 * (1 - sstep(0, .3, gs[7])); put(0, w, T3([-.19, .1 + .006 * br, -.22]), D3([-1, -.3, .5]), D3([.6, 0, .8])); leftBusy = Math.max(leftBusy, w); }
+    if (rig.gArm === 0) leftBusy = Math.max(leftBusy, sstep(0, 1, Math.min(1, wA)));
     // ---- ... then with the pistol. It is in the holster on the right thigh until the hand has it
     let gunR = mm(thR, HOL_R), gunP = boneAt(rig, THR, HOL_P); rig.holst = true; rig.gripR = rig.gripL = false;
-    if (gdr > 0) { const UG = .42, kz = Math.max(1, rig.kG), hgp = [HGP[0] * hS[0], HGP[1] * hS[1], HGP[2] * hS[2]], tdn = V3.mul(col(torR, 1), -1), trt = col(torR, 0);
-      // where it is wanted: at low ready in front of the chest pack with the muzzle down, or up on the line of the aim
-      const two = sstep(0, 1, rig.two), rdR = mixR(mm(torR, rX(-1.2)), mm(torR, rX(-.7)), two), rdP = V3.add(Tp, mv(torR, V3.lerp([(SH_X * rig.kS + .05) * sc, (SH_Y - .5) * sc, -.13 * sc], [.03 * sc, .16 * sc, -.47 * sc * kz], two)));   // by the leg in one hand, or in front in two
-      const aR = mm(rY(-(hd + rig.aimY)), rX(rig.aimP)), off = Math.min(1, Math.abs(rig.aimY - aTor) / .9), piv = V3.add(Tp, mv(torR, [0, (SH_Y + .21) * sc, -.03 * sc]));   // up to the line of the eye
+    { const r = mm(gunR, HGt), k = [HGP[0] * hS[0], HGP[1] * hS[1], HGP[2] * hS[2]], w = A[1].Wq; rig.hfar = Math.hypot(w[0] - gunP[0] + r[0] * k[0] + r[3] * k[1] + r[6] * k[2], w[1] - gunP[1] + r[1] * k[0] + r[4] * k[1] + r[7] * k[2], w[2] - gunP[2] + r[2] * k[0] + r[5] * k[1] + r[8] * k[2]) / sc; }   // how far the free right hand is from the butt in the holster: a draw is paced by it
+    if (gdr > 0) { const UG = .46, kz = Math.max(1, rig.kG), hgp = [HGP[0] * hS[0], HGP[1] * hS[1], HGP[2] * hS[2]], tdn = V3.mul(col(torR, 1), -1), trt = col(torR, 0);
+      // where it is wanted: at low ready (by the leg in one hand, or in front of the chest pack in two, muzzle down), or up on the line of the eye
+      const two = sstep(0, 1, rig.two), rdR = mixR(mm(torR, rX(-1.2)), mm(torR, rX(-.7)), two), rdP = V3.add(Tp, mv(torR, V3.lerp([(SH_X * rig.kS + .05) * sc, (SH_Y - .5) * sc, -.13 * sc], [.03 * sc, .16 * sc, -.52 * sc * kz], two)));
+      const aY = rig.aimY - q[Q_BY], aR = mm(rY(-(by + aY)), rX(rig.aimP)), off = Math.min(1, Math.abs(aY - aTor) / .9), piv = V3.add(Tp, mv(torR, [0, (SH_Y + .21) * sc, -.03 * sc]));
       const aP = V3.add(piv, mv(aR, [.025 * sc, 0, -(.42 - .1 * off) * sc]));
-      let wR = aim > 0 ? mixR(rdR, aR, aim) : rdR, wP = V3.lerp(rdP, aP, aim);
-      if (rig.kick > 0) { wR = mm(wR, rX(.17 * rig.kick)); wP = V3.add(wP, mv(wR, [0, .004 * rig.kick, .024 * rig.kick])); }   // the hands are driven back and the muzzle climbs
-      // the right hand: down to the butt, then away with it
-      const hold = (R, Pg) => { const r = mm(R, HGt); return [r, V3.sub(Pg, mv(r, hgp))]; }, hH = hold(gunR, gunP), hW = hold(wR, wP);
-      let tR, tW; if (gdr < UG) { const r = sstep(0, UG, gdr); tR = mixR(Rh[1], hH[0], r); tW = V3.lerp(A[1].Wr, hH[1], r); }
-      else { const c = sstep(UG, 1, gdr); tR = mixR(hH[0], hW[0], c); tW = V3.add(V3.lerp(hH[1], hW[1], c), V3.mul(Rv, .05 * sc * Math.sin(PI * c))); }
+      // (it comes up its own side and in over the top of the chest unit, pressed out clear of it: up first, across last)
+      const dA = V3.sub(aP, rdP), upT = col(torR, 1), aS = V3.dot(dA, trt), aU = V3.dot(dA, upT), kS2 = -.8 * aS * aim * (1 - aim), kU2 = .7 * aU * aim * (1 - aim), kB2 = -.15 * sc * bump(aim);
+      let wR = aim > 0 ? mixR(rdR, aR, aim) : rdR, wP = V3.lerp(rdP, aP, aim); wP[0] += trt[0] * kS2 + upT[0] * kU2 + tback[0] * kB2; wP[1] += trt[1] * kS2 + upT[1] * kU2 + tback[1] * kB2; wP[2] += trt[2] * kS2 + upT[2] * kU2 + tback[2] * kB2;
+      // the shot: the muzzle flips at the wrist, the hands are driven back as the elbows give, and the shoulders take what is left (in the torso, above)
+      { const kw = q[Q_RCW], ke = q[Q_RCE]; if (kw !== 0 || ke !== 0) { wR = mm(wR, rX(.55 * kw)); wP = V3.add(wP, mv(wR, [0, .03 * ke, .12 * ke])); } }
+      // the right hand: down to the butt, a moment to take hold, then up and out with it
+      const hold = (R, Pg) => { const r = mm(R, HGt); return [r, V3.sub(Pg, mv(r, hgp))]; }, hH = hold(gunR, gunP), hW = hold(wR, wP); rig.gfar = V3.dist(hH[1], hW[1]) / sc;   // (how far the hand has to carry it from the holster to where it is wanted: that leg of the draw is paced by it too)
+      let tR, tW; if (gdr < UG) { const r = sstep(0, UG - .08, gdr); tR = mixR(Rh[1], hH[0], r); tW = V3.lerp(A[1].Wq, hH[1], r); }
+      else { const c = sstep(UG, 1, gdr), up = bump(c); tR = mixR(hH[0], hW[0], sstep(.15, 1, c));
+        // (to the two-handed ready it goes forward along its own side first and across in front of the body last, round the corner of the trunk and not through it)
+        const k1 = 2 * c * (1 - c), k2 = c * c, d = V3.sub(hW[1], hH[1]), dS = V3.dot(d, trt), dF = V3.dot(d, tback), dU = V3.dot(d, upT), cS = dS * lerp(c, k1 * .05 + k2, two), cF = dF * lerp(c, k1 * .9 + k2, two), cU = dU * c, h = hH[1];
+        tW = V3.add([h[0] + trt[0] * cS + tback[0] * cF + upT[0] * cU, h[1] + trt[1] * cS + tback[1] * cF + upT[1] * cU, h[2] + trt[2] * cS + tback[2] * cF + upT[2] * cU], V3.add(V3.mul(Rv, .05 * sc * up), [0, .06 * sc * up * (1 - c), 0])); }
       const gpole = sg => V3.add(V3.mul(tdn, .8), V3.add(V3.mul(trt, sg * .5), V3.mul(tback, .2))), wgt = sstep(0, UG, gdr);
-      A[1] = arm(A[1].Sh, tW, V3.lerp(pole0[1], gpole(1), wgt), V3.lerp(col(A[1].Ru, 0), col(tR, 0), wgt)); Rh[1] = tR;
+      A[1] = arm(A[1].Sh, tW, V3.lerp(pole0[1], gpole(1), wgt), V3.lerp(col(A[1].Ru, 0), col(tR, 0), wgt)); ftwA[1] *= 1 - wgt; if (ftwA[1]) A[1].Rf = mm(A[1].Rf, rY(ftwA[1])); Rh[1] = tR;
       if (gdr >= UG) { rig.holst = false; rig.gripR = true; gunR = mm(tR, HG); gunP = V3.add(A[1].Wr, mv(tR, hgp)); }
       // the left hand comes across to it once it is clear of the holster
-      const l = sstep(.5, 1, gdr) * Math.max(aim, two) * (1 - leftBusy); if (l > 0) { const sR = mm(gunR, LG), sW = V3.add(gunP, mv(gunR, [LGW[0] * sc, LGW[1] * sc, LGW[2] * sc])), lR = mixR(Rh[0], sR, l);
-        A[0] = arm(A[0].Sh, V3.lerp(A[0].Wr, sW, l), V3.lerp(pole0[0], gpole(-1), l), V3.lerp(col(A[0].Ru, 0), col(lR, 0), l)); Rh[0] = lR; rig.gripL = l > .55; } }
-    for (let i = 0; i < 2; i++) { const q = A[i]; setBone(rig, i ? UAR : UAL, q.Ru, q.Sh, sc * kL, armS * sc, sc * kL); setBone(rig, i ? FAR : FAL, q.Rf, q.El, sc * kL, armS * sc, sc * kL); setBone(rig, i ? HAR : HAL, Rh[i], q.Wr, hS[0], hS[1], hS[2]); }
+      const l = sstep(0, 1, rig.lh) * (1 - leftBusy); if (l > 0) { const sR = mm(gunR, LG), sW = V3.add(gunP, mv(gunR, [LGW[0] * sc, LGW[1] * sc, LGW[2] * sc])), f0 = A[0].Rf, rel = mm([f0[0], f0[3], f0[6], f0[1], f0[4], f0[7], f0[2], f0[5], f0[8]], Rh[0]);   // (rel: how the hand lies on its forearm now)
+        // it goes up its own side first and in over the top of the chest unit, not through it
+        // (it makes for where the two hands will meet, out in front of the chest, and closes on the pistol as that comes up to it: never straight across to the holster)
+        const meet = V3.lerp(V3.add(Tp, mv(torR, [-.04 * sc, .3 * sc, -.5 * sc * kz])), sW, Math.max(sstep(.35, 1, aim), two * sstep(.5, 1, gdr)));
+        const w0 = A[0].Wq, dW = V3.sub(meet, w0); rig.lfar = V3.len(dW) / sc; const e = l * l * (3 - 2 * l), k1 = 2 * e * (1 - e), k2 = e * e, cu = (k1 * .95 + k2) * V3.dot(dW, col(torR, 1)), cf = (k1 * .9 + k2) * V3.dot(dW, tback), cs = (k1 * .05 + k2) * V3.dot(dW, trt);   // one curve: up and out in front first, then across
+        const wL = [w0[0] + torR[3] * cu + tback[0] * cf + trt[0] * cs, w0[1] + torR[4] * cu + tback[1] * cf + trt[1] * cs, w0[2] + torR[5] * cu + tback[2] * cf + trt[2] * cs];
+        A[0] = arm(A[0].Sh, wL, V3.lerp(pole0[0], gpole(-1), l), V3.lerp(col(A[0].Ru, 0), col(sR, 0), l * l)); ftwA[0] *= 1 - l; if (ftwA[0]) A[0].Rf = mm(A[0].Rf, rY(ftwA[0]));
+        /* the hand is carried across on its forearm and turns to the grip as it closes on it. (Turned toward the grip from the first, a hand that sets out from far
+           round the other side, pointing at something, would be asked to turn half a circle on its wrist, and which way round is anybody's guess) */
+        Rh[0] = mixR(mm(A[0].Rf, rel), sR, sstep(.35, 1, l)); rig.gripL = l > .55; } }
+    for (let i = 0; i < 2; i++) { const a = A[i]; setBone(rig, i ? UAR : UAL, a.Ru, a.Sh, sc * kL, armS * sc, sc * kL); setBone(rig, i ? FAR : FAL, a.Rf, a.El, sc * kL, armS * sc, sc * kL); setBone(rig, i ? HAR : HAL, Rh[i], a.Wr, hS[0], hS[1], hS[2]); }
     setBone(rig, GUN, gunR, gunP);
     { const m = V3.add(gunP, mv(gunR, MUZZLE)), f = Math.max(rig.fire, 1e-3); rig.muz[0] = m[0]; rig.muz[1] = m[1]; rig.muz[2] = m[2]; rig.muz[3] = -gunR[6]; rig.muz[4] = -gunR[7]; rig.muz[5] = -gunR[8]; setBone(rig, FLASH, mm(gunR, rZ(rig.flashA)), m, f, f, f * (.6 + .4 * f)); }
-    // ---- helmet. A living crew member's helmet is bolted to the torso; a duplicate's is not
-    let yawH = -rig.lkH * (1 - k), tiltH = 0, pitchH = -.2 * o2 - .04 * o1 - .35 * rig.lkP * (1 - k) + .07 * fear + wSit * (.26 + .03 * Math.sin(t * .4 + rig.p2));
-    if (dup) { yawH += -rig.headOff * (1 - k) + .07 * rig.side - clamp(rig.aimY - aTor, -.5, .5) * .6 * aim; tiltH = rig.side * (rig.tilt + .05 * Math.sin(t * .13 + rig.p3)) * (1 - .5 * o2) * (1 - .6 * aim); pitchH += .22 * k - .03;
-      if (tw && twK === 0) { tiltH = -tiltH * 1.2; yawH += .3 * tw; } if (tw && twK === 3) pitchH -= .3; }
+    // ---- helmet. A living crew member's is locked to the torso; a duplicate's is not
+    let yawH = 0, tiltH = 0, pitchH = -.2 * o2 - .04 * o1;
+    if (dup) { yawH += -rig.headOff * up1 + .07 * rig.side - clamp(rig.aimY - aTor, -.5, .5) * .6 * aim; tiltH = rig.side * (rig.tilt + .05 * Math.sin(t * .13 + rig.p3)) * (1 - .5 * o2) * (1 - .6 * aim); pitchH += .22 * pw - .03;
+      if (tw && twK === 0) { tiltH = lerp(tiltH, -tiltH * 1.2, ta); yawH += .3 * tw * ta; } if (tw && twK === 3) pitchH -= .3 * ta * (1 - .6 * o2); }
     const helR = mm(torR, mm(rY(yawH), mm(rZ(tiltH), rX(-pitchH)))), Hp = V3.add(Tp, mv(torR, [0, NECK_Y * sc, NECK_Z * sc]));
     setBone(rig, HEL, helR, Hp, sc, sc, sc);
-    // ---- the head inside it: it looks about, and looks where the pistol points
+    // ---- the head inside it: it looks where it is told and where it is going, at the sights, at the wrist, at the work; it goes before the body into a turn, and it stays level while the block under it pitches
     let hy = 0, ht = 0, hpch = 0;
-    if (dup) { ht = rig.side * .07; hpch = .2 * k; } else { hy = ((rig.calm ? 0 : .22) * Math.sin(t * .23 + rig.p2) * Math.sin(t * .071 + rig.p3) * (1 - aim) * (1 - .5 * gdr) + yawP * .5) * (1 - k) - clamp(rig.aimY - aTor, -.6, .6) * .8 * aim; hpch = .03 * Math.sin(t * .19 + rig.p1) + .35 * k - .25 * rig.aimP * aim - .5 * rig.lkP * (1 - k) + .28 * sstep(0, 1, gs[7]) + .22 * wKn + .12 * wSit;
-      hy += (-rig.lkE - clamp(rig.trn * .16, -.3, .3) * (1 - aim) + .2 * sstep(0, 1, gs[7])) * (1 - k); tiltH += .1 * rig.side * wSit; }   // it looks where it is told, into the turn, at the wrist, at the work
+    if (dup) { ht = rig.side * .07; hpch = .2 * pw; }
+    else { const chkG = sstep(0, 1, gs[7]) * sstep(.1, .5, gt[7]), ptG = sstep(0, 1, gs[3]), aY = rig.aimY - q[Q_BY];
+      const hyT = clamp(lkY - lkT, -1.05, 1.05) * (1 - aim) + clamp(aY - aTor, -.6, .6) * .8 * aim + clamp(rig.ptY - yawTofs(rig, gs), -1, 1) * ptG * (1 - rig.lkOn) - .22 * (chkG + chk * (rig.chK ? 0 : 1)) - .9 * yawP * up1 + hyZ;
+      const hpT = clamp(lkP, -.55, .55) - clamp(.85 * (q[Q_TP] - .1), -.2, .42) * up1 + .22 * rig.aimP * aim - .3 * (chkG + chk) - .22 * sstep(.5, 1, rig.kn) + hpZ + .07 * fear + .03 * noise3(t * .21, rig.p1, 9.5) * (1 - rig.lkOn);
+      const K14 = K(14, 11 * (1 + .6 * fear), .78); hy = -clamp(spr(q, Q_HY, hyT, K14), -1.06, 1.06); hpch = -clamp(spr(q, Q_HP, hpT, K14), -.62, .62); ht = spr(q, Q_HR, -.5 * rollT * up1 + .1 * rig.side * sstep(.5, 1, rig.si) + .06 * hy * 0, K(15, 6, .8)); }
     // as the mouth gapes the head tips back, comes up and forward to the glass and swells a little
-    const jaw = .55 * o1 + .45 * o2, fs = HEAD_S, hs = sc * fs, hdR = mm(helR, mm(rY(hy), mm(rZ(ht), rX(-hpch + .15 * o2 + .05 * o1))));
+    const jaw = .55 * o1 + .45 * o2, hs = sc * HEAD_S, hdR = mm(helR, mm(rY(hy), mm(rZ(ht), rX(-hpch + .15 * o2 + .05 * o1))));
     const hdP = V3.add(Hp, mv(helR, [(HC[0] + HEAD_AT[0]) * sc, (HC[1] + HEAD_AT[1] - .011 * o2 + .004 * o1) * sc, (HC[2] + HEAD_AT[2] - .014 * o2) * sc]));
     setBone(rig, HEAD, hdR, hdP, hs, hs, hs); rig.jaw = jaw;
     { const C = CREW[rig.crew].H, si = .46 * sstep(.3, .85, rig.open), on = si > .02; rig.innerOn = on;   // the one it copied, small, far back in the throat, coming forward
       const ip = V3.add(hdP, mv(hdR, [0, (C.yMouth - .046 * jaw) * hs, (-.05 - .022 * o2) * hs])); setBone(rig, INNER, mm(hdR, rX(-.12)), ip, Math.max(si, 1e-3) * hs, Math.max(si, 1e-3) * hs, Math.max(si, 1e-3) * hs); }
+    // ---- what hangs: the whip antenna on the pack and the tether hook at the waist feel every change of the block's motion and swing on after it
+    { const tx = Tp[0], ty = Tp[1], tz = Tp[2], o = rig.lastT || (rig.lastT = [tx, ty, tz, 0, 0, 0]);
+      if (snap || !(dt > 0)) { if (snap) { o[0] = tx; o[1] = ty; o[2] = tz; o[3] = o[4] = o[5] = 0; q[Q_ANP] = q[Q_ANR] = q[Q_TEP] = q[Q_TER] = 0; q[Q_ANP + 1] = q[Q_ANR + 1] = q[Q_TEP + 1] = q[Q_TER + 1] = 0; } }
+      else { const vx = (tx - o[0]) / dt, vy = (ty - o[1]) / dt, vz = (tz - o[2]) / dt, am = 8 * dt /* (no body is thrown about harder than this: a game's steering can ask for more) */, dvx = clamp(vx - o[3], -am, am), dvz = clamp(vz - o[5], -am, am), dvy = clamp(vy - o[4], -am, am), df = -(dvx * tback[0] + dvz * tback[2]), dr = dvx * torR[0] + dvz * torR[2];
+        o[0] = tx; o[1] = ty; o[2] = tz; o[3] = vx; o[4] = vy; o[5] = vz;
+        q[Q_ANP + 1] -= 6 * df; q[Q_ANR + 1] -= 6 * dr; q[Q_TEP + 1] -= 5 * df + 2 * dvy; q[Q_TER + 1] -= 5 * dr;
+        spr(q, Q_ANP, 0, sco(KS[1], 21, .1, dt)); spr(q, Q_ANR, 0, KS[1]); spr(q, Q_TEP, 0, sco(KS[1], 3.4, .16, dt)); spr(q, Q_TER, 0, KS[1]); }
+      const ap = clamp(q[Q_ANP], -.5, .5), ar = clamp(q[Q_ANR], -.5, .5), tp = clamp(q[Q_TEP], -.9, .9), tr = clamp(q[Q_TER], -.7, .7), tl = leanT * 1;
+      setBone(rig, ANT, mm(torR, mm(rX(ap), rZ(-ar))), V3.add(Tp, mv(torR, [ANT_AT[0] * sc * rig.kS, ANT_AT[1] * sc, ANT_AT[2] * sc * rig.kG])), sc, sc, sc);
+      setBone(rig, TETH, mm(torR, mm(rX(clamp(tl * .85 + tp, -.12, 1.1)), rZ(-tr - rollT))), V3.add(Tp, mv(torR, [TETH_AT[0] * sc * rig.kS, TETH_AT[1] * sc, TETH_AT[2] * sc * rig.kG])), sc, sc, sc); }
+    rig.snap = false;
   }
+  // how far the shoulders have already turned toward what is pointed at
+  /* Where an arm can point: from a little across its own chest round to behind its own shoulder, and no further. Asked for anything beyond (the left arm, the
+     right having the pistol, at something off to the right and behind), it points as far round as it goes; and as the thing passes behind the back it is
+     brought across the front to the other end of its reach, not through the body. d: the direction in the torso's frame; -> its x and z as the arm takes them */
+  const ptArm = (d, sg) => { const h = Math.hypot(d[0], d[2]); if (h < 1e-6) return [0, -1e-6]; let a = sg * Math.atan2(d[0], -d[2]); const lo = -.5, hi = 2, D = TAU - (hi - lo);
+    if (a > hi || a < lo) { const u = (a > hi ? a - hi : a + TAU - hi) / D; a = lerp(hi, lo, sstep(.3, .7, u)); } return [sg * Math.sin(a) * h, -Math.cos(a) * h]; };
+  const yawTofs = (rig, gs) => clamp(rig.ptY * .3, -.45, .45) * sstep(0, 1, gs[3]);
+  /* The gestures, as targets for the arm's joints (T: swing forward, swing out, elbow, turn in, forearm twist, wrist). Each is a small performance: gt is how
+     long it has been asked for, so there is a moment's preparation the other way before the stroke, then the stroke, then the hold or the beat; letting go is
+     the springs carrying the arm back down. gs is how far in it is. */
+  const wavePh = rig => Math.max(0, rig.gt[1] - .55) * 2.7 * rig.tempo + .35 * Math.sin(rig.gt[1] * .83 + rig.p2);
+  function gesture(rig, T, sg, torR, by) { const gs = rig.gs, gt = rig.gt, t = rig.t, mix = (w, a) => { for (let k = 0; k < 6; k++) T[k] = lerp(T[k], a[k], w); };
+    const G = GST;
+    if (gs[1] > 0) { const w = sstep(0, 1, gs[1]), tt = gt[1], ant = bump(tt / .22), ph = wavePh(rig), s = Math.sin(ph), on = sstep(.5, .9, tt);
+      // a suit's shoulder will not put a hand over the helmet: the upper arm goes out level with the shoulder, the forearm stands up from it and it is the forearm that waves, the glove trailing after
+      G[0] = .45 - .15 * ant + .06 * Math.cos(ph) * on; G[1] = 1.32 - .2 * ant + .1 * s * on; G[2] = 1.45 + .25 * ant - .42 * s * on; G[3] = -1.5 + .12 * Math.sin(ph - .6) * on; G[4] = -.3; G[5] = .35 * Math.sin(ph - 1.3) * on; mix(w, G); }
+    if (gs[2] > 0) { const w = sstep(0, 1, gs[2]), tt = gt[2], u = .5 - .5 * Math.cos(Math.max(0, tt - .4) * 4.4 * rig.tempo), e = u * u * (3 - 2 * u), ant = bump(tt / .25);   // reach out palm up and draw it in: this way
+      G[0] = lerp(1.22, .92, e) - .12 * ant; G[1] = lerp(.28, .1, e); G[2] = lerp(.4, 1.55, e) + .2 * ant; G[3] = .25; G[4] = -1.35; G[5] = lerp(-.25, .6, sstep(.2, 1, e)); mix(w, G); }
+    if (gs[3] > 0) { const tt = gt[3], w = sstep(0, 1, gs[3]) * sstep(.18, .62, tt), yw = by + (rig.ptY - rig.q[Q_BY]), d = mtv(torR, [Math.sin(yw), .04, -Math.cos(yw)]), dh = ptArm(d, sg), th = Math.acos(clamp(-d[1], -1, 1)), k = Math.min(th, 2.3) / Math.max(Math.sin(th), .05) /* (never straight up its own body's axis, where a shoulder has no way to go: a figure pitching over as it points would spin its arm) */, ex = bump((tt - .2) / .5);   // the head has gone first; then the arm, straight out at it, and held
+      G[0] = -k * dh[1]; G[1] = sg * k * dh[0]; G[2] = .1 + .5 * ex; G[3] = .1; G[4] = 0; G[5] = .0; mix(w, G); }
+    if (gs[4] > 0) { const w = sstep(0, 1, gs[4]), tt = gt[4], ant = bump(tt / .16), push = bump((tt - .2) / .5);   // the flat of the hand, out in front: stop
+      G[0] = 1.42 - .3 * ant + .06 * push; G[1] = .16; G[2] = .42 + .55 * ant - .2 * push; G[3] = .12; G[4] = -.2; G[5] = 1.0 - .3 * ant; mix(w, G); }
+    if (gs[7] > 0) { const w = sstep(0, 1, gs[7]);   // forearm across the chest, panel up
+      G[0] = 1.0; G[1] = .22; G[2] = 1.7 + .03 * Math.sin(t * .9); G[3] = 1.0; G[4] = 1.1; G[5] = 0; mix(w, G); }
+  }
+  const GST = [0, 0, 0, 0, 0, 0];
 
   function emit(B, rig, lod) {
     lod = lod ? 1 : 0; const parts = rig.parts[lod] || (rig.parts[lod] = partsOf(rig.crew, lod));
@@ -7679,7 +8139,7 @@ const ASTRO = (() => {
   // where the muzzle is and which way the barrel points, in the world, as of the last update: [x, y, z, dx, dy, dz] (a caller that only wants the position reads the first three)
   const muzzle = rig => [rig.muz[0], rig.muz[1], rig.muz[2], rig.muz[3], rig.muz[4], rig.muz[5]];
   // dev: for the alignment and screenshot tools in dev/ only; the game has no use for it
-  return { create, update, emit, pose, muzzle, GESTURES: true, dev: { CREW, crewHead, buildHead, buildSuit, H0, bare(v) { BARE = !!v; HEADS.length = 0; } } };
+  return { create, update, emit, pose, muzzle, footfalls, GESTURES: true, dev: { CREW, crewHead, buildHead, buildSuit, H0, bare(v) { BARE = !!v; HEADS.length = 0; } } };
 })();
 
 
@@ -17586,10 +18046,10 @@ function step(dt, cmd) {
         if (best.kind === 'kei' && best.bur) burHit(best, hk, !!A.beam);
         else if (best.kind === 'kei') { if (leg >= 0 && KEI.sever && !A.beam && hk > .6) { KEI.sever(best.rig, leg); best.stun = Math.max(best.stun, 1.1); if (AU.ctx) sfx.kei(.7, 0); } else { best.stun = Math.max(best.stun, 8 * hk); best.wary = 4.5 * Math.max(1, hk); best.side = -(best.side || 1); best.hits = (best.hits || 0) + (hk > 1.2 ? 2 : hk < .6 ? 0 : 1); if (best.hits >= 2 && !best.lock && !best.kin && S.stage < 1) { best.flee = true; best.wary = 99; } } }
         else if (best.kind === 'crew') { const c = CREW[best.crew]; if (A.beam) say(c.short, 'I CANNOT SEE! POINT THAT THING AWAY!', { voice: [c.id, 'hurt'], pitch: c.pitch });
-          else if (--best.hp <= 0) { best.alive = false; best.dead = 1; say(c.short, '[NO SIGNAL]', { voice: [c.id, 'death'], pitch: c.pitch }); S.foes.splice(S.foes.indexOf(best), 1); } else say(c.short, 'THAT IS ME! CHECK YOUR TARGET!', { voice: [c.id, 'hurt'], pitch: c.pitch }); }
+          else if (--best.hp <= 0) { best.alive = false; best.dead = 1; say(c.short, '[NO SIGNAL]', { voice: [c.id, 'death'], pitch: c.pitch }); S.foes.splice(S.foes.indexOf(best), 1); if (FOOT_OK && best.rig && !best.cy) { (S.bodies || (S.bodies = [])).push({ rig: best.rig, x: best.x, z: best.z, heading: best.heading, crew: best.crew }); if (S.bodies.length > 4) S.bodies.shift(); } } else say(c.short, 'THAT IS ME! CHECK YOUR TARGET!', { voice: [c.id, 'hurt'], pitch: c.pitch }); }
         else if (A.beam) best.stun = Math.max(best.stun, 9);
         else if ((best.hp -= hk > 1.2 ? 2 : 1) <= 0) { best.stun = 14; best.hp = (best.v ? best.v.hp : 2); } } } } }
-  if (cmd.ability && p.pulses > 0 && p.fireT > 1) { p.pulses--; p.fireT = 0; S.white = .6; if (AU.ctx) sfx.pulse(); for (const f of S.foes) if (Math.hypot(f.x - p.x, f.z - p.z) < 16) f.stun = 7; }
+  if (cmd.ability && p.pulses > 0 && p.fireT > 1) { p.pulses--; p.fireT = 0; S.white = .6; if (AU.ctx) sfx.pulse(); for (const f of S.foes) if (f.kind !== 'crew' && Math.hypot(f.x - p.x, f.z - p.z) < 16) f.stun = 7; }
   if (S.white > 0) S.white = Math.max(0, S.white - dt * 2);
   S.shake = Math.max(0, S.shake - dt * 2.5); dustStep(dt); brassStep(dt); flagStep(dt);
   // foes
@@ -17607,10 +18067,10 @@ function step(dt, cmd) {
     if (f.kind === 'crew' || f.kin) { // the crew play their parts; the one on Algo is carried round by his
       if (f.kin) { if (f.stun > 0) f.stun -= dt; } else if (crewRole(f, dt, p, d)) return;
       f.spd = lerp(f.spd, Math.hypot(f.x - ox, f.z - oz) / dt, dt * 8); if (d < nearest && f.kin) nearest = d;
-      if (f.kind === 'crew' && f.spd > .5) { f.pd = (f.pd || 0) + f.spd * dt; if (f.pd > (STEP_OK ? (f.spd > 4 ? 1.5 : .95) : 2)) { f.pd = 0; if (d < 60) { if (STEP_OK) { f.ft = -(f.ft || 1); const hh = f.heading, rk = clamp((f.spd - 3.2) / 2.4, 0, 1), fx2 = f.x + Math.cos(hh) * .14 * f.ft, fz2 = f.z + Math.sin(hh) * .14 * f.ft; if (f.lpr) mark(f.lpr[0], f.lpr[1], hh, 0, 0, { left: f.ft > 0, run: rk, kind: 'push', v: f.spd, print: false }); mark(fx2, fz2, hh, 0, 0, { left: f.ft < 0, run: rk, kind: 'strike', v: f.spd }); f.lpr = [fx2, fz2]; } else mark(f.x, f.z, f.heading, 2, .5); } } }
+      if (f.kind === 'crew' && f.spd > .5 && !FOOT_OK) { f.pd = (f.pd || 0) + f.spd * dt; if (f.pd > (STEP_OK ? (f.spd > 4 ? 1.5 : .95) : 2)) { f.pd = 0; if (d < 60) { if (STEP_OK) { f.ft = -(f.ft || 1); const hh = f.heading, rk = clamp((f.spd - 3.2) / 2.4, 0, 1), fx2 = f.x + Math.cos(hh) * .14 * f.ft, fz2 = f.z + Math.sin(hh) * .14 * f.ft; if (f.lpr) mark(f.lpr[0], f.lpr[1], hh, 0, 0, { left: f.ft > 0, run: rk, kind: 'push', v: f.spd, print: false }); mark(fx2, fz2, hh, 0, 0, { left: f.ft < 0, run: rk, kind: 'strike', v: f.spd }); f.lpr = [fx2, fz2]; } else mark(f.x, f.z, f.heading, 2, .5); } } }
       continue; }
     if (f.bur) { if (burStep(f, dt, p, fd, touch)) return; if (f.active && f.deadT === undefined && f.bs !== 'away' && d < nearest) nearest = d; continue; }
-    if (f.stun > 0) f.stun -= dt;
+    if (f.stun > 0) { if (f.stun > (f.stM || 0)) f.stM = f.stun; f.stun -= dt; if (f.stun <= 0) f.stM = f.fresh = 0; }
     else if (fd >= 0) {
       const see = d < 46 && los(f.x, f.z, p.x, p.z);
       f.lit = (p.lamp && see && d < 16 && (-dx * fx - dz * fz) / (d || 1) > .95) ? 1 : 0; let spd = 0;
@@ -17948,6 +18408,7 @@ function crewTaken(f, quiet, stunT) {
   if (!quiet) say(c.short, 'NO -- NO -- [SIGNAL LOST]', { voice: [c.id, 'death'], pitch: c.pitch });
   if (AU.ctx) { sfx.kei(.8, 0); sfx.zap(); }
   const d = mkFoe('dup', f.x, f.z, f.crew, (f.seed | 0) + 101); d.heading = f.heading; d.stun = stunT || 2.2; S.foes.push(d);
+  if (FOOT_OK) { d.fresh = 1; try { ASTRO.pose(d.rig, { x: d.x, z: d.z, heading: d.heading, speed: 0, active: true, open: 0, stun: 1, dup: true }, groundY); } catch (e) { } }   /* it is found on its hands and knees and it gets up */
   S.taken = (S.taken || 0) + 1; hudDirty = true;
 }
 /* A footfall in regolith: a print that stays, and dust thrown on a clean parabola, because in vacuum
@@ -17956,6 +18417,13 @@ const STEP_OK = typeof STEPFX !== 'undefined' && !!STEPFX.print && !!STEPFX.crea
 if (STEP_OK) { try { STEPFX.PAGE.DUST = [WL.REGO, 1]; STEPFX.GRID = 2; if (typeof fbm === 'function') STEPFX.SHADE = (x, z) => .78 + fbm(x * .2, z * .2) * .5; } catch (e) { } }
 if (typeof FLAG !== 'undefined' && FLAG.PAGE) { try { FLAG.PAGE.DUST = [WL.REGO, 1]; } catch (e) { } }
 const stepSys = () => S.sfx || (S.sfx = STEPFX.create(((S.seed || 3) * 17 + 1) | 0));
+/* The crew rig says where each boot really came down (ASTRO.footfalls), so their prints lie under their boots, turned the way
+   the boot was turned. A boot set down again on the spot it left throws a little dust and leaves no second print. */
+const FOOT_OK = STEP_OK && typeof ASTRO !== 'undefined' && !!ASTRO.footfalls;
+function crewFeet(f, d) { const L = ASTRO.footfalls(f.rig); if (!L.length || d > 60 || f.cy || S.cine) return; const rk = clamp(((f.spd || 0) - 3.2) / 2.4, 0, 1), lp = f.lpr2 || (f.lpr2 = [null, null]);
+  for (const q of L) { const i = q[4] < 0 ? 0 : 1, o = lp[1 - i], m = lp[i], fresh = !m || Math.hypot(m[0] - q[0], m[1] - q[2]) > .16;
+    if (o && fresh) mark(o[0], o[1], o[2], 0, 0, { left: i === 1, run: rk, kind: 'push', v: f.spd, print: false });
+    mark(q[0], q[2], q[3], 0, 0, { left: i === 0, run: Math.max(rk, clamp(q[5] * 1.6 - .8, 0, 1)), kind: fresh ? 'strike' : 'scuff', v: fresh ? f.spd : .4, print: fresh }); lp[i] = [q[0], q[2], q[3]]; } }
 /* o: { left, run 0..1, turn, kind 'strike' | 'push' | 'scuff' | 'land' | null, v, print: false to throw dust without leaving a print } */
 function mark(x, z, heading, grains, kick, o) {
   const y = groundY(x, z);
@@ -18306,8 +18774,10 @@ function render(dt, now) {
     const B = R.batch; B.reset(); const smear = [];
     if (inGame && sceneOn) { const ce = cam.e; { const F = flagOf(); if (F) { const fx = FLAG_AT.x - ce[0], fz = FLAG_AT.z - ce[2], d2 = fx * fx + fz * fz; if (d2 < 78400) { const n0 = B.n; FLAG.emit(B, F.rig, d2 > 900 ? 1 : 0); smear.push([n0, B.n - n0, 0]); } } }
       for (const f of (S.watch && !S.watch.hide ? S.foes.concat([S.watch.f]) : S.foes)) { const d = Math.hypot(f.x - ce[0], f.z - ce[2]); if (d > 170 || S.cine) continue; const st = { x: f.x, z: f.z, heading: f.heading, speed: f.spd, scale: 1.45 * (f.vsc || 1), stun: f.down ? 1 : Math.max(0, f.stun), alert: f.chgS ? 1 : f.alert, active: f.active, open: f.open, dup: f.kind !== 'crew', charge: f.chgS === 1 ? clamp(f.chgT / f.v.chg.wind, 0, 1) : 0 }; if (f.kind === 'crew') { st.gest = f.gest || null; st.pointYaw = f.pointYaw; st.lookYaw = f.lookYaw; st.fear = f.panic; st.hurt = f.down ? 1 : 0; st.gun = f.ammo > 0 && !f.down && !f.cy ? (f.aimT > 0 ? 2 : f.panic > .15 || f.fired ? 1 : 0) : 0; st.aim = f.aimAt; st.fire = f.flash > 0 ? f.flash / .09 : 0; if (f.gest === 'down' && ASTRO.GESTURES) st.stun = 0; }
-        const n0 = B.n; if (f.bur) { const lod = d > 30 ? 1 : 0; BURROW.update(f.rig, { x: f.x, z: f.z, heading: f.heading, speed: f.spd, depth: f.dep, breach: f.br, stun: f.deadT !== undefined ? 0 : Math.max(0, f.stun), alert: f.alert, look: f.active ? Math.atan2(ce[0] - f.x, -(ce[2] - f.z)) : undefined, dead: f.deadT }, dt, groundY); BURROW.emit(B, f.rig, lod); BURROW.emitGround(B, f.rig, groundY, lod, ce); } else if (f.kind === 'kei') { if (f.active) st.look = Math.atan2(ce[0] - f.x, -(ce[2] - f.z)); f.rig.fat = (d > 22 ? 1.8 : 1) * (f.vfat || 1); KEI.update(f.rig, st, dt, groundY); KEI.emit(B, f.rig, d > 22 ? 1 : 0); } else { ASTRO.update(f.rig, st, dt, f.cy ? (x, z) => groundY(x, z) + f.cy : groundY); ARM_NOW = f.crew !== undefined && CREW[f.crew] ? armId(CREW[f.crew].id) : null; ASTRO.emit(B, f.rig, d > 16 ? 1 : 0); ARM_NOW = null; } if (S.watch && f === S.watch.f) { const k = clamp((d - 14) / 20, 0, 1); for (let i = n0; i < B.n; i++) { B.d[i * STRIDE + 9] *= 1 + 1.9 * k; B.d[i * STRIDE + 10] += .09 * k; } }   // far off against a black sky a dark thing is nothing at all: up there it catches the sun
+        const n0 = B.n; if (f.bur) { const lod = d > 30 ? 1 : 0; BURROW.update(f.rig, { x: f.x, z: f.z, heading: f.heading, speed: f.spd, depth: f.dep, breach: f.br, stun: f.deadT !== undefined ? 0 : Math.max(0, f.stun), alert: f.alert, look: f.active ? Math.atan2(ce[0] - f.x, -(ce[2] - f.z)) : undefined, dead: f.deadT }, dt, groundY); BURROW.emit(B, f.rig, lod); BURROW.emitGround(B, f.rig, groundY, lod, ce); } else if (f.kind === 'kei') { if (f.active) st.look = Math.atan2(ce[0] - f.x, -(ce[2] - f.z)); f.rig.fat = (d > 22 ? 1.8 : 1) * (f.vfat || 1); KEI.update(f.rig, st, dt, groundY); KEI.emit(B, f.rig, d > 22 ? 1 : 0); } else { if (FOOT_OK && !f.down && (f.stM >= 5 || f.fresh) && f.stun <= (f.kind === 'crew' ? 3.1 : 2.4)) st.stun = 0; /* a long time down ends with getting up, so it is on its feet when it is let go */ ASTRO.update(f.rig, st, dt, f.cy ? (x, z) => groundY(x, z) + f.cy : groundY); if (FOOT_OK) crewFeet(f, d); ARM_NOW = f.crew !== undefined && CREW[f.crew] ? armId(CREW[f.crew].id) : null; ASTRO.emit(B, f.rig, d > 16 ? 1 : 0); ARM_NOW = null; } if (S.watch && f === S.watch.f) { const k = clamp((d - 14) / 20, 0, 1); for (let i = n0; i < B.n; i++) { B.d[i * STRIDE + 9] *= 1 + 1.9 * k; B.d[i * STRIDE + 10] += .09 * k; } }   // far off against a black sky a dark thing is nothing at all: up there it catches the sun
         smear.push([n0, B.n - n0, f.kind === 'kei' ? (f.stun > 0 ? .45 : .02 + f.alert * .14) : f.kind === 'dup' ? (f.active ? .05 : 0) : 0]); }
+      /* the fallen lie where they fell */
+      if (S.bodies && !S.cine) for (const b of S.bodies) { const d = Math.hypot(b.x - ce[0], b.z - ce[2]), n0 = B.n; if (d > 170) continue; ASTRO.update(b.rig, { x: b.x, z: b.z, heading: b.heading, speed: 0, active: false, open: 0, stun: 0, dup: false, dead: 1, gun: 0 }, dt, groundY); ARM_NOW = CREW[b.crew] ? armId(CREW[b.crew].id) : null; ASTRO.emit(B, b.rig, d > 16 ? 1 : 0); ARM_NOW = null; if (B.n > n0) smear.push([n0, B.n - n0, 0]); }
       if (!S.cine) { const ce2 = cam.e; const nb0 = B.n;
         emitTracers(B, cam, dt); emitBreakup(B, cam); if (S.depart !== undefined) emitDepart(B, cam, S.depart); else if (S.stage === 3 && S.launchT > LAUNCH_HOLD) emitDepart(B, cam, S.launchT - LAUNCH_HOLD);
         for (const m of S.prints) { const dx = m.x - ce2[0], dz = m.z - ce2[2]; if (dx * dx + dz * dz > 1600) continue;
