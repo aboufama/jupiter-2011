@@ -160,7 +160,7 @@ button:hover,button:focus-visible{border-color:var(--amber);color:var(--amber)}
     <p data-k="p2">Viewer discretion is advised. This reconstruction is not intended to offend, or to disrespect the memory of, the four crew members who did not return, nor their families, nor the sole survivor. No funeral was held for them. This recording is the only memorial they were given.</p>
     <h3 data-k="h3">3.0 <u>CREW</u></h3>
     <div data-k="crew">
-      <div><span>Case D. Baker</span><span>Mission Commander</span><span>Returned</span></div>
+      <div><span>Case O. Baker</span><span>Mission Commander</span><span>Returned</span></div>
       <div><span>Forrest Waldron</span><span>Pilot</span><span>Not recovered</span></div>
       <div><span>Mateo O. Algo</span><span>Mission Specialist</span><span>Not recovered</span></div>
       <div><span>Joseph J. Bartolozzi</span><span>Science Officer</span><span>Not recovered</span></div>
@@ -17497,7 +17497,7 @@ function homeAudioFrame() { if (S.home && S.home.shore) return shoreAudioFrame()
    (S.players[], S.foes[]) driven by input command objects, so remote players can be fed into the same step later. */
 const $ = id => document.getElementById(id);
 const CREW = [
-  { id: 'baker', name: 'CASE D. BAKER', short: 'BAKER', role: 'MISSION COMMANDER', tag: 'CDR C. BAKER', pitch: 150,
+  { id: 'baker', name: 'CASE O. BAKER', short: 'BAKER', role: 'MISSION COMMANDER', tag: 'CDR C. BAKER', pitch: 150,
     bio: 'Commanded Odyssey 9 and picked Stewart for the ground chair himself. The only one of the five who came home. He has not spoken about it since.', trait: 'Steady under fire. The best shot of the five.' },
   { id: 'waldron', name: 'FORREST WALDRON', short: 'WALDRON', role: 'PILOT', tag: 'PLT F. WALDRON', pitch: 210,
     bio: 'Flew the descent to Callisto. His twin brother, Forrest Starling, asked questions after the mission and was silenced.', trait: 'Calm, curious, quick on his feet.' },
@@ -18710,11 +18710,11 @@ function mat(yaw, pitch, e, asp, fov) {
 const GEAR_OK = typeof GEAR !== 'undefined' && !!GEAR.footprint;
 /* The descent is flown from inside EP-2: the pod's own interior is modelled around the origin looking
    down -Z, so it is emitted into a scratch batch and carried onto the camera's basis each frame. */
-const POD_OK = typeof POD !== 'undefined' && !!POD.interior, PODB = POD_OK ? makeBatch(24000) : null, PODST = { q: [0, 0, 0, 0], alarm: 0, alt: 1200, lit: 1 };
+const CAB = typeof CABIN !== 'undefined' && CABIN.interior ? CABIN : typeof POD !== 'undefined' && POD.interior ? POD : null, POD_OK = !!CAB, PODB = POD_OK ? makeBatch(CAB === (typeof POD !== 'undefined' && POD) ? 24000 : 72000) : null, PODST = { q: [0, 0, 0, 0], alarm: 0, alt: 1200, lit: 1, veh: 'pod', crew: 0 };
 function emitPodInterior(B, cam, t, st) {
-  if (!POD_OK) return; PODB.reset(); POD.interior(PODB, t, st);
+  if (!POD_OK) return; PODB.reset(); CAB.interior(PODB, t, st);
   // the footwell: the cabin model stops at the console, and a turned head could see the moon under it
-  PODB.quad([-1.7, -1.2, -.775], [1.7, -1.2, -.775], [1.7, -1.2, .7], [-1.7, -1.2, .7], TL.DARK, .1, 0); PODB.quad([-1.7, -.72, -.775], [1.7, -.72, -.775], [1.7, -1.2, -.775], [-1.7, -1.2, -.775], TL.DARK, .1, 0);
+  if (!CAB.SEATS) { PODB.quad([-1.7, -1.2, -.775], [1.7, -1.2, -.775], [1.7, -1.2, .7], [-1.7, -1.2, .7], TL.DARK, .1, 0); PODB.quad([-1.7, -.72, -.775], [1.7, -.72, -.775], [1.7, -1.2, -.775], [-1.7, -1.2, -.775], TL.DARK, .1, 0); }
   const R = cam.r, U = cam.up, F = cam.f, e = cam.e, d = PODB.d;
   for (let i = 0; i < PODB.n; i++) { const o = i * STRIDE, x = d[o], y = d[o + 1], z = d[o + 2], nx = d[o + 6], ny = d[o + 7], nz = d[o + 8];
     B.v([e[0] + R[0] * x + U[0] * y - F[0] * z, e[1] + R[1] * x + U[1] * y - F[1] * z, e[2] + R[2] * x + U[2] * y - F[2] * z],
@@ -18793,13 +18793,13 @@ function render(dt, now) {
       else if (S.cine && S.cine.phase === 'descent') { const n0 = B.n, c = S.cine;
         // the cabin answers the controls: guard and retro switch, hand controller, leg handle, brace lever
         if (!c.qa) c.qa = [0, 0, 0, 0]; for (let i = 0; i < 4; i++) { const qq = c.q[i], tg = qq.done > 0 ? 1 : qq.hold && c.t > qq.t && !qq.done ? clamp(qq.held / qq.hold, 0, 1) : 0; c.qa[i] += clamp(tg - c.qa[i], -dt * 2.2, dt * 2.2); PODST.q[i] = c.qa[i]; }
-        PODST.alarm = c.fails > 0 || c.t > 14.8 ? 1 : 0; PODST.alt = Math.max(0, c.h); PODST.lit = c.t > FLAMEOUT ? (Math.sin(c.t * 61) + Math.sin(c.t * 23.7) > .3 ? .12 : .75) : 1;
+        PODST.veh = 'pod'; PODST.crew = CREW.indexOf(S.crew); PODST.alarm = c.fails > 0 || c.t > 14.8 ? 1 : 0; PODST.alt = Math.max(0, c.h); PODST.lit = c.t > FLAMEOUT ? (Math.sin(c.t * 61) + Math.sin(c.t * 23.7) > .3 ? .12 : .75) : 1;
         emitPodInterior(B, cab || cam, c.t, PODST);
         const q = c.q[1], hold = c.t > q.t && !q.done && keys[q.key], pre = c.ignT === undefined ? 1 : 0, live = !c.td;
         emitPodFX(B, cab || cam, { ru: live ? rcsFire(c.t + .17, 2, c.seed + pre * 3) : null, rl: live ? (hold && q.key === 'KeyA' ? [1, 1] : rcsFire(c.t, 0, c.seed + pre)) : null, rr: live ? (hold && q.key === 'KeyD' ? [1, 1] : rcsFire(c.t + .31, 1, c.seed + pre)) : null, eng: c.eng, ign: c.ignT === undefined ? undefined : c.t - c.ignT, gear: c.gearT === undefined ? undefined : c.t - c.gearT });
         if (c.h < 80) gasGround(B, START.x + (c.drift || 0) * (9 + c.h) * .1, START.z + 2.6, c.dust, c.t, c.td ? c.t - c.tdT : undefined);
         smear.push([n0, B.n - n0, 0]); }
-      if (!S.cine && S.stage === 3) { const n0 = B.n, u = S.launchT - LAUNCH_HOLD; PODST.q[0] = clamp(u * 2 + 1, 0, 1); PODST.q[1] = 0; PODST.q[2] = 0; PODST.q[3] = 1; PODST.alarm = 0; PODST.alt = Math.max(0, u) * Math.max(0, u) * 30; PODST.lit = 1; emitPodInterior(B, cab || cam, S.launchT + 40, PODST);
+      if (!S.cine && S.stage === 3) { const n0 = B.n, u = S.launchT - LAUNCH_HOLD; PODST.veh = 'argus'; PODST.crew = CREW.indexOf(S.crew); PODST.q[0] = clamp(u * 2 + 1, 0, 1); PODST.q[1] = 0; PODST.q[2] = 0; PODST.q[3] = 1; PODST.alarm = 0; PODST.alt = Math.max(0, u) * Math.max(0, u) * 30; PODST.lit = 1; emitPodInterior(B, cab || cam, S.launchT + 40, PODST);
         // the tanks vent on the hold, then the engine: its skirt under the sill, and the jets working all the way up
         emitPodFX(B, cab || cam, { ru: rcsFire(S.launchT + .17, 2, 7), rl: rcsFire(S.launchT, 0, 7), rr: rcsFire(S.launchT + .31, 1, 7), eng: clamp(u * 4, 0, 1), ign: u > 0 ? u : undefined, gear: S.launchT % .8 * (u > 0 ? 9 : 1) });
         smear.push([n0, B.n - n0, 0]); }
@@ -18878,7 +18878,7 @@ function showEnd() {
    Callisto was, and the colour comes back into it over the first seconds. When it has run, the record is closed the
    way a documentary closes one: a few plain cards, taken from the file. Escape skips to the end. */
 const FILM_CARDS = [
-  'Commander Case D. Baker was the only member of the\nOdyssey 9 crew to return to Earth.',
+  'Commander Case O. Baker was the only member of the\nOdyssey 9 crew to return to Earth.',
   'Pilot Forrest Waldron and Flight Engineer Darren Watkins Jr.\nare presumed dead. The fate of Science Officer\nJoseph J. Bartolozzi is disputed.',
   'Mission Specialist Mateo O. Algo was never recovered.',
   'No funeral was held. The families were told\nthat the crew had been hospitalized.',
@@ -18924,7 +18924,7 @@ function buildSelect() { const box = $('crew'); if (!box) return; box.innerHTML 
   if (fileSheet) fileSheet(0); showRec(); }
 /* PAGE-A-END */
 function buildVoiceBank() {
-  const box = $('vbList'); box.innerHTML = ''; const names = { baker: 'CASE D. BAKER', waldron: 'FORREST WALDRON', algo: 'MATEO O. ALGO', bart: 'JOSEPH J. BARTOLOZZI', watkins: 'DARREN WATKINS JR.', nick: 'NICK STEWART (CAPCOM)', entity: 'UNKNOWN JOVIAN ENTITY' };
+  const box = $('vbList'); box.innerHTML = ''; const names = { baker: 'CASE O. BAKER', waldron: 'FORREST WALDRON', algo: 'MATEO O. ALGO', bart: 'JOSEPH J. BARTOLOZZI', watkins: 'DARREN WATKINS JR.', nick: 'NICK STEWART (CAPCOM)', entity: 'UNKNOWN JOVIAN ENTITY' };
   for (const sp of VOICE.speakers) { const h = document.createElement('div'); h.className = 'vbh'; h.textContent = names[sp]; box.appendChild(h);
     for (const ev of VOICE.events) { const row = document.createElement('div'); row.className = 'vbr'; const files = (VOICE.files[sp] || {})[ev] || [], cuts = ((VOICE.cuts[sp] || {})[ev]) || [];
       const lab = document.createElement('span'); lab.className = 'ev'; lab.textContent = ev.toUpperCase(); row.appendChild(lab);
