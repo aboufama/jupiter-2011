@@ -16630,18 +16630,29 @@ const AU = { ctx: null, vol: .85 };
 function auInit() {
   if (AU.ctx) { AU.ctx.resume(); return; }
   const C = AU.ctx = new (window.AudioContext || window.webkitAudioContext)();
-  const comp = C.createDynamicsCompressor(); AU.master = C.createGain(); AU.master.gain.value = AU.vol; AU.master.connect(comp); comp.connect(C.destination);
+  /* THE WAY OUT. Everything meets at `comp`, which is only a meeting place now. After it: a limiter that holds whatever is loud at about a tenth of full scale, a gain that takes back the
+     make-up gain browsers add to a compressor (measured below, because they do not agree on it), a soft ceiling for the few milliseconds a limiter needs to react, and last the player's volume,
+     so that turning the game down turns ALL of it down. What stood here before was a compressor at its default settings: it lifted everything quiet by 7 dB and let a KEIS call, an ignition or a
+     burst of static out at nearly full scale. Measured at the output now (tloud.js): the bed near -30 dBFS, speech over it, and nothing above about -13. */
+  const comp = C.createGain(), LIM = { threshold: -20, knee: 5, ratio: 20, attack: .003, release: .25 }, setLim = d => { for (const k in LIM) d[k].value = LIM[k]; return d; };
+  const lim = setLim(C.createDynamicsCompressor()), mk = C.createGain(), ceil = C.createWaveShaper(), cc = new Float32Array(2049), CA = .155, CC = .22;
+  for (let i = 0; i < 2049; i++) { const x = i / 1024 - 1, m = Math.abs(x); cc[i] = Math.sign(x) * (m <= CA ? m : CA + (CC - CA) * Math.tanh((m - CA) / (CC - CA))); } ceil.curve = cc; ceil.oversample = '2x'; mk.gain.value = .45;
+  AU.outG = C.createGain(); AU.lim = lim; comp.gain.value = .68; comp.connect(lim); lim.connect(mk); mk.connect(ceil); ceil.connect(AU.outG); AU.outG.connect(C.destination);
+  AU.setVol = v => { AU.vol = v = Math.max(0, v); if (AU.outG) AU.outG.gain.value = v <= .85 ? Math.pow(v / .85, 1.6) : 1 + (v - .85) / .15; }; AU.setVol(AU.vol);   /* the slider's default (.85) is the level the mix was measured at; the top of it is twice that */
+  try { const OC = window.OfflineAudioContext || window.webkitOfflineAudioContext, O = new OC(1, 22050, 44100), o = O.createOscillator(), g = O.createGain(), d = setLim(O.createDynamicsCompressor()); o.frequency.value = 440; g.gain.value = .01; o.connect(g); g.connect(d); d.connect(O.destination); o.start();
+    const done = bf => { const x = bf.getChannelData(0); let pk = 0; for (let i = 11025; i < 22050; i++) pk = Math.max(pk, Math.abs(x[i])); if (pk > .002 && pk < .5) mk.gain.value = .01 / pk; AU.mk = mk.gain.value; }, pr = O.startRendering(); if (pr && pr.then) pr.then(done).catch(() => { }); else O.oncomplete = e => done(e.renderedBuffer); } catch (e) { }
+  AU.master = C.createGain(); AU.master.gain.value = 1; AU.master.connect(comp);
   const nb = AU.nb = C.createBuffer(1, C.sampleRate * 2, C.sampleRate); const d = nb.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
   const loop = () => { const s = C.createBufferSource(); s.buffer = nb; s.loop = true; s.start(); return s; };
   AU.radio = C.createGain(); const hp = C.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 380; const lp = C.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2700;
   const ws = C.createWaveShaper(); const cu = new Float32Array(1024); for (let i = 0; i < 1024; i++) { const x = i / 512 - 1; cu[i] = Math.round(Math.tanh(x * 3) * 9) / 9; } ws.curve = cu;
-  AU.drop = C.createGain(); AU.radio.connect(hp); hp.connect(lp); lp.connect(ws); ws.connect(AU.drop); AU.drop.connect(AU.master);
+  AU.drop = C.createGain(); AU.radio.connect(hp); hp.connect(lp); lp.connect(ws); ws.connect(AU.drop); { const rt = C.createGain(); rt.gain.value = .5; AU.drop.connect(rt); rt.connect(AU.master); }   /* the loop sits under the limiter, not on it */
   /* Recorded voices get their own, cleaner line: the words have to be heard. A wide band with a little presence, a soft
      limiter and no bit-crush, and while one plays everything else on the loop is pulled down under it. */
   { AU.bed = C.createGain(); AU.master.disconnect(); AU.master.connect(AU.bed); AU.bed.connect(comp);
     AU.voice = C.createGain(); const vh = C.createBiquadFilter(); vh.type = 'highpass'; vh.frequency.value = 170; const vp = C.createBiquadFilter(); vp.type = 'peaking'; vp.frequency.value = 2600; vp.Q.value = .9; vp.gain.value = 5;
     const vl = C.createBiquadFilter(); vl.type = 'lowpass'; vl.frequency.value = 6200; const vs = C.createWaveShaper(), vc = new Float32Array(1024); for (let i = 0; i < 1024; i++) { const x = i / 512 - 1; vc[i] = Math.tanh(x * 1.5) / Math.tanh(1.5); } vs.curve = vc;
-    AU.voiceVol = C.createGain(); AU.voiceVol.gain.value = AU.vol; AU.voice.connect(vh); vh.connect(vp); vp.connect(vl); vl.connect(vs); vs.connect(AU.voiceVol); AU.voiceVol.connect(comp);
+    AU.voiceVol = C.createGain(); AU.voiceVol.gain.value = .75; AU.voice.connect(vh); vh.connect(vp); vp.connect(vl); vl.connect(vs); vs.connect(AU.voiceVol); AU.voiceVol.connect(comp);
     AU.duck = dur => { const t = C.currentTime, g = AU.bed.gain; g.cancelScheduledValues(t); g.setTargetAtTime(.32, t, .05); g.setTargetAtTime(1, t + Math.max(.3, dur), .35); }; }
   AU.stat = C.createGain(); AU.stat.gain.value = .012; const sb = C.createBiquadFilter(); sb.type = 'bandpass'; sb.frequency.value = 3200; sb.Q.value = .6; loop().connect(sb); sb.connect(AU.stat); AU.stat.connect(AU.master);
   AU.hiss = C.createGain(); AU.hiss.gain.value = .018; const hb = C.createBiquadFilter(); hb.type = 'highpass'; hb.frequency.value = 6000; loop().connect(hb); hb.connect(AU.hiss); AU.hiss.connect(AU.master);
@@ -16654,7 +16665,7 @@ function auInit() {
      no distance) or arrives on the comms loop (AU.radio). Distant events make no sound at all. */
   AU.suit = C.createGain(); AU.suit.gain.value = 1; const sl = C.createBiquadFilter(); sl.type = 'lowpass'; sl.frequency.value = 1150; sl.Q.value = .4;
   const sl2 = C.createBiquadFilter(); sl2.type = 'lowpass'; sl2.frequency.value = 2200; const shp = C.createBiquadFilter(); shp.type = 'highpass'; shp.frequency.value = 55;
-  AU.suit.connect(sl); sl.connect(sl2); sl2.connect(shp); shp.connect(AU.master);
+  AU.suit.connect(sl); sl.connect(sl2); sl2.connect(shp); { const st = C.createGain(); st.gain.value = .56; shp.connect(st); st.connect(AU.master); }
   VOICE.load(); SND.load();
 }
 function env(gn, t, a, peak, dur) { gn.gain.cancelScheduledValues(t); gn.gain.setValueAtTime(0.0001, t); gn.gain.linearRampToValueAtTime(peak, t + a); gn.gain.exponentialRampToValueAtTime(0.0001, t + dur); }
@@ -16674,12 +16685,12 @@ const sfx = {
   hatch() { const t = now(); noise(AU.suit, t, 1.6, 'bandpass', 220, 2, .9, 900); tone(AU.suit, t, 1.2, 'sawtooth', 60, 38, .5); },
   zap() { noise(AU.radio, now(), .06 + Math.random() * .1, 'highpass', 2500 + Math.random() * 3000, 4, .22); },
   // the strobe makes no noise outside; the suit's own capacitor whine does
-  pulse() { const t = now(); tone(AU.suit, t, .9, 'sine', 1400, 60, .55); noise(AU.radio, t, .5, 'bandpass', 2400, 3, .5, 200); },
-  heart() { const t = now(); tone(AU.master, t, .13, 'sine', 62, 38, .55); tone(AU.master, t + .17, .12, 'sine', 54, 34, .4); },
+  pulse() { const t = now(); tone(AU.suit, t, .9, 'sine', 1400, 60, .34); noise(AU.radio, t, .5, 'bandpass', 2400, 3, .5, 200); },
+  heart() { const t = now(); tone(AU.master, t, .13, 'sine', 62, 38, .3); tone(AU.master, t + .17, .12, 'sine', 54, 34, .22); },
   // ground shock through the boots, or the ship's structure when you are aboard
   rumble(v) { noise(AU.suit, now(), 1.2, 'lowpass', 70, 1, v * 1.5); },
   // the only loud thing on the surface: the suit's own air leaving past your ear
-  breach() { const t = now(); noise(AU.master, t, 1.2, 'bandpass', 3000, 5, .9, 300); noise(AU.suit, t, .9, 'lowpass', 500, 1, .5); for (const f of [233, 247, 311, 466]) tone(AU.radio, t, 1.6, 'sawtooth', f, f * .7, .14); },
+  breach() { const t = now(); noise(AU.master, t, 1.2, 'bandpass', 3000, 5, .5, 300); noise(AU.suit, t, .9, 'lowpass', 500, 1, .5); for (const f of [233, 247, 311, 466]) tone(AU.radio, t, 1.6, 'sawtooth', f, f * .7, .14); },
   // a leg striking the regolith a few metres away carries through the ground into the boots. Beyond that, nothing.
   legs(vol, pan) { if (!AU.ctx) return; const C = AU.ctx, t = now(), pn = C.createStereoPanner(); pn.pan.value = pan; pn.connect(AU.suit); noise(pn, t, .07, 'lowpass', 150, 1, vol * 1.4); tone(pn, t, .05, 'sine', 54, 36, vol); },
   // KEIS KEIS KEIS: a formant voice dragged through a ring modulator and an echo. Barely a word.
@@ -16732,11 +16743,11 @@ const VOICE = {
   // play one source. opts.dup = the duplicate's version: slowed, and doubled when the audio can be processed.
   playSource(src, opts) {
     if (!AU.ctx) return false; opts = opts || {}; const rate = opts.dup ? .8 : 1;
-    if (src.el) { const a = src.el.cloneNode(); a.src = src.el.src; a.playbackRate = rate; if ('preservesPitch' in a) a.preservesPitch = false; a.volume = Math.min(1, AU.vol); a.play().catch(() => { }); this.playing.push(a); a.addEventListener('ended', () => { this.playing = this.playing.filter(p => p !== a); }); noise(AU.radio, now(), .08, 'bandpass', 1800, 1, .3); return true; }
+    if (src.el) { const a = src.el.cloneNode(); a.src = src.el.src; a.playbackRate = rate; if ('preservesPitch' in a) a.preservesPitch = false; a.volume = Math.min(1, AU.vol * .35); a.play().catch(() => { }); this.playing.push(a); a.addEventListener('ended', () => { this.playing = this.playing.filter(p => p !== a); }); noise(AU.radio, now(), .08, 'bandpass', 1800, 1, .3); return true; }
     const [mk, t0, t1] = src.cut, m = this.media[mk], dur = t1 - t0, C = AU.ctx, t = C.currentTime + .05;
     if (m.buf) { const play = (r, delay, vol) => { const s = C.createBufferSource(); s.buffer = m.buf; s.playbackRate.value = r; const g = C.createGain(); g.gain.value = vol; s.connect(g); g.connect(AU.voice || AU.radio); s.start(t + delay, t0, dur); };
       if (opts.dup) { play(.82, 0, 1.5); play(.74, .35, .8); } else play(1, 0, 2.1); if (AU.duck) AU.duck(dur / rate + (opts.dup ? .5 : .1)); noise(AU.radio, t, .08, 'bandpass', 1800, 1, .3); return true; }
-    if (m.el) { try { m.el.currentTime = t0; m.el.playbackRate = rate; m.el.volume = Math.min(1, AU.vol);
+    if (m.el) { try { m.el.currentTime = t0; m.el.playbackRate = rate; m.el.volume = Math.min(1, AU.vol * .35);
         // a streamed element can accept play() and then never produce a sample; if it has not moved, say the line instead
         let failed = false; const fail = () => { if (failed) return; failed = true; try { m.el.pause(); } catch (e) { } m.dead = true; if (opts.fail) opts.fail(); };
         const pr = m.el.play(); if (pr && pr.catch) pr.catch(fail); clearTimeout(m.stopT); m.stopT = setTimeout(() => m.el.pause(), dur * 1000 / rate);
@@ -16826,17 +16837,17 @@ const panTo = (pan, dest) => { const pn = AU.ctx.createStereoPanner(); pn.pan.va
   sfx.door = (v, pan) => { if (!AU.ctx || v < .03) return; fx('door', { dest: panTo(pan, AU.suit), gain: v, rate: jit(.08) }) || noise(AU.suit, now(), .11, 'lowpass', 130, 1, v * .7); };
   sfx.ladder = () => { if (!AU.ctx) return; fx('rung', { dest: AU.suit, rate: jit(.2) }) || (S0.step(false), S0.click()); };
   // the only loud thing out there is your own air leaving past your ear
-  sfx.breach = () => { if (!AU.ctx) return; const a = fx('hiss', { dest: AU.master, gain: 1.1 }); if (!a) return S0.breach(); fx('alarm', { dest: AU.radio }); fx('problem', { dest: AU.radio, at: .6 }); };
+  sfx.breach = () => { if (!AU.ctx) return; const a = fx('hiss', { dest: AU.master, gain: .6 }); if (!a) return S0.breach(); fx('alarm', { dest: AU.radio }); fx('problem', { dest: AU.radio, at: .6 }); };
   sfx.legs = (vol, pan) => { if (!AU.ctx) return; fx('thud', { dest: panTo(pan, AU.suit), gain: vol * 1.5, rate: .62 * jit(.2) }) || S0.legs(vol, pan); };
   /* KEIS. Its voice is the one on the black box recording and nothing else: a slice of it, slowed, doubled a fifth
      down against itself, arriving on the loop over the radio noise of the planet. */
   sfx.kei = (vol, pan) => { if (!AU.ctx) return; const C = AU.ctx, dest = panTo(pan, AU.radio), m = VOICE.media.box, cuts = (VOICE.cuts.entity || {}).spot || [];
     if (m && m.buf && cuts.length) { const c = cuts[(Math.random() * cuts.length) | 0], a = c[1], b = c[2], len = Math.min(b - a, .5 + Math.random() * 1.1), t0 = a + Math.random() * (b - a - len), t = C.currentTime + .02;
-      for (const [r, dl, v] of [[.78 * jit(.2), 0, 1], [.52 * jit(.1), .09 + Math.random() * .2, .7]]) { const s = C.createBufferSource(), g = C.createGain(); s.buffer = m.buf; s.playbackRate.value = r; g.gain.setValueAtTime(0, t + dl); g.gain.linearRampToValueAtTime(vol * v * 1.3, t + dl + .06); g.gain.setValueAtTime(vol * v * 1.3, t + dl + len / r - .12); g.gain.linearRampToValueAtTime(0, t + dl + len / r); s.connect(g); g.connect(dest); s.start(t + dl, t0, len); } }
-    const z = Math.random() * 9; SND.play('biz', z, z + 1.4, { gain: vol * .6, rate: .55 + Math.random() * .4, dest, fade: .05, out: .3 }); };
-  sfx.ignite = v => { if (!AU.ctx) return; fx('ignite', { dest: AU.suit, gain: v, out: .8 }) || (S0.rumble(1.2 * v), noise(AU.suit, now(), .7, 'lowpass', 260, 1, .7 * v)); };
+      for (const [r, dl, v] of [[.78 * jit(.2), 0, 1], [.52 * jit(.1), .09 + Math.random() * .2, .7]]) { const s = C.createBufferSource(), g = C.createGain(); s.buffer = m.buf; s.playbackRate.value = r; g.gain.setValueAtTime(0, t + dl); g.gain.linearRampToValueAtTime(vol * v * .5, t + dl + .06); g.gain.setValueAtTime(vol * v * .5, t + dl + len / r - .12); g.gain.linearRampToValueAtTime(0, t + dl + len / r); s.connect(g); g.connect(dest); s.start(t + dl, t0, len); } }
+    const z = Math.random() * 9; SND.play('biz', z, z + 1.4, { gain: vol * .26, rate: .55 + Math.random() * .4, dest, fade: .05, out: .3 }); };
+  sfx.ignite = v => { if (!AU.ctx) return; fx('ignite', { dest: AU.suit, gain: v * .6, out: .8 }) || (S0.rumble(1.2 * v), noise(AU.suit, now(), .7, 'lowpass', 260, 1, .7 * v)); };
   sfx.gear = () => { if (!AU.ctx) return; const a = fx('hydraulic', { dest: AU.suit, out: .2 }); fx('thud', { dest: AU.suit, gain: 1.4, rate: .7, at: a ? 1.1 : .3 }); if (!a) noise(AU.suit, now(), .09, 'lowpass', 420, 1, .7); };
-  sfx.touchdown = v => { if (!AU.ctx) return; const a = fx('boom', { dest: AU.suit, gain: 1.5 * v, rate: .6 }); fx('thud', { dest: AU.suit, gain: 1.6 * v, rate: .5 }); fx('locker', { dest: AU.suit, gain: .7 * v, at: .08 }); fx('rumble', { dest: AU.suit, gain: 1.2 * v, at: .05 });
+  sfx.touchdown = v => { if (!AU.ctx) return; const a = fx('boom', { dest: AU.suit, gain: .8 * v, rate: .6 }); fx('thud', { dest: AU.suit, gain: .85 * v, rate: .5 }); fx('locker', { dest: AU.suit, gain: .36 * v, at: .08 }); fx('rumble', { dest: AU.suit, gain: .64 * v, at: .05 });
     if (!a) { S0.rumble(1.7 * v); noise(AU.suit, now(), .22, 'lowpass', 120, 1, 1.2 * v); } };
   sfx.puff = (v, pan) => { if (!AU.ctx) return; fx('puff', { dest: panTo(pan, AU.suit), gain: (v || 1), rate: jit(.3), out: .08 }) || noise(AU.suit, now(), .12, 'bandpass', 900, .6, .12 * (v || 1)); };
   sfx.vent = v => { if (!AU.ctx) return; fx('hiss', { dest: AU.master, gain: .55 * (v || 1), out: .6 }) || noise(AU.master, now(), 1.4, 'bandpass', 2600, 2, .3); };
@@ -17510,7 +17521,7 @@ const CREW = [
 ];
 const SET = { quality: 1, sens: 1, vol: .85 };
 try { Object.assign(SET, JSON.parse(localStorage.getItem('j2011set') || '{}')); } catch (e) { }
-const saveSet = () => { try { localStorage.setItem('j2011set', JSON.stringify(SET)); } catch (e) { } AU.vol = SET.vol; if (AU.master) AU.master.gain.value = SET.vol; if (AU.voiceVol) AU.voiceVol.gain.value = SET.vol; };
+const saveSet = () => { try { localStorage.setItem('j2011set', JSON.stringify(SET)); } catch (e) { } AU.vol = SET.vol; if (AU.setVol) AU.setVol(SET.vol); };
 AU.vol = SET.vol;
 
 // ---------------------------------------------------------------- WebGL
@@ -17693,10 +17704,11 @@ function mkFoe(kind, x, z, crew, seed, vid) { const f = { kind, x, z, crew, stun
   else { f.rig = ASTRO.create(crew, f.seed); if (kind === 'crew') { f.hp = 3; f.panic = 0; } }
   return f; }
 const P = () => S.players[0];
-function say(who, text, o) { o = o || {}; S.lines.push({ who, text, t: S.t, calm: o.calm }); if (S.lines.length > 4) S.lines.shift(); hudDirty = true;
-  if (!AU.ctx) return;
+function say(who, text, o) { o = o || {};
   // who is talking: the explicit voice slot, else the name on the line
   const sp = o.voice ? o.voice[0] : /nick/i.test(who) ? 'nick' : /odyssey|capcom|houston|suit|argus|ithaca/i.test(who) ? 'pa' : /unknown|keis/i.test(who) ? 'entity' : (CREW.find(c => who.indexOf(c.short.split(' ').pop()) >= 0) || {}).id || 'nick';
+  S.lines.push({ who, text, t: S.t, calm: o.calm, id: sp, dur: clamp(text.length / 14, 1.3, 7) }); if (S.lines.length > 4) S.lines.shift(); hudDirty = true;
+  if (!AU.ctx) return;
   if (VOICE.utter(sp, o.voice ? o.voice[1] : null, text, { dup: o.dup, calm: o.calm })) return;
   if (sp === 'entity') sfx.kei(.5, 0); else sfx.loopOpen(sp === 'nick' ? 'ground' : sp === 'pa' ? 'pa' : 'suit', text.length); }
 /* Everyone's vital signs as the suit telemetry has them, under your own name: the four you are not. Once you are
@@ -17716,12 +17728,20 @@ function ecgStep() { const E = S.ecg || (S.ecg = {}), now = S.t, cine = S.cine;
     e.show = alive ? Math.round(e.bpm) : 0; } }
 function ecgDraw(e, x, y, w, a, col0) { const u = hud.height / 288; hx.save(); hx.lineWidth = Math.max(1, u * .5); hx.lineJoin = 'round';
   for (const [col, off] of [['rgba(0,0,0,.6)', .6], [col0 || '#f4f1e8', 0]]) { hx.strokeStyle = col; hx.beginPath(); for (let k = 0; k < ECG_N; k++) { const v = e.b[(e.i + k) % ECG_N], px = (x + w * k / (ECG_N - 1) + off) * u, py = (y - v * a + off) * u; if (k) hx.lineTo(px, py); else hx.moveTo(px, py); } hx.stroke(); } hx.restore(); }
-function crewVitals(txt, mx, y, gz, far, own) { ecgStep(); let i = 0;
-  if (own) { const e = S.ecg[S.crew.id]; ecgDraw(e, mx + 52, y - 16.5, 40, 4.2, e.show ? 0 : C_FLAT); txt(String(e.show), mx + 95, y - 13, 9, 'left', e.show ? '#f4f1e8' : C_FLAT); }
-  for (const c of CREW) { if (c.id === S.crew.id) continue; const f = S.cr && S.cr[c.id], up = !f || f.alive !== false, e = S.ecg[c.id], yy = y + i * 10;
-    txt(garbleText(c.short, gz * .5), mx, yy, 9, 'left', up ? C_BLU : C_FLAT);
+// how much of a voice is on the radio from this suit right now, 0..1 (a line lights its speaker's row for as long as it takes to say)
+function talking(id) { let k = 0; for (const l of S.lines) if (l.id === id) { const a = S.t - l.t; if (a >= 0 && a < l.dur) k = Math.max(k, Math.min(1, a * 9, (l.dur - a) * 3)); } return k; }
+function crewVitals(txt, mx, y, gz, far, own) { ecgStep(); let i = 0; const u = hud.height / 288, ga = hx.globalAlpha, NUM = 1.73;   /* half the height of a size 9 digit: its baseline goes this far under the line it is centred on */
+  // the name, lit while its owner talks: a lamp behind it comes on, the way a caption on a caution panel does, and the letters go dark against it
+  const name = (s, x, yb, size, k, col) => { if (k <= 0) { txt(s, x, yb, size, 'left', col); return; }
+    const px = Math.round(size * .55 * u), cap = px * .698, fl = .9 + .1 * Math.sin(S.t * 29 + yb); hx.font = `500 ${px}px ${FONT}`; hx.letterSpacing = (size * .035 * u).toFixed(2) + 'px'; hx.textAlign = 'left'; const w = hx.measureText(s).width, m = 1.5 * u;
+    hx.globalAlpha = ga * (1 - k); txt(s, x, yb, size, 'left', col);
+    hx.globalAlpha = ga * k * fl; hx.shadowColor = 'rgba(255,255,255,.8)'; hx.shadowBlur = 3.5 * u; hx.fillStyle = '#f4f2ec'; hx.fillRect(x * u - m, yb * u - cap - m, w + 2 * m, cap + 2 * m); hx.shadowBlur = 0; hx.shadowColor = 'transparent';
+    hx.globalAlpha = ga * k; hx.fillStyle = '#0c0c0c'; hx.fillText(s, x * u, yb * u); hx.globalAlpha = ga; };
+  if (own) { const e = S.ecg[S.crew.id], z = y - 15.5; name(garbleText(S.crew.short, gz), mx, y - 13, 13, talking(S.crew.id), C_BLU); ecgDraw(e, mx + 52, z, 40, 4.2, e.show ? 0 : C_FLAT); txt(String(e.show), mx + 95, z + NUM, 9, 'left', e.show ? '#f4f1e8' : C_FLAT); }
+  for (const c of CREW) { if (c.id === S.crew.id) continue; const f = S.cr && S.cr[c.id], up = !f || f.alive !== false, e = S.ecg[c.id], yy = y + i * 10, z = yy - NUM;
+    name(garbleText(c.short, gz * .5), mx, yy, 9, up ? talking(c.id) : 0, up ? C_BLU : C_FLAT);
     if (far && up) txt('NO SIGNAL', mx + 40, yy, 9, 'left', C_AMB);
-    else { const flat = !up && !e.show; ecgDraw(e, mx + 40, yy - 3, 40, 3.5, flat ? C_FLAT : 0); txt(String(up ? e.show : 0), mx + 83, yy, 9, 'left', up ? '#f4f1e8' : C_FLAT); }
+    else { const flat = !up && !e.show; ecgDraw(e, mx + 40, z, 40, 3.5, flat ? C_FLAT : 0); txt(String(up ? e.show : 0), mx + 83, yy, 9, 'left', up ? '#f4f1e8' : C_FLAT); }
     i++; } }
 const pitchOf = id => (CREW.find(c => c.id === id) || {}).pitch || 110;
 function buildScript() {
@@ -17945,7 +17965,7 @@ function climbStep(dt, cmd, p) {
   if (!C.grabbed && C.y > 2.1 && C.y < 4.8) { let nd = 99; for (const f of S.foes) if (f.kind !== 'crew' && f.stun <= 0) nd = Math.min(nd, Math.hypot(f.x - p.x, f.z - p.z));
     if (nd < 9) { C.grabbed = 1; C.y = Math.max(0, C.y - .9); S.shake = 1; S.burst = .9; if (AU.ctx) { sfx.legs(1, 0); sfx.kei(.9, 0); } say('SUIT', 'SOMETHING HAS THE BOOT.'); selfVoice('hurt', 1); } }
   if (C.y >= LADDER_TOP && !C.top) { C.top = 1; if (AU.ctx) sfx.hatch(); say('NICK (CAPCOM)', 'You are on the porch. Through the hatch. Go.'); }
-  if (C.y >= LADDER_TOP + 1.2) { S.stage = 3; S.launchT = 0; S.rise = 0; S.climb = null; say('ARGUS A-2', 'HATCH SEALED. MAIN ENGINE START'); if (AU.ctx) { NASA.play('lift', 8, 26, { gain: 1.1, fade: .4, dest: AU.suit }); NASA.play('tli', 0, 6, { gain: .7, dest: AU.radio }); } }
+  if (C.y >= LADDER_TOP + 1.2) { S.stage = 3; S.launchT = 0; S.rise = 0; S.climb = null; say('ARGUS A-2', 'HATCH SEALED. MAIN ENGINE START'); if (AU.ctx) { NASA.play('lift', 8, 26, { gain: .7, fade: .4, dest: AU.suit }); NASA.play('tli', 0, 6, { gain: .7, dest: AU.radio }); } }
 }
 /* The ride out. You are through the hatch and strapped in behind the one window in Argus A-2's cabin, looking
    back down the valley you crossed. The engine lights, the pad drops away under you, and whatever was on the
@@ -18562,7 +18582,7 @@ function endCine(skipped) { const c = S.cine; if (NASA.cine) { NASA.cine.stop(.2
 function audioFrame(dt) {
   if (!AU.ctx || !S) return; if (S.mode === 'home') return homeAudioFrame(); const t = AU.ctx.currentTime, p = P(); const gz = S.over === 'dup' ? 1 : S.cine ? .12 : S.glitch;
   burSound(dt, p);
-  AU.stat.gain.setTargetAtTime(.01 + gz * .16, t, .05); AU.droneG.gain.setTargetAtTime(S.cine ? .09 : .035 + (S.stage === 3 || (S.sh && S.sh.burn) ? .34 : 0), t, .3);
+  AU.stat.gain.setTargetAtTime(.01 + gz * .09, t, .05); AU.droneG.gain.setTargetAtTime(S.cine ? .09 : .035 + (S.stage === 3 || (S.sh && S.sh.burn) ? .2 : 0), t, .3);
   const up = 1 + (1 - S.left / 600) * .5; AU.dr[0].frequency.setTargetAtTime(37 * up, t, 1); AU.dr[1].frequency.setTargetAtTime(37.6 * up, t, 1); AU.dr[2].frequency.setTargetAtTime(55.4 * up, t, 1);
   if (Math.random() < gz * dt * 7) { const d = .03 + Math.random() * .22; AU.drop.gain.setValueAtTime(0, t); AU.drop.gain.setValueAtTime(1, t + d); VOICE.gate(false); setTimeout(() => VOICE.gate(true), d * 1000); }
   const rate = .28 + (1 - p.stam) * .5 + S.prox * .35; const b0 = S.breath; S.breath = (S.breath + dt * rate) % 1;
@@ -18589,6 +18609,11 @@ function audioFrame(dt) {
 const FONT = "'IBM Plex Mono','SF Mono',Menlo,Consolas,monospace", C_AMB = '#f4f2ec', C_RED = '#ffffff', C_BLU = '#f4f2ec', C_FLAT = '#e2281d';   // the one colour on the display: a flat line
 const NASA_IMG = new Image(); const MAPC = document.createElement('canvas');
 function buildMapCanvas() { MAPC.width = MW; MAPC.height = MH; const x = MAPC.getContext('2d'), im = x.createImageData(MW, MH); for (let j = 0; j < MH; j++) for (let i = 0; i < MW; i++) { const o = (j * MW + i) * 4, ps = W.pass[j * MW + i] === 1, h = W.H[j * (MW + 1) + i], k = clamp(.5 + h * .03, .3, 1); im.data[o] = im.data[o + 1] = im.data[o + 2] = (ps ? 190 : 64) * k; im.data[o + 3] = ps ? 235 : 200; } x.putImageData(im, 0, 0); }
+// can eyes at a reach b: the ground between them, the boulders big enough to stand behind, and the pod
+function inSight(ax, ay, az, bx, by, bz) { if (!clearView(ax, ay, az, bx, by, bz)) return false; const dx = bx - ax, dz = bz - az, L2 = dx * dx + dz * dz || 1;
+  const hit = (x, z, r2, top) => { const t = ((x - ax) * dx + (z - az) * dz) / L2; if (t <= .02 || t >= .98) return false; const px = ax + dx * t - x, pz = az + dz * t - z; return px * px + pz * pz < r2 && lerp(ay, by, t) < top; };
+  if (hit(START.x, START.z, 5, groundY(START.x, START.z) + 4)) return false;
+  for (const k of W.rocks) if (k.rad >= .9 && hit(k.x, k.z, k.rad * k.rad * .6, groundY(k.x, k.z) + k.rad * k.sy * 1.5)) return false; return true; }
 function drawMinimap(u, x0, y0, sz, p) {
   const hd = 9, cx = (x0 + sz / 2) * u, cy = (y0 + hd + sz / 2) * u, R0 = 55, k = sz / 2 * u / R0;
   hx.fillStyle = 'rgba(8,8,8,.82)'; hx.fillRect(x0 * u, y0 * u, sz * u, (sz + hd) * u);
@@ -18597,6 +18622,15 @@ function drawMinimap(u, x0, y0, sz, p) {
   const rot = (dx, dz) => { const c = Math.cos(p.yaw), s = Math.sin(p.yaw); return [dx * c + dz * s, -dx * s + dz * c]; };
   hx.save(); hx.beginPath(); hx.rect(x0 * u, (y0 + hd) * u, sz * u, sz * u); hx.clip();
   if (S.crew.id === 'bart') { hx.fillStyle = C_RED; for (const [dx, dz] of S.scan) { const [rx, ry] = rot(dx, dz); hx.fillRect(cx + rx * k - 1.4 * u, cy + ry * k - 1.4 * u, 2.8 * u, 2.8 * u); } }
+  // whoever you can see is on the map by name, quietly: crew as an open ring, the others as a cross. A copy keeps the name it took until it shows what it is.
+  { const ey = groundY(p.x, p.z) + 1.66, fx = Math.sin(p.yaw), fz = -Math.cos(p.yaw), L = [], fs = Math.max(6, Math.round(4.1 * u));
+    for (const f of (S.watch && !S.watch.hide ? S.foes.concat([S.watch.f]) : S.foes)) { const dx = f.x - p.x, dz = f.z - p.z, d = Math.hypot(dx, dz);
+      const see = d > .01 && d < 80 && (dx * fx + dz * fz) / d > .5 && !(f.bur && (f.dep || 0) > .5) && inSight(p.x, ey, p.z, f.x, groundY(f.x, f.z) + 1.5, f.z);
+      if (see) { f.mapP = [f.x, f.z]; if (f.kind === 'dup' && (f.active || f.open > .05)) f.mapK = 1; } f.mapA = clamp((f.mapA || 0) + (see ? .25 : -.07), 0, 1); if (!(f.mapA > 0) || !f.mapP) continue;
+      const foe = f.kind === 'kei' || f.mapK === 1, [rx, ry] = rot(f.mapP[0] - p.x, f.mapP[1] - p.z); L.push({ x: cx + rx * k, y: cy + ry * k, a: f.mapA, foe, s: foe ? 'KEIS' : (CREW[f.crew] || {}).short || '' }); }
+    L.sort((a, b) => a.y - b.y); hx.font = `500 ${fs}px ${FONT}`; hx.letterSpacing = '0px'; hx.textAlign = 'left'; hx.lineWidth = Math.max(1, u * .45); let ly = -1e9, lx = 0;
+    for (const m of L) { const r = 1.5 * u; hx.globalAlpha = .8 * m.a; hx.strokeStyle = hx.fillStyle = '#e8e6de'; hx.beginPath(); if (m.foe) { hx.moveTo(m.x - r, m.y - r); hx.lineTo(m.x + r, m.y + r); hx.moveTo(m.x + r, m.y - r); hx.lineTo(m.x - r, m.y + r); } else hx.arc(m.x, m.y, r, 0, 6.2832); hx.stroke();
+      let ty = m.y + fs * .36; if (ty - ly < fs * 1.05 && Math.abs(m.x - lx) < 20 * u) ty = ly + fs * 1.05; ly = ty; lx = m.x; hx.globalAlpha = .62 * m.a; hx.fillStyle = 'rgba(0,0,0,.7)'; hx.fillText(m.s, m.x + 2.9 * u + u * .4, ty + u * .4); hx.fillStyle = '#e8e6de'; hx.fillText(m.s, m.x + 2.9 * u, ty); } hx.globalAlpha = 1; }
   { let [rx, ry] = rot(SHIP.x - p.x, SHIP.z - p.z); const m = Math.max(Math.abs(rx), Math.abs(ry)), lim = R0 * .9; if (m > lim) { rx *= lim / m; ry *= lim / m; } const sx = cx + rx * k, sy = cy + ry * k, d = 2.6 * u; hx.fillStyle = C_AMB; hx.beginPath(); hx.moveTo(sx, sy - d); hx.lineTo(sx + d, sy); hx.lineTo(sx, sy + d); hx.lineTo(sx - d, sy); hx.fill(); }
   hx.fillStyle = '#fff'; hx.beginPath(); hx.moveTo(cx, cy - 3.4 * u); hx.lineTo(cx + 2.4 * u, cy + 2.6 * u); hx.lineTo(cx, cy + 1.2 * u); hx.lineTo(cx - 2.4 * u, cy + 2.6 * u); hx.fill(); hx.restore();
   hx.strokeStyle = 'rgba(220,217,208,.75)'; hx.lineWidth = Math.max(1, u * .5); hx.strokeRect(x0 * u, y0 * u, sz * u, (sz + hd) * u); hx.beginPath(); hx.moveTo(x0 * u, (y0 + hd) * u); hx.lineTo((x0 + sz) * u, (y0 + hd) * u); hx.stroke();
@@ -18610,7 +18644,7 @@ function drawHud() {
   const txt = (s, x, y, size, al, col) => { hx.font = `500 ${Math.round(size * .55 * u)}px ${FONT}`; hx.letterSpacing = (size * .035 * u).toFixed(2) + 'px'; hx.textAlign = al || 'left'; hx.fillStyle = 'rgba(0,0,0,.6)'; hx.fillText(s, x * u + u * .7, y * u + u * .7); hx.fillStyle = col || '#ececE6'; hx.fillText(s, x * u, y * u); };
   const radio = y0 => { const l = S.lines[S.lines.length - 1]; if (!l) return; const age = S.t - l.t; if (age > 8 || age < 0) return; const full = (l.who + ': ' + l.text).slice(0, l.who.length + 2 + Math.floor(age * 38)); hx.globalAlpha = clamp(8 - age, 0, 1); wrap(full, 52).forEach((r, i) => txt(garbleText(r, gz * (l.calm ? .25 : .55)), cw / 2, y0 + i * 12, 13, 'center')); hx.globalAlpha = 1; };
   if (S.cine) { const c = S.cine;
-    if (c.phase === 'descent' && c.t >= XCUT) { if (c.g > .9) { hx.globalAlpha = (c.g - .9) * 10; const m = Math.floor(S.left / 60), sx = Math.floor(S.left % 60); txt(S.crew.short, mx, top, 13, 'left', C_BLU); crewVitals(txt, mx, top + 13, 0, false, true); hx.globalAlpha = 1; } radio(216); }
+    if (c.phase === 'descent' && c.t >= XCUT) { if (c.g > .9) { hx.globalAlpha = (c.g - .9) * 10; const m = Math.floor(S.left / 60), sx = Math.floor(S.left % 60); crewVitals(txt, mx, top + 13, 0, false, true); hx.globalAlpha = 1; } radio(216); }
     else if (c.phase === 'descent') { const alt = c.h; txt('ALT ' + String(Math.max(0, Math.round(alt))).padStart(5, ' ') + ' M', mx, top, 14); txt('ESCAPE POD EP-2', cw - mx, top, 14, 'right', C_AMB); crewVitals(txt, mx, top + 14, 0); if (c.t >= FLAMEOUT && !c.td) txt('ENGINE OUT', cw / 2, top, 22, 'center', C_RED); radio(216);
       for (const q of c.q) { if (q.done || c.t < q.t) continue; const k = 1 - (c.t - q.t) / 3.2; txt(q.label, cw / 2, 128, 30, 'center'); txt(q.what, cw / 2, 146, 14, 'center', C_AMB); hx.fillStyle = 'rgba(236,236,230,.25)'; hx.fillRect((cw / 2 - 60) * u, 154 * u, 120 * u, 4 * u); hx.fillStyle = '#fff'; hx.fillRect((cw / 2 - 60) * u, 154 * u, 120 * u * (q.hold ? q.held / q.hold : k), 4 * u); }
       if (c.fails) txt('HULL STRESS ' + c.fails, cw - mx, top + 14, 13, 'right', C_RED);
@@ -18622,7 +18656,7 @@ function drawHud() {
   if (S.over === 'dup') { const k = clamp(S.overT / 1.2, 0, 1); hx.strokeStyle = '#fff'; hx.lineWidth = 2 * u; hx.beginPath(); const cx = cw / 2 * u, cy = H * .36; hx.arc(cx, cy, 26 * u, 0, 6.3 * k); hx.stroke(); hx.beginPath(); hx.moveTo(cx, cy + 26 * u); hx.lineTo(cx, cy + (26 + 130 * k) * u); if (k > .6) { hx.moveTo(cx, cy + 110 * u); hx.lineTo(cx + 22 * u, cy + 110 * u); hx.moveTo(cx, cy + 134 * u); hx.lineTo(cx + 30 * u, cy + 134 * u); } hx.stroke(); txt('SUIT BREACH', cw / 2, 250, 16, 'center'); return; }
   if (S.over) return;
   const m = Math.floor(S.left / 60), s = Math.floor(S.left % 60);
-  txt(garbleText(`T-${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`, gz), cw / 2, top, 22, 'center', S.left < 120 ? C_RED : '#f4f1e8'); txt(garbleText(S.crew.short, gz), mx, top, 13, 'left', C_BLU); crewVitals(txt, mx, top + 13, gz, false, true);
+  txt(garbleText(`T-${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`, gz), cw / 2, top, 22, 'center', S.left < 120 ? C_RED : '#f4f1e8'); crewVitals(txt, mx, top + 13, gz, false, true);
   const sig = Math.round(S.signal * 100); txt(garbleText(sig < 25 ? 'LINK LOST' : `LINK ${sig}%`, gz), cw - mx, top, 13, 'right', sig < 50 ? C_RED : C_BLU); if (S.micOn) txt('MIC OPEN', cw - mx, top + 13, 13, 'right');
   const dist = Math.max(0, W.shipDist[Math.floor(p.x / CS) + Math.floor(p.z / CS) * MW]) * CS;
   const obj = S.depart !== undefined ? 'ARGUS A-2 HAS DEPARTED' : S.climb ? `CLIMB  ${(Math.max(0, LADDER_TOP + 1.2 - S.climb.y)).toFixed(1)} M` : [`REACH ARGUS A-2  ${Math.round(dist)} M`, 'RESTART THE REACTOR', 'TAKE THE LADDER', ''][S.stage]; txt(garbleText(obj, gz * .6), cw / 2, top + 15, 13, 'center', C_AMB);
@@ -18889,8 +18923,8 @@ function filmBegin(over) {
   if (document.pointerLockElement) document.exitPointerLock(); const v = $('filmV'), card = $('filmCard'), scr = $('film'), DIS = over ? .45 : .7; let done = false, raf = 0, carded = false, solid = !over, t0v = -1;   // the film's first shot starts pushing in at once, so over the beach it comes up fast: nearly a cut
   scr.style.background = over ? 'transparent' : '';   // over a rendered shot the film comes up through it; once it is fully up the screen behind goes black again
   if (typeof homeAudio === 'function') homeAudio(false); if (AU.ctx && AU.master) { const t = AU.ctx.currentTime; AU.master.gain.cancelScheduledValues(t); AU.master.gain.setTargetAtTime(0, t, .4); }
-  card.classList.remove('on'); card.textContent = ''; v.style.opacity = 0; try { v.currentTime = 0; } catch (e) { } v.volume = clamp(SET.vol * 1.3, 0, 1); show('film');
-  const fin = () => { if (done) return; done = true; scr.style.background = ''; cancelAnimationFrame(raf); try { v.pause(); } catch (e) { } removeEventListener('keydown', key); if (AU.ctx && AU.master) AU.master.gain.setTargetAtTime(AU.vol, AU.ctx.currentTime, .3); S.over = 'home'; S.overT = 0; showEnd(); };
+  card.classList.remove('on'); card.textContent = ''; v.style.opacity = 0; try { v.currentTime = 0; } catch (e) { } v.volume = clamp(SET.vol * .53, 0, 1); show('film');
+  const fin = () => { if (done) return; done = true; scr.style.background = ''; cancelAnimationFrame(raf); try { v.pause(); } catch (e) { } removeEventListener('keydown', key); if (AU.ctx && AU.master) AU.master.gain.setTargetAtTime(1, AU.ctx.currentTime, .3); S.over = 'home'; S.overT = 0; showEnd(); };
   const cards = () => { if (done || carded) return; carded = true; cancelAnimationFrame(raf); v.style.opacity = 0; scr.style.background = ''; if (S && S.home) S.home.done = 1; let i = 0;
     const next = () => { if (done) return; if (i >= FILM_CARDS.length) return fin(); card.textContent = FILM_CARDS[i++]; card.classList.add('on'); setTimeout(() => { card.classList.remove('on'); setTimeout(next, 1500); }, 5400); }; setTimeout(next, 1100); };
   const tick = () => { if (done || carded) return; const t = v.currentTime, d = v.duration || 47.4, g = Math.max(0, 1 - t / 2.8);
