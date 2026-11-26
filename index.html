@@ -1425,6 +1425,962 @@ const GEAR = (() => {
 })();
 
 
+/* flag.js : the flag assembly left at the EVA site, simulated.  Needs prims.js only (TL, the batch layout).  One global, FLAG.
+   No DOM, no clock, no Math.random: everything comes from the seed and from what update() is given.
+
+   What is modelled, because it is what makes a flag in vacuum look the way the Apollo ones do:
+   - The cloth is a 21 x 13 particle sheet (1.35 x 0.78 m of printed nylon) solved by position-based dynamics at a fixed 360 Hz:
+     inextensible warp and weft, a compliant bias (shear), and a SIGNED bending term whose rest curvature is the set of creases the
+     fabric took while it was folded in its sleeve for the trip.  The top hem is gathered on a rod that is a little shorter than the
+     flag is wide, so the sheet hangs in permanent pleats, and nothing in it moves until something moves it.
+   - There is no air term at all.  The only losses are the cloth's own internal friction (a viscous term on relative motion, a slow
+     hysteretic one on everything, and a dry one that brings it to a dead stop), so a swing lasts the better part of a minute.
+   - The pole is a thin sectioned tube: a cantilever with a bending mode in each direction (2.3 Hz), a torsion mode (2.9 Hz) coupled
+     to bending through the off-axis weight of the rod and flag, a base that yields in the regolith when it is overloaded (it then
+     leans, and stays leaning) and turns in its hole when it is twisted too far.  The top rod hangs on a hinge and sits on a latch:
+     it can be thrown up off the latch and falls back under 1.24 m/s^2, clacking down in two or three bounces.
+   - The cloth is driven only through its attachments (the hem on the rod, the tie at the lower hoist corner), by a body or a
+     projectile going through it, and by a gas jet, the one thing that does push on it.  It cannot pass through the pole or the rod.
+
+   FLAG.create(seed, x, z, groundY [, yaw])  -> rig.  The pole stands at x, z; the fly points along +X turned by yaw (radians, as V3.rotY).
+                                              seed varies the creases and gathers.  The rig is created settled and asleep (rig.rest === true).
+   FLAG.update(rig, dt, ev)                  advance by dt seconds (any dt: it is clamped to 0.1 and taken in fixed 1/360 s steps).
+        ev is optional: { jet: { o:[x,y,z], d:[x,y,z], k },      an engine firing: nozzle position, exhaust direction, throttle (k = 1 is a main engine
+                                                                  at full thrust; supply it every frame the engine burns).  The plume is a lobe about d
+                                                                  and, where d points down, a sheet of gas running out along the ground from under it.
+                          knock: { j:[x,y,z], h },                a blow to the pole: impulse in N s (1 = a firm shove with a hand) at height h metres
+                          pass: { p:[x,y,z], v:[x,y,z], r },      a sphere of radius r at p moving at v (m/s): supply every frame it is near.  Slow = a body
+                                                                  shouldering the cloth aside; fast = a round going through (it leaves a hole).
+                          shock: k }                              ground shock under the base, k = peak ground speed in m/s (0.1 a thump, 1 violent);
+                                                                  or { k, d:[x,z] } to give it a direction.
+   FLAG.emit(B, rig, lod)                    append world-space triangles.  lod 0: at most 9,000 vertices.  lod 1 (beyond 30 m): at most 1,200.
+                                              While the rig is asleep this is a block copy of the last mesh.
+   FLAG.hit(rig, origin, dir)                ray test against the cloth and the pole/rod -> null or { t, part: 'cloth' | 'pole', p:[x,y,z] }
+                                              (t is in units of |dir|; p = origin + dir * t).
+   FLAG.reset(rig)                           put it back as created (upright, settled, no holes).
+   rig.rest                                  true while asleep: update() returns at once and costs nothing.
+   rig.lean, rig.turn                        read-only: how far the pole has been pushed over (radians) and turned in its hole.
+   FLAG.SUN = [x,y,z] (optional)             unit vector toward the sun.  If set, the cloth is given the glow nylon has when the sun is behind it. */
+const FLAG = (() => {
+  const TAU = 6.283185307179586;
+  const GRAV = 1.24, HS = 1 / 360, MAXSUB = 20;
+  // the assembly, metres
+  const PH = 2.40, HY = 2.34, RL = 1.43, RR = .009, FW = 1.35, FH = .78;
+  const NU = 21, NV = 13, NP = NU * NV, DU = FW / (NU - 1), DV = FH / (NV - 1), DD = Math.hypot(DU, DV);
+  const X0 = .036, SLV = .012, BUNCH = .045;
+  const NSEG = 12, SEGL = PH / NSEG, STIE = HY - FH + .012;
+  const RCP = .0225, RCR = .0165;                       // collision radii of pole and rod (tube + cloth thickness + margin)
+  // the pole as a vibrating thing
+  const MB = .40, WB = TAU * 2.3, KB = MB * WB * WB, CB = 2 * .017 * MB * WB;
+  const IT = .15, WT = TAU * 2.9, KT = IT * WT * WT, CT = 2 * .028 * IT * WT, SC = .135;
+  const DY = .10, TY = .042, LEANMAX = 1.2;
+  const WRH = 1.5 * GRAV / RL, REST = .34, PHMAX = .11;
+  const WY = TAU * 9, ZY = .22;
+  const SAIL = .65 / NP, DRAGP = .45, AMAX = 75, VMAX = 7.5;
+  // the lanyard
+  const NL = 12, LSEG = .074;
+
+  const h1 = n => { let t = Math.imul(n ^ 0x9e3779b9, 0x85ebca6b); t ^= t >>> 13; t = Math.imul(t, 0xc2b2ae35); return ((t ^ t >>> 16) >>> 0) / 4294967296; };
+  const h2 = (a, b) => h1((Math.imul(a | 0, 73856093) ^ Math.imul(b | 0, 19349663)) | 0);
+  const fin = v => (typeof v === 'number' && v === v && v !== Infinity && v !== -Infinity) ? v : 0;
+  const clampN = (v, a, b) => v < a ? a : v > b ? b : v;
+
+  /* ---------- topology (shared by every rig) ---------- */
+  const WINV = new Float64Array(NP);
+  for (let j = 0; j < NV; j++) for (let i = 0; i < NU; i++) {
+    let w = 1; if (j === NV - 1) w *= .62; if (i === NU - 1) w *= .62; if (i === 0) w *= .7;   // hems and the canvas heading are doubled cloth
+    WINV[j * NU + i] = j === 0 ? 0 : w; }
+  const SH = [], SVt = [], SS = [], BU = [], BV = [];
+  for (let j = 1; j < NV; j++) for (let i = 0; i + 1 < NU; i++) SH.push(j * NU + i, j * NU + i + 1);
+  for (let j = 0; j + 1 < NV; j++) for (let i = 0; i < NU; i++) SVt.push(j * NU + i, (j + 1) * NU + i);
+  for (let j = 0; j + 1 < NV; j++) for (let i = 0; i + 1 < NU; i++) { SS.push(j * NU + i, (j + 1) * NU + i + 1); SS.push(j * NU + i + 1, (j + 1) * NU + i); }
+  for (let j = 1; j < NV; j++) for (let i = 1; i + 1 < NU; i++) BU.push(j * NU + i - 1, j * NU + i, j * NU + i + 1);
+  for (let j = 1; j + 1 < NV; j++) for (let i = 0; i < NU; i++) BV.push((j - 1) * NU + i, j * NU + i, (j + 1) * NU + i);
+  const cSH = new Int16Array(SH), cSV = new Int16Array(SVt), cSS = new Int16Array(SS), cBU = new Int16Array(BU), cBV = new Int16Array(BV);
+  const nSH = cSH.length / 2, nSV = cSV.length / 2, nSS = cSS.length / 2, nBU = cBU.length / 3, nBV = cBV.length / 3;
+  const TMP = new Float64Array(NP * 3), TIEI = (NV - 1) * NU, TSOFT = .6;
+
+  /* ---------- the rig ---------- */
+  function create(seed, x, z, groundY, yaw) {
+    seed = (seed | 0) + 1; x = fin(x); z = fin(z); yaw = fin(yaw);
+    const g = typeof groundY === 'function' ? groundY : () => 0, y = fin(g(x, z)), cy = Math.cos(yaw), sy = Math.sin(yaw);
+    const wl = (lx, lz) => fin(g(x + lx * cy - lz * sy, z + lx * sy + lz * cy)) - y;
+    const R = { x, y, z, yaw, cy, sy, seed, rest: false, lean: 0, turn: 0,
+      gsx: clampN((wl(.6, 0) - wl(-.6, 0)) / 1.2, -1, 1), gsz: clampN((wl(0, .6) - wl(0, -.6)) / 1.2, -1, 1),
+      dx: 0, dz: 0, vdx: 0, vdz: 0, lx: 0, lz: 0, tw: 0, vtw: 0, twp: 0, ph: 0, vph: 0, yb: 0, vyb: 0,
+      cl: new Float64Array((NSEG + 1) * 3), fr: new Float64Array(21), tie: new Float64Array(3),
+      P: new Float64Array(NP * 3), Q: new Float64Array(NP * 3), V: new Float64Array(NP * 3), N: new Float64Array(NP * 3), W: WINV.slice(),
+      pinS: new Float64Array(NU), hu: new Float64Array(nBU), hv: new Float64Array(nBV), cu: new Float64Array(nBU), cv: new Float64Array(nBV),
+      LP: new Float64Array(NL * 3), LQ: new Float64Array(NL * 3), LV: new Float64Array(NL * 3),
+      jk: 0, jo: [0, 0, 0], jd: [0, -1, 0], jF: new Float64Array(4), JA: new Float64Array(NP * 3), tk: 0,
+      pr: 0, pp: [0, 0, 0], pv: [0, 0, 0],
+      holes: [], nshock: 0, acc: 0, t: 0, still: 0, ver: 1, snap: null, cache: [null, null] };
+    design(R); R.wg = wrinkles(seed); kin(R); layout(R);
+    settle(R);
+    R.snap = { P: R.P.slice(), LP: R.LP.slice() };
+    return R;
+  }
+
+  /* The creases.  The flag went out folded: three hard folds across its length and two along it, alternately in and out, pressed
+     for months.  Over those lies the softer set it took from being rolled on its rod, and the small disorder of handling. */
+  function design(R) {
+    const s = R.seed, pinS = R.pinS;
+    { let a = 0; const sp = []; for (let i = 0; i + 1 < NU; i++) { const b = 1 + .55 * Math.sin(i * 1.37 + h2(s, 1) * TAU) + .3 * Math.sin(i * 2.9 + h2(s, 2) * TAU); sp.push(b); a += b; }
+      let c = X0; pinS[0] = c; for (let i = 0; i + 1 < NU; i++) { c += DU * (1 - BUNCH * sp[i] * (NU - 1) / a); pinS[i + 1] = c; } }
+    const WBEND = 13, kSoft = 1 / (WBEND * WBEND * HS * HS), sgn = h2(s, 3) < .5 ? 1 : -1;
+    const foldU = [5, 10, 15], foldV = [4, 8];
+    for (let k = 0; k < nBU; k++) { const m = cBU[k * 3 + 1], i = m % NU, j = (m / NU) | 0, v = j / (NV - 1);
+      let h = .0042 * Math.sin(i * .86 + h2(s, 5) * TAU + v * 1.1) * (.35 + .65 * v) + (h2(s + i * 7, j * 13 + 3) - .5) * .0026, c = kSoft;
+      const f = foldU.indexOf(i); if (f >= 0) { h += sgn * (f & 1 ? -1 : 1) * (.012 + .004 * h2(s, 20 + f)) * (.75 + .25 * v); c = kSoft / 5; }
+      R.hu[k] = h; R.cu[k] = c; }
+    for (let k = 0; k < nBV; k++) { const m = cBV[k * 3 + 1], i = m % NU, j = (m / NU) | 0, u = i / (NU - 1);
+      let h = .002 * Math.sin(j * 1.3 + h2(s, 6) * TAU + u * 3.1) + (h2(s + i * 11, j * 17 + 5) - .5) * .0018, c = kSoft * 1.3;
+      const f = foldV.indexOf(j); if (f >= 0) { h += -sgn * (f & 1 ? -1 : 1) * (.0085 + .003 * h2(s, 30 + f)) * (.5 + .5 * u); c = kSoft / 4; }
+      R.hv[k] = h; R.cv[k] = c; }
+  }
+
+  /* Where the pole is: its centre line, the frame at its top, the rod and the lower tie.  The tube leans as a whole by (lx, lz)
+     where the ground has given way and bends elastically on top of that with the cantilever's own shape; the length never changes. */
+  function kin(R) {
+    const cl = R.cl, fr = R.fr, ax = 1.5 * R.dx / PH, az = 1.5 * R.dz / PH;
+    let x = 0, y = R.yb, z = 0, sx = 0, sz = 0, c = 1; cl[0] = 0; cl[1] = y; cl[2] = 0;
+    for (let k = 0; k < NSEG; k++) { const xi = (k + .5) / NSEG, f = 2 * xi - xi * xi, tx = R.lx + ax * f, tz = R.lz + az * f, a = Math.sqrt(tx * tx + tz * tz);
+      if (a < 1e-9) { sx = tx; sz = tz; c = 1; } else { const q = Math.sin(a) / a; sx = tx * q; sz = tz * q; c = Math.cos(a); }
+      x += sx * SEGL; y += c * SEGL; z += sz * SEGL; const o = (k + 1) * 3; cl[o] = x; cl[o + 1] = y; cl[o + 2] = z; }
+    { const tx = R.lx + ax, tz = R.lz + az, a = Math.sqrt(tx * tx + tz * tz); if (a < 1e-9) { sx = tx; sz = tz; c = 1; } else { const q = Math.sin(a) / a; sx = tx * q; sz = tz * q; c = Math.cos(a); } }
+    const ic = 1 / (1 + c), Xx = c + sz * sz * ic, Xy = -sx, Xz = -sx * sz * ic, Zx = Xz, Zy = -sz, Zz = c + sx * sx * ic;
+    const ct = Math.cos(R.tw), st = Math.sin(R.tw), cp = Math.cos(R.ph), sp = Math.sin(R.ph);
+    const erx = Xx * ct + Zx * st, ery = Xy * ct + Zy * st, erz = Xz * ct + Zz * st;
+    fr[0] = sx; fr[1] = c; fr[2] = sz;                                         // t: along the pole at its top
+    fr[3] = erx; fr[4] = ery; fr[5] = erz;                                     // er: where the rod would point if it lay on its latch
+    fr[6] = -Xx * st + Zx * ct; fr[7] = -Xy * st + Zy * ct; fr[8] = -Xz * st + Zz * ct;   // ep: the hinge axis
+    fr[9] = erx * cp + sx * sp; fr[10] = ery * cp + c * sp; fr[11] = erz * cp + sz * sp;   // rd: along the rod
+    fr[12] = -sx * cp + erx * sp; fr[13] = -c * cp + ery * sp; fr[14] = -sz * cp + erz * sp; // rn: square to the rod, downward
+    const a = (HY - (NSEG - 1) * SEGL) / SEGL, o = (NSEG - 1) * 3;
+    fr[15] = cl[o] + (cl[o + 3] - cl[o]) * a; fr[16] = cl[o + 1] + (cl[o + 4] - cl[o + 1]) * a; fr[17] = cl[o + 2] + (cl[o + 5] - cl[o + 2]) * a;   // the hinge
+    const kt = Math.floor(STIE / SEGL), b = STIE / SEGL - kt, p = kt * 3;
+    R.tie[0] = cl[p] + (cl[p + 3] - cl[p]) * b; R.tie[1] = cl[p + 1] + (cl[p + 4] - cl[p + 1]) * b; R.tie[2] = cl[p + 2] + (cl[p + 5] - cl[p + 2]) * b;
+  }
+  function pins(R) {
+    const P = R.P, Q = R.Q, fr = R.fr, s = R.pinS;
+    const hx = fr[15] + fr[12] * SLV, hy = fr[16] + fr[13] * SLV, hz = fr[17] + fr[14] * SLV;
+    for (let i = 0, o = 0; i < NU; i++, o += 3) { Q[o] = P[o]; Q[o + 1] = P[o + 1]; Q[o + 2] = P[o + 2];
+      P[o] = hx + fr[9] * s[i]; P[o + 1] = hy + fr[10] * s[i]; P[o + 2] = hz + fr[11] * s[i]; }
+  }
+  // the lanyard hangs from the latch lever, a hand's width out on the far side of the pole
+  function lanTop(R, out) { const fr = R.fr; out[0] = fr[15] - fr[3] * .046 - fr[0] * .028; out[1] = fr[16] - fr[4] * .046 - fr[1] * .028; out[2] = fr[17] - fr[5] * .046 - fr[2] * .028; }
+  const LT = [0, 0, 0];
+
+  // first guess at the hang: straight down from the gathered hem, nudged the way each crease wants to go
+  function layout(R) {
+    const P = R.P, Q = R.Q, V = R.V; pins(R);
+    const z0 = new Float64Array(NU); { let b = 0; for (let i = 1; i + 1 < NU; i++) { b += 2 * R.hu[(NV - 2) * (NU - 2) + i - 1]; z0[i + 1] = z0[i] + b; }
+      const e = z0[NU - 1]; for (let i = 0; i < NU; i++) z0[i] -= e * i / (NU - 1); }
+    for (let j = 1; j < NV; j++) for (let i = 0; i < NU; i++) { const o = (j * NU + i) * 3, t = i * 3, v = j / (NV - 1);
+      P[o] = P[t] + (X0 + i * DU - P[t]) * v * .6; P[o + 1] = P[t + 1] - j * DV; P[o + 2] = P[t + 2] + z0[i] * v * .5; }
+    for (let i = 0; i < NP * 3; i++) { Q[i] = P[i]; V[i] = 0; }
+    lanTop(R, LT); for (let k = 0; k < NL; k++) { const o = k * 3; R.LP[o] = LT[0]; R.LP[o + 1] = LT[1] - k * LSEG; R.LP[o + 2] = LT[2]; R.LQ[o] = R.LP[o]; R.LQ[o + 1] = R.LP[o + 1]; R.LQ[o + 2] = R.LP[o + 2]; R.LV[o] = R.LV[o + 1] = R.LV[o + 2] = 0; }
+  }
+  function settle(R) {
+    for (let n = 0; n < 4000; n++) { tick(R, n < 3000 ? .985 : .95); if (n > 800 && R.vmax < 1e-4) break; R.settled = n; }
+    sleep(R);
+  }
+  function sleep(R) { R.V.fill(0); R.LV.fill(0); R.Q.set(R.P); R.LQ.set(R.LP); R.vdx = R.vdz = R.vtw = R.vph = R.vyb = 0; R.yb = 0; R.jk = 0; R.pr = 0; R.tk = 0; R.jF.fill(0); R.rest = true; R.still = 0; R.acc = 0; R.ver++; }
+  function reset(R) {
+    R.dx = R.dz = R.vdx = R.vdz = R.lx = R.lz = R.tw = R.vtw = R.twp = R.ph = R.vph = R.yb = R.vyb = 0; R.lean = R.turn = 0; R.holes.length = 0; R.t = 0; R.nshock = 0;
+    kin(R); R.P.set(R.snap.P); R.LP.set(R.snap.LP); sleep(R);
+  }
+
+  function normals(R) {
+    const P = R.P, N = R.N;
+    for (let j = 0; j < NV; j++) { const jm = j > 0 ? -NU * 3 : 0, jp = j < NV - 1 ? NU * 3 : 0;
+      for (let i = 0; i < NU; i++) { const o = (j * NU + i) * 3, a = i > 0 ? o - 3 : o, b = i < NU - 1 ? o + 3 : o;
+        const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2], vx = P[o + jp] - P[o + jm], vy = P[o + jp + 1] - P[o + jm + 1], vz = P[o + jp + 2] - P[o + jm + 2];
+        let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx; const l = Math.sqrt(nx * nx + ny * ny + nz * nz);
+        if (l > 1e-12) { nx /= l; ny /= l; nz /= l; N[o] = nx; N[o + 1] = ny; N[o + 2] = nz; } } }
+  }
+
+  /* One fixed step.  damp < 1 is only used while the rig is being settled at creation. */
+  function tick(R, settleDamp) {
+    const h = HS, P = R.P, Q = R.Q, V = R.V, N = R.N, fr = R.fr, jF = R.jF;
+    R.t += h; R.ver++;
+    /* --- the pole --- */
+    { const ct = Math.cos(R.tw), st = Math.sin(R.tw), epx = -st, epz = ct, erx = ct, erz = st;
+      const Fx = jF[0] - KB * R.dx - CB * R.vdx, Fz = jF[1] - KB * R.dz - CB * R.vdz, Ft = jF[2] - KT * (R.tw - R.twp) - CT * R.vtw;
+      const att = (Ft - SC * (epx * Fx + epz * Fz) / MB) / (IT - SC * SC / MB), ax = (Fx - SC * epx * att) / MB, az = (Fz - SC * epz * att) / MB;
+      R.vdx += ax * h; R.vdz += az * h; R.vtw += att * h; R.dx += R.vdx * h; R.dz += R.vdz * h; R.tw += R.vtw * h;
+      const dm = Math.sqrt(R.dx * R.dx + R.dz * R.dz);
+      if (dm > DY) { const e = (dm - DY) / dm, k = 1.5 / PH; R.lx += R.dx * e * k; R.lz += R.dz * e * k; R.dx -= R.dx * e; R.dz -= R.dz * e;            // the ground gives: it leans, and the spring keeps only what it can hold
+        const lm = Math.sqrt(R.lx * R.lx + R.lz * R.lz); R.vdx *= .985; R.vdz *= .985;
+        if (lm > LEANMAX) { R.lx *= LEANMAX / lm; R.lz *= LEANMAX / lm; const vr = (R.vdx * R.dx + R.vdz * R.dz) / (DY * DY); if (vr > 0) { R.vdx -= R.dx * vr; R.vdz -= R.dz * vr; } } R.lean = Math.min(lm, LEANMAX); }
+      const dt = R.tw - R.twp; if (dt > TY) { R.twp = R.tw - TY; R.vtw *= .97; } else if (dt < -TY) { R.twp = R.tw + TY; R.vtw *= .97; } R.turn = R.twp;
+      // the rod on its hinge: gravity and the latch, and the top of the pole tipping under it
+      const arr = 1.5 * (ax * erx + az * erz) / PH, el = R.ph - 1.5 * (R.dx * erx + R.dz * erz) / PH - (R.lx * erx + R.lz * erz);
+      R.vph += (-WRH * Math.cos(el) + arr + jF[3]) * h; R.ph += R.vph * h;
+      if (R.ph <= 0) { R.ph = 0; if (R.vph < 0) R.vph = R.vph < -.06 ? -R.vph * REST : 0; }
+      else if (R.ph > PHMAX) { R.ph = PHMAX; if (R.vph > 0) R.vph = -R.vph * .2; }
+      R.vyb += (-WY * WY * R.yb - 2 * ZY * WY * R.vyb) * h; R.yb += R.vyb * h;
+      if (settleDamp) { R.dx = R.dz = R.vdx = R.vdz = R.tw = R.vtw = R.ph = R.vph = 0; }
+    }
+    kin(R);
+    if (R.lean > .5) {   // pushed over far enough for the rod to reach the ground: it cannot go in, so the pole turns in its hole until the rod lies along the surface
+      for (let k = 0; k < 3; k++) { const ey = fr[16] + fr[10] * RL, gy = (fr[15] + fr[9] * RL) * R.gsx + (fr[17] + fr[11] * RL) * R.gsz + .03; if (ey >= gy) break;
+        const dyt = RL * Math.cos(R.ph) * fr[7], st = dyt >= 0 ? 1 : -1, need = Math.min(.06, (gy - ey) / (Math.abs(dyt) + .05)); R.tw += st * need; R.twp += st * need; R.vtw = 0; kin(R); } }
+    normals(R);
+    /* --- the cloth: forces and the free flight --- */
+    const hh = h * h, hgx = fr[15], hgy = fr[16], hgz = fr[17];
+    let jon = R.jk > 0, sFx = 0, sFy = 0, sFz = 0, sTt = 0, sTh = 0;
+    const jk = R.jk, ox = R.jo[0], oy = R.jo[1], oz = R.jo[2], jdx = R.jd[0], jdy = R.jd[1], jdz = R.jd[2];
+    let wall = false, gx = 0, gz = 0, hh2 = 0, wd = 0;
+    if (jon && jdy < -.15 && oy > .05) { const tg = oy / -jdy; gx = ox + jdx * tg; gz = oz + jdz * tg; hh2 = oy * oy * .25; wd = Math.min(1, -jdy * 1.15); wall = true; }
+    // the gas field changes slowly next to the step, so it is worked out every third step and held between
+    const tt = R.t, gph = R.seed * .37, JA = R.JA, jev = jon && R.tk % 3 === 0; if (jon) R.tk++; else R.tk = 0;
+    for (let i = NU, o = NU * 3; i < NP; i++, o += 3) {
+      let ax = 0, ay = -GRAV, az = 0;
+      if (jev) {
+        let qx = 0, qy = 0, qz = 0;
+        const px = P[o], py = P[o + 1], pz = P[o + 2], rx = px - ox, ry = py - oy, rz = pz - oz, r2 = rx * rx + ry * ry + rz * rz + 1e-6, r = Math.sqrt(r2), cs = (rx * jdx + ry * jdy + rz * jdz) / r;
+        let jx = 0, jy = 0, jz = 0, sd = r;
+        if (cs > 0) { const g = jk * 2600 * cs * cs * cs / ((r2 + 1.5) * r); jx = rx * g; jy = ry * g; jz = rz * g; }
+        if (wall) { const wx = px - gx, wz = pz - gz, q2 = wx * wx + wz * wz, q = Math.sqrt(q2) + 1e-4, del = 1.3 + .25 * q, yr = py / del, g = jk * 1400 * wd / ((q2 + hh2 + 4) * (1 + yr * yr) * q);
+          jx += wx * g; jz += wz * g; jy += .1 * g * q; sd = q; }
+        const jm = Math.sqrt(jx * jx + jy * jy + jz * jz);
+        if (jm > 1e-5) {
+          const nx = N[o], ny = N[o + 1], nz = N[o + 2], qn = jx * nx + jy * ny + jz * nz;
+          const gu = 1 + .42 * Math.sin(1.9 * sd - 8.3 * tt + gph) + .3 * Math.sin(4.7 * sd - 21 * tt + 1.7 * py + gph * 2.1) + .2 * Math.sin(9.3 * sd - 47 * tt - 2.3 * py + gph * 3.3);
+          const fl = .3 * Math.sin(7.7 * sd - 33 * tt + 3.1 * py + gph) + .16 * Math.sin(13.1 * sd - 61 * tt - 4 * py);
+          const an = qn * gu + fl * jm, sat = 1 / (1 + jm / AMAX);
+          qx = (nx * an + jx * .07) * sat; qy = (ny * an + jy * .07) * sat; qz = (nz * an + jz * .07) * sat;
+          const fx = (nx * an + jx * DRAGP) * SAIL, fy = (ny * an + jy * DRAGP) * SAIL, fz = (nz * an + jz * DRAGP) * SAIL, xr = (px - hgx) * fr[3] + (py - hgy) * fr[4] + (pz - hgz) * fr[5];
+          sFx += fx; sFy += fy; sFz += fz; sTt += (fx * fr[6] + fy * fr[7] + fz * fr[8]) * xr; sTh += (fx * fr[0] + fy * fr[1] + fz * fr[2]) * xr;
+        }
+        JA[o] = qx; JA[o + 1] = qy; JA[o + 2] = qz;
+      }
+      if (jon) { ax += JA[o]; ay += JA[o + 1]; az += JA[o + 2]; }
+      Q[o] = P[o]; Q[o + 1] = P[o + 1]; Q[o + 2] = P[o + 2];
+      P[o] += V[o] * h + ax * hh; P[o + 1] += V[o + 1] * h + ay * hh; P[o + 2] += V[o + 2] * h + az * hh;
+    }
+    if (jev) {   // what the gas does to the pole: through the cloth and the rod, and on the tube itself (lagged one step)
+      const c = fr[1]; let px = 0, pz = 0;
+      { const rx = hgx - ox, ry = hgy - oy, rz = hgz - oz, r2 = rx * rx + ry * ry + rz * rz + 1e-6, r = Math.sqrt(r2), cs = (rx * jdx + ry * jdy + rz * jdz) / r;
+        if (cs > 0) { const g = jk * 2600 * cs * cs * cs / ((r2 + 1.5) * r) * .22; px += rx * g; pz += rz * g; }
+        if (wall) { const wx = hgx - gx, wz = hgz - gz, q2 = wx * wx + wz * wz, q = Math.sqrt(q2) + 1e-4, del = 1.3 + .25 * q, yr = hgy / del, g = jk * 1400 * wd / ((q2 + hh2 + 4) * (1 + yr * yr) * q) * .22; px += wx * g; pz += wz * g; } }
+      jF[0] = (sFx + px) * c; jF[1] = (sFz + pz) * c; jF[2] = sTt; jF[3] = sTh / .12;
+      const lim = 60, fm = Math.sqrt(jF[0] * jF[0] + jF[1] * jF[1]); if (fm > lim) { jF[0] *= lim / fm; jF[1] *= lim / fm; }
+      jF[2] = clampN(jF[2], -40, 40); jF[3] = clampN(jF[3], -300, 300);
+    } else if (!jon) { jF[0] = jF[1] = jF[2] = jF[3] = 0; }
+    pins(R);
+    /* --- constraints: bend, bias, weft, warp (top down, so the hang is exact after one sweep) --- */
+    { const hu = R.hu, cu = R.cu; for (let k = 0, q = 0; k < nBU; k++, q += 3) { const a = cBU[q] * 3, m = cBU[q + 1] * 3, b = cBU[q + 2] * 3, wa = WINV[cBU[q]], wm = WINV[cBU[q + 1]], wb = WINV[cBU[q + 2]];
+        const nx = N[m], ny = N[m + 1], nz = N[m + 2], C = (P[m] - .5 * (P[a] + P[b])) * nx + (P[m + 1] - .5 * (P[a + 1] + P[b + 1])) * ny + (P[m + 2] - .5 * (P[a + 2] + P[b + 2])) * nz - hu[k];
+        const l = -C / (wm + .25 * (wa + wb) + cu[k]), lm = l * wm, la = -.5 * l * wa, lb = -.5 * l * wb;
+        P[m] += nx * lm; P[m + 1] += ny * lm; P[m + 2] += nz * lm; P[a] += nx * la; P[a + 1] += ny * la; P[a + 2] += nz * la; P[b] += nx * lb; P[b + 1] += ny * lb; P[b + 2] += nz * lb; } }
+    { const hv = R.hv, cv = R.cv; for (let k = 0, q = 0; k < nBV; k++, q += 3) { const a = cBV[q] * 3, m = cBV[q + 1] * 3, b = cBV[q + 2] * 3, wa = WINV[cBV[q]], wm = WINV[cBV[q + 1]], wb = WINV[cBV[q + 2]];
+        const nx = N[m], ny = N[m + 1], nz = N[m + 2], C = (P[m] - .5 * (P[a] + P[b])) * nx + (P[m + 1] - .5 * (P[a + 1] + P[b + 1])) * ny + (P[m + 2] - .5 * (P[a + 2] + P[b + 2])) * nz - hv[k];
+        const l = -C / (wm + .25 * (wa + wb) + cv[k]), lm = l * wm, la = -.5 * l * wa, lb = -.5 * l * wb;
+        P[m] += nx * lm; P[m + 1] += ny * lm; P[m + 2] += nz * lm; P[a] += nx * la; P[a + 1] += ny * la; P[a + 2] += nz * la; P[b] += nx * lb; P[b + 1] += ny * lb; P[b + 2] += nz * lb; } }
+    const Wr = R.W;
+    dist(P, Wr, cSS, nSS, DD, CSHEAR);
+    if (R.pr > 0) passThrough(R);
+    // the tie at the lower hoist corner, then weft and warp, twice over
+    tie(R, TSOFT); dist(P, Wr, cSH, nSH, DU, 0); dist(P, Wr, cSV, nSV, DV, 0);
+    tie(R, TSOFT); dist(P, Wr, cSH, nSH, DU, 0); dist(P, Wr, cSV, nSV, DV, 0);
+    // no thread is longer than it is: nothing hangs further from its place on the rod than the warp between them
+    for (let i = 0; i < NU; i++) { const t = i * 3, tx = P[t], ty = P[t + 1], tz = P[t + 2];
+      for (let j = 1, o = t + NU * 3; j < NV; j++, o += NU * 3) { const dx = P[o] - tx, dy = P[o + 1] - ty, dz = P[o + 2] - tz, d2 = dx * dx + dy * dy + dz * dz, m = j * DV * 1.002;
+        if (d2 > m * m) { const k = m / Math.sqrt(d2); P[o] = tx + dx * k; P[o + 1] = ty + dy * k; P[o + 2] = tz + dz * k; } } }
+    /* --- the tie at the lower hoist corner, the pole, the rod, whatever is passing through, and the ground --- */
+    collide(R);
+    /* --- velocities, and the cloth's own friction --- */
+    const ih = 1 / h; let vm = 0;
+    for (let o = 0; o < NP * 3; o++) V[o] = (P[o] - Q[o]) * ih;
+    { const T = TMP, c = .0016;                                             // viscous: neighbours drag on each other, so ripples die long before swings
+      for (let j = 1; j < NV; j++) for (let i = 0; i < NU; i++) { const o = (j * NU + i) * 3, a = i > 0 ? o - 3 : o + 3, b = i < NU - 1 ? o + 3 : o - 3, u = o - NU * 3, d = j < NV - 1 ? o + NU * 3 : o - NU * 3;
+        T[o] = .25 * (V[a] + V[b] + V[u] + V[d]) - V[o]; T[o + 1] = .25 * (V[a + 1] + V[b + 1] + V[u + 1] + V[d + 1]) - V[o + 1]; T[o + 2] = .25 * (V[a + 2] + V[b + 2] + V[u + 2] + V[d + 2]) - V[o + 2]; }
+      const gl = settleDamp || GLOB, vmax2 = VMAX * VMAX;
+      for (let i = NU, o = NU * 3; i < NP; i++, o += 3) { let vx = (V[o] + T[o] * c) * gl, vy = (V[o + 1] + T[o + 1] * c) * gl, vz = (V[o + 2] + T[o + 2] * c) * gl; const s2 = vx * vx + vy * vy + vz * vz;
+        if (s2 > vmax2) { const k = VMAX / Math.sqrt(s2); vx *= k; vy *= k; vz *= k; }
+        else if (s2 < .0036) { const s = Math.sqrt(s2), k = s > DRY ? 1 - DRY / s : 0; vx *= k; vy *= k; vz *= k; }
+        if (s2 > vm) vm = s2; V[o] = vx; V[o + 1] = vy; V[o + 2] = vz; } }
+    vm = Math.max(vm, lanyard(R, settleDamp));
+    R.vmax = Math.sqrt(vm);
+    if (!(vm === vm) || vm > 1e6) { reset(R); R.rest = false; }             // never let a bad number out
+  }
+  const CSHEAR = .9, GLOB = Math.exp(-HS / 17), DRY = .008 * HS;
+
+  // the cord at the lower hoist corner: slack until the corner is a hand's width from the pole, then it takes up (and gives a little: it is cord)
+  function tie(R, k) { const P = R.P, o = TIEI * 3, dx = P[o] - R.tie[0], dy = P[o + 1] - R.tie[1], dz = P[o + 2] - R.tie[2], l = Math.sqrt(dx * dx + dy * dy + dz * dz), mx = X0 + .01;
+    if (l > mx) { const s = 1 - (1 - mx / l) * k; P[o] = R.tie[0] + dx * s; P[o + 1] = R.tie[1] + dy * s; P[o + 2] = R.tie[2] + dz * s; } }
+  // XPBD distance constraints over an index list
+  function dist(P, W, c, n, rest, comp) {
+    for (let k = 0, q = 0; k < n; k++, q += 2) { const ia = c[q], ib = c[q + 1], wa = W[ia], wb = W[ib], ws = wa + wb; if (ws === 0) continue;
+      const a = ia * 3, b = ib * 3, dx = P[b] - P[a], dy = P[b + 1] - P[a + 1], dz = P[b + 2] - P[a + 2], l = Math.sqrt(dx * dx + dy * dy + dz * dz); if (l < 1e-9) continue;
+      const s = (l - rest) / (l * (ws + comp)), sa = s * wa, sb = s * wb;
+      P[a] += dx * sa; P[a + 1] += dy * sa; P[a + 2] += dz * sa; P[b] -= dx * sb; P[b + 1] -= dy * sb; P[b + 2] -= dz * sb; }
+  }
+
+  /* The cloth against the tube of the pole (its upper half, which is all the flag can reach, is straight to within a couple of
+     millimetres even while it rings), the rod, and the ground.  Particles alone would let a thin tube slip between them, so every
+     thread of the mesh near either tube - weft, warp and both bias lines of each cell - is also kept clear of it as a line: with
+     all of those further from the axis than the largest circle a cell can hold, no part of the sheet can be on the wrong side. */
+  const NEARB = new Uint8Array(NP);
+  function collide(R) {
+    const P = R.P, Wr = R.W, cl = R.cl, fr = R.fr, gsx = R.gsx, gsz = R.gsz, NR = NEARB;
+    const ax = cl[18], ay = cl[19], az = cl[20], tx = cl[36] - ax, ty = cl[37] - ay, tz = cl[38] - az, tl0 = Math.sqrt(tx * tx + ty * ty + tz * tz), ux = tx / tl0, uy = ty / tl0, uz = tz / tl0, tl = tl0 + .03;
+    const hx = fr[15], hy = fr[16], hz = fr[17], rx = fr[9], ry = fr[10], rz = fr[11], R2 = RCP * RCP, RR2 = RCR * RCR, NEAR2 = .0121;
+    let any = 0;
+    for (let i = 0, o = 0; i < NP; i++, o += 3) {
+      let px = P[o], py = P[o + 1], pz = P[o + 2], fl = 0;
+      const wx = px - ax, wy = py - ay, wz = pz - az, t = wx * ux + wy * uy + wz * uz, pp = wx * wx + wy * wy + wz * wz - t * t;
+      if (pp < NEAR2 && t > -.1 && t < tl + .1) { fl = 1;
+        if (i >= NU && pp < R2 && t > -RCP && t < tl + RCP) { const s = t < 0 ? 0 : t > tl ? tl : t, qx = ax + ux * s, qy = ay + uy * s, qz = az + uz * s, dx = px - qx, dy = py - qy, dz = pz - qz, d2 = dx * dx + dy * dy + dz * dz;
+          if (d2 < R2) { if (d2 > 1e-12) { const k = RCP / Math.sqrt(d2); px = qx + dx * k; py = qy + dy * k; pz = qz + dz * k; } else { px = qx + fr[3] * RCP; py = qy + fr[4] * RCP; pz = qz + fr[5] * RCP; } P[o] = px; P[o + 1] = py; P[o + 2] = pz; } } }
+      if (i >= NU) { const vx = px - hx, vy = py - hy, vz = pz - hz, s = vx * rx + vy * ry + vz * rz, d2 = vx * vx + vy * vy + vz * vz - s * s;
+        if (d2 < NEAR2 && s > -.1 && s < RL + .1) { fl |= 2;
+          if (i >= 2 * NU && d2 < RR2 && s > -RCR && s < RL + RCR) { const sc = s < 0 ? 0 : s > RL ? RL : s, qx = hx + rx * sc, qy = hy + ry * sc, qz = hz + rz * sc, dx = px - qx, dy = py - qy, dz = pz - qz, e2 = dx * dx + dy * dy + dz * dz;
+            if (e2 < RR2) { if (e2 > 1e-12) { const k = RCR / Math.sqrt(e2); px = qx + dx * k; py = qy + dy * k; pz = qz + dz * k; } else { px += fr[12] * RCR; py += fr[13] * RCR; pz += fr[14] * RCR; } P[o] = px; P[o + 1] = py; P[o + 2] = pz; } } }
+        const gy = px * gsx + pz * gsz + .012; if (py < gy) { const Q = R.Q; P[o + 1] = gy; P[o] += (Q[o] - P[o]) * .5; P[o + 2] += (Q[o + 2] - P[o + 2]) * .5; } }
+      NR[i] = fl; any |= fl;
+    }
+    if (!any) return;
+    const Q = R.Q;
+    for (let pass = 0; pass < 3; pass++) { const c = pass === 0 ? cSH : pass === 1 ? cSV : cSS, n = pass === 0 ? nSH : pass === 1 ? nSV : nSS;
+      for (let k = 0, q = 0; k < n; k++, q += 2) { const ia = c[q], ib = c[q + 1], f = NR[ia] & NR[ib]; if (f === 0) continue;
+        if (f & 1) segc(P, Q, Wr, ia, ib, ax, ay, az, ux, uy, uz, tl, RCP);
+        if (f & 2) segc(P, Q, Wr, ia, ib, hx, hy, hz, rx, ry, rz, RL, RCR); } }
+  }
+  // keep the thread from particle ia to ib at least rad from the segment c + u t (0 <= t <= len)
+  function segc(P, Q, W, ia, ib, cx, cy, cz, ux, uy, uz, len, rad) {
+    const wa = W[ia], wb = W[ib]; if (wa + wb === 0) return;
+    const a = ia * 3, b = ib * 3, d1x = P[b] - P[a], d1y = P[b + 1] - P[a + 1], d1z = P[b + 2] - P[a + 2], rx = P[a] - cx, ry = P[a + 1] - cy, rz = P[a + 2] - cz;
+    const A = d1x * d1x + d1y * d1y + d1z * d1z, f = ux * rx + uy * ry + uz * rz, cd = d1x * rx + d1y * ry + d1z * rz, bq = d1x * ux + d1y * uy + d1z * uz, den = A - bq * bq; if (A < 1e-12) return;
+    let s = den > 1e-10 ? (bq * f - cd) / den : 0; if (s < 0) s = 0; else if (s > 1) s = 1;
+    let t = bq * s + f; if (t < 0) { t = 0; s = -cd / A; if (s < 0) s = 0; else if (s > 1) s = 1; } else if (t > len) { t = len; s = (bq * len - cd) / A; if (s < 0) s = 0; else if (s > 1) s = 1; }
+    let nx = rx + d1x * s - ux * t, ny = ry + d1y * s - uy * t, nz = rz + d1z * s - uz * t, d2 = nx * nx + ny * ny + nz * nz; if (d2 >= rad * rad) return;
+    if (d2 < 1e-10) { // on the axis itself: go back the way it came
+      nx = Q[a] + (Q[b] - Q[a]) * s - cx - ux * t; ny = Q[a + 1] + (Q[b + 1] - Q[a + 1]) * s - cy - uy * t; nz = Q[a + 2] + (Q[b + 2] - Q[a + 2]) * s - cz - uz * t; const q = nx * ux + ny * uy + nz * uz; nx -= ux * q; ny -= uy * q; nz -= uz * q; d2 = nx * nx + ny * ny + nz * nz; if (d2 < 1e-14) return;
+      const d = Math.sqrt(d2), g = rad / d / (wa * (1 - s) * (1 - s) + wb * s * s), ga = g * wa * (1 - s), gb = g * wb * s; P[a] += nx * ga; P[a + 1] += ny * ga; P[a + 2] += nz * ga; P[b] += nx * gb; P[b + 1] += ny * gb; P[b + 2] += nz * gb; return; }
+    const d = Math.sqrt(d2), g = (rad - d) / d / (wa * (1 - s) * (1 - s) + wb * s * s), ga = g * wa * (1 - s), gb = g * wb * s;
+    P[a] += nx * ga; P[a + 1] += ny * ga; P[a + 2] += nz * ga; P[b] += nx * gb; P[b + 1] += ny * gb; P[b + 2] += nz * gb;
+  }
+
+  /* A body going through: a sphere that carries the cloth before it for as long as the caller keeps supplying it. */
+  function passThrough(R) {
+    const P = R.P, pp = R.pp, pv = R.pv, r = R.pr, r2 = r * r;
+    pp[0] += pv[0] * HS; pp[1] += pv[1] * HS; pp[2] += pv[2] * HS;
+    const cx = pp[0], cy = pp[1], cz = pp[2];
+    for (let i = NU, o = NU * 3; i < NP; i++, o += 3) { const dx = P[o] - cx, dy = P[o + 1] - cy, dz = P[o + 2] - cz, d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 < r2 && d2 > 1e-10) { const d = Math.sqrt(d2), k = Math.min(r - d, .022) / d; P[o] += dx * k; P[o + 1] += dy * k; P[o + 2] += dz * k; } }
+  }
+
+  /* The lanyard: a cord with a toggle on the end, hung from the latch lever.  Exact chain, top down; it slaps the pole. */
+  function lanyard(R, settleDamp) {
+    const P = R.LP, Q = R.LQ, V = R.LV, h = HS, cl = R.cl; lanTop(R, LT);
+    const a = 6 * 3, ax = cl[a], ay = cl[a + 1], az = cl[a + 2], bx = cl[a + 18] - ax, by = cl[a + 19] - ay, bz = cl[a + 20] - az, b2 = bx * bx + by * by + bz * bz, RC = .0215, gl = settleDamp || LGLOB;
+    let vm = 0;
+    Q[0] = P[0]; Q[1] = P[1]; Q[2] = P[2]; P[0] = LT[0]; P[1] = LT[1]; P[2] = LT[2];
+    for (let k = 1, o = 3; k < NL; k++, o += 3) { Q[o] = P[o]; Q[o + 1] = P[o + 1]; Q[o + 2] = P[o + 2]; P[o] += V[o] * h; P[o + 1] += V[o + 1] * h - GRAV * h * h; P[o + 2] += V[o + 2] * h; }
+    for (let it = 0; it < 2; it++) for (let k = 1, o = 3; k < NL; k++, o += 3) {
+      let dx = P[o] - P[o - 3], dy = P[o + 1] - P[o - 2], dz = P[o + 2] - P[o - 1]; const l = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1e-9;
+      const wa = k === 1 ? 0 : (k === NL - 1 ? .8 : .5), wb = 1 - wa, e = (l - LSEG) / l;
+      P[o - 3] += dx * e * wa; P[o - 2] += dy * e * wa; P[o - 1] += dz * e * wa; P[o] -= dx * e * wb; P[o + 1] -= dy * e * wb; P[o + 2] -= dz * e * wb;
+      let s = ((P[o] - ax) * bx + (P[o + 1] - ay) * by + (P[o + 2] - az) * bz) / b2; if (s < 0) s = 0; else if (s > 1) s = 1;
+      dx = P[o] - ax - bx * s; dy = P[o + 1] - ay - by * s; dz = P[o + 2] - az - bz * s; const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 < RC * RC && d2 > 1e-12) { const q = RC / Math.sqrt(d2); P[o] = ax + bx * s + dx * q; P[o + 1] = ay + by * s + dy * q; P[o + 2] = az + bz * s + dz * q; }
+      const gy = P[o] * R.gsx + P[o + 2] * R.gsz + .009; if (P[o + 1] < gy) { P[o + 1] = gy; P[o] += (Q[o] - P[o]) * .4; P[o + 2] += (Q[o + 2] - P[o + 2]) * .4; } }
+    for (let k = 1, o = 3; k < NL; k++, o += 3) { let vx = (P[o] - Q[o]) / h * gl, vy = (P[o + 1] - Q[o + 1]) / h * gl, vz = (P[o + 2] - Q[o + 2]) / h * gl; const s2 = vx * vx + vy * vy + vz * vz;
+      if (s2 > 64) { const q = 8 / Math.sqrt(s2); vx *= q; vy *= q; vz *= q; } else if (s2 < .0036) { const s = Math.sqrt(s2), q = s > DRY ? 1 - DRY / s : 0; vx *= q; vy *= q; vz *= q; }
+      if (s2 > vm) vm = s2; V[o] = vx; V[o + 1] = vy; V[o + 2] = vz; }
+    return vm;
+  }
+  const LGLOB = Math.exp(-HS / 16);
+
+  /* ---------- the caller's side ---------- */
+  const toLoc = (R, p, o) => { const dx = fin(p[0]) - R.x, dz = fin(p[2]) - R.z; o[0] = dx * R.cy + dz * R.sy; o[1] = fin(p[1]) - R.y; o[2] = -dx * R.sy + dz * R.cy; return o; };
+  const toLocV = (R, p, o) => { const dx = fin(p[0]), dz = fin(p[2]); o[0] = dx * R.cy + dz * R.sy; o[1] = fin(p[1]); o[2] = -dx * R.sy + dz * R.cy; return o; };
+  const T3 = [0, 0, 0], T4 = [0, 0, 0];
+
+  function update(R, dt, ev) {
+    if (!R || !R.P) return;
+    dt = fin(dt); if (dt < 0) dt = 0; if (dt > .1) dt = .1;
+    let woke = false; R.jk = 0; R.pr = 0;
+    if (ev) {
+      const J = ev.jet;
+      if (J && J.o && J.d && fin(J.k) > 0) { toLoc(R, J.o, R.jo); toLocV(R, J.d, R.jd); const l = Math.hypot(R.jd[0], R.jd[1], R.jd[2]);
+        if (l > 1e-9) { R.jd[0] /= l; R.jd[1] /= l; R.jd[2] /= l; R.jk = Math.min(fin(J.k), 40); woke = true; } }
+      const K = ev.knock;
+      if (K && K.j) { toLocV(R, K.j, T3); const xi = clampN(fin(K.h) / PH, 0, 1.05), psi = (3 * xi * xi - xi * xi * xi) * .5; let jx = T3[0] * psi / MB, jz = T3[2] * psi / MB; const m = Math.hypot(jx, jz);
+        if (m > 0) { if (m > 7) { jx *= 7 / m; jz *= 7 / m; } R.vdx += jx; R.vdz += jz; R.vph += Math.min(3, Math.abs(T3[1]) * psi * .8 / MB); woke = true; } }
+      const S = ev.pass;
+      if (S && S.p && S.v) { toLoc(R, S.p, R.pp); toLocV(R, S.v, R.pv); const r = clampN(fin(S.r), .004, .5), sp = Math.hypot(R.pv[0], R.pv[1], R.pv[2]);
+        if (sp * HS > .5 * r) { if (shot(R, r, sp)) woke = true; }
+        else if (near(R, r + sp * .12 + .05)) { R.pr = r; woke = true; } }
+      const Kk = ev.shock, sk = typeof Kk === 'number' ? fin(Kk) : (Kk ? fin(Kk.k) : 0);
+      if (sk > 0) { const k = Math.min(sk, 6); let a = h2(R.seed, 77 + R.nshock++) * TAU, cx = Math.cos(a), cz = Math.sin(a);
+        if (Kk && Kk.d) { T3[0] = fin(Kk.d[0]); T3[1] = 0; T3[2] = fin(Kk.d[1]); toLocV(R, T3, T4); const l = Math.hypot(T4[0], T4[2]); if (l > 1e-9) { cx = T4[0] / l; cz = T4[2] / l; } }
+        R.vdx -= 1.3 * k * cx; R.vdz -= 1.3 * k * cz; R.vyb += .55 * k; R.vph += .5 * k / RL; R.vtw += (h2(R.seed, 91 + R.nshock) - .5) * k * .8; woke = true; }
+    }
+    if (woke && R.rest) { R.rest = false; R.still = 0; }
+    if (R.rest) return;
+    R.acc += dt; let n = Math.floor(R.acc / HS + 1e-9); if (n > MAXSUB) { n = MAXSUB; R.acc = 0; } else R.acc -= n * HS;
+    for (let i = 0; i < n; i++) tick(R, 0);
+    // asleep once nothing has moved for a second
+    const quiet = R.vmax < .0022 && Math.abs(R.vdx) + Math.abs(R.vdz) < .002 && Math.abs(R.vtw) < .003 && Math.abs(R.vph) < .004 && Math.abs(R.vyb) < .002 && R.jk <= 0 && R.pr <= 0;
+    if (quiet) { R.still += n * HS; if (R.still > 1) sleep(R); } else R.still = 0;
+  }
+  // is the sphere anywhere near the cloth?
+  function near(R, r) { const P = R.P, p = R.pp, o = ((NV >> 1) * NU + (NU >> 1)) * 3; return Math.hypot(P[o] - p[0], P[o + 1] - p[1], P[o + 2] - p[2]) < r + .85; }
+  // a round through the cloth: a sharp local kick along its path, and a hole where it went
+  function shot(R, r, sp) {
+    const P = R.P, V = R.V, p = R.pp, v = R.pv, ux = v[0] / sp, uy = v[1] / sp, uz = v[2] / sp, sg = Math.max(r * 2, .075), kick = Math.min(sp * .012, 3.2);
+    let best = 1e9, bi = -1, any = false;
+    for (let i = NU, o = NU * 3; i < NP; i++, o += 3) { const dx = P[o] - p[0], dy = P[o + 1] - p[1], dz = P[o + 2] - p[2], t = dx * ux + dy * uy + dz * uz, d2 = dx * dx + dy * dy + dz * dz - t * t;
+      if (Math.abs(t) > .5 + sp * .05) continue; if (d2 < best) { best = d2; bi = i; }
+      const w = Math.exp(-d2 / (sg * sg)); if (w > .002) { V[o] += ux * kick * w; V[o + 1] += uy * kick * w; V[o + 2] += uz * kick * w; any = true; } }
+    if (bi >= 0 && best < DU * DU && r < .03 && R.holes.length < 10) { const o = bi * 3, i = bi % NU, j = (bi / NU) | 0, a = i < NU - 1 ? o + 3 : o - 3, b = j < NV - 1 ? o + NU * 3 : o - NU * 3, sa = i < NU - 1 ? 1 : -1, sb = j < NV - 1 ? 1 : -1;
+      const dx = p[0] - P[o], dy = p[1] - P[o + 1], dz = p[2] - P[o + 2], t = dx * ux + dy * uy + dz * uz, ex = dx - ux * t, ey = dy - uy * t, ez = dz - uz * t;
+      const fu = (ex * (P[a] - P[o]) + ey * (P[a + 1] - P[o + 1]) + ez * (P[a + 2] - P[o + 2])) / (DU * DU) * sa, fv = (ex * (P[b] - P[o]) + ey * (P[b + 1] - P[o + 1]) + ez * (P[b + 2] - P[o + 2])) / (DV * DV) * sb;
+      R.holes.push([clampN((i + clampN(fu, -.5, .5)) / (NU - 1), .02, .98), clampN((j + clampN(fv, -.5, .5)) / (NV - 1), .03, .98), h2(R.seed, 200 + R.holes.length)]); }
+    return any;
+  }
+
+  /* ---------- drawing ---------- */
+  /* The sheet is drawn finer than it is solved: 35 x 26 quads through the particles by Catmull-Rom, so a fold is a curve and
+     every stripe edge, the canton, the canvas heading and the hems fall on mesh lines and stay clean. */
+  const RUN = 34, RVN = 26, RUP = RUN + 1, RVP = RVN + 1, CANU = .4, CANC = 14, FOLDU = [5, 10, 15], FOLDV = [4, 8];
+  const UK = new Float64Array(RUP), VK = new Float64Array(RVP), CRC = new Float32Array(RUP), CRR = new Float32Array(RVP);
+  { const hd = .021, fh = .013, seg = [[hd, .125, 4], [.125, .25, 4], [.25, .375, 4], [.375, CANU, 1], [CANU, .5, 3], [.5, .625, 4], [.625, .75, 4], [.75, .875, 4], [.875, 1 - fh, 4]]; let c = 1; UK[0] = 0; UK[1] = hd;
+    for (const [a, b, n] of seg) for (let k = 1; k <= n; k++) UK[++c] = a + (b - a) * k / n; UK[RUN] = 1;
+    for (let r = 0; r <= RVN; r++) VK[r] = (r >> 1) / 13 + (r & 1 ? .5 / 13 : 0); VK[1] = .016; VK[RVN - 1] = 1 - .018; VK[9] = 1 / 3; VK[17] = 2 / 3;
+    // the fold lines, as the packing left them: eighths across (every other one a hard fold the solver knows about), thirds down
+    for (let k = 1; k < RUN; k++) for (let e = 1; e < 8; e++) if (Math.abs(UK[k] - e / 8) < 1e-6) CRC[k] = (e & 1 ? .055 : .1) * (e & 2 ? 1 : -1);
+    CRR[9] = .075; CRR[17] = -.075; }
+  // cubic through the particles; at a fold the tangent is the chord, so the crease stays a crease
+  const crw = (t, fa, fb, w, o) => { const t2 = t * t, t3 = t2 * t, h10 = t3 - 2 * t2 + t, h11 = t3 - t2; let a = 0, b = 2 * t3 - 3 * t2 + 1, c = -2 * t3 + 3 * t2, d = 0;
+    if (fa) { b -= h10; c += h10; } else { a -= .5 * h10; c += .5 * h10; } if (fb) { b -= h11; c += h11; } else { b -= .5 * h11; d += .5 * h11; } w[o] = a; w[o + 1] = b; w[o + 2] = c; w[o + 3] = d; };
+  const UI = new Int16Array(RUP), UW = new Float64Array(RUP * 4), VI = new Int16Array(RVP), VW = new Float64Array(RVP * 4);
+  for (let c = 0; c < RUP; c++) { const s = UK[c] * (NU - 1), i = Math.min(NU - 2, Math.floor(s + 1e-9)); UI[c] = i; crw(s - i, FOLDU.includes(i), FOLDU.includes(i + 1), UW, c * 4); }
+  for (let r = 0; r < RVP; r++) { const s = VK[r] * (NV - 1), j = Math.min(NV - 2, Math.floor(s + 1e-9)); VI[r] = j; crw(s - j, FOLDV.includes(j), FOLDV.includes(j + 1), VW, r * 4); }
+  const RX = new Float64Array(NV * RUP * 3), RP = new Float64Array(RUP * RVP * 3), RN = new Float64Array(RUP * RVP * 3), RS = new Float64Array(RUP * RVP);
+  const TONE = { white: .8, red: .27, blue: .135, head: .7, star: .86 }, FOLDK = 1.3;
+  const CELL = new Float32Array(RUN * RVN);
+  for (let r = 0; r < RVN; r++) for (let c = 0; c < RUN; c++) { const st = r >> 1; let t = st & 1 ? TONE.white : TONE.red; if (c < CANC && st < 7) t = TONE.blue; if (c === 0) t = TONE.head;
+    if (c === RUN - 1 || r === RVN - 1) t *= .86; if (r === 0 && c > 0) t *= .9; CELL[r * RUN + c] = t; }
+  // the stars: 9 rows of 6 and 5, each three overlapping triangles (two points and the far corner of the middle: together, exactly the star)
+  const STAR = (() => { const pts = [], cw = CANU, ch = 7 / 13, ro = .0235, ri = ro * .382;
+    for (let r = 0; r < 9; r++) { const n = r & 1 ? 5 : 6; for (let k = 0; k < n; k++) { const cu = cw * (.06 + (2 * k + 1 + (r & 1)) / 12 * .9), cv = ch * (r + 1) / 10;
+        const Pk = i => { const a = -Math.PI / 2 + i * TAU / 5; return [cu + Math.cos(a) * ro / FW, cv + Math.sin(a) * ro / FH]; }, Qk = i => { const a = -Math.PI / 2 + (i + .5) * TAU / 5; return [cu + Math.cos(a) * ri / FW, cv + Math.sin(a) * ri / FH]; };
+        pts.push(Pk(1), Qk(2), Pk(4), Pk(0), Pk(2), Qk(3), Pk(3), Pk(0), Qk(1)); } }
+    return decal(pts); })();
+  // a point list in flag (u, v) -> render cell and bilinear weights, worked out once
+  function decal(pts) { const n = pts.length, I = new Int16Array(n * 2), Wt = new Float32Array(n * 2);
+    for (let k = 0; k < n; k++) { const u = clampN(pts[k][0], 0, 1), v = clampN(pts[k][1], 0, 1); let c = 0; while (c < RUN - 1 && UK[c + 1] < u) c++; let r = 0; while (r < RVN - 1 && VK[r + 1] < v) r++;
+      I[k * 2] = c; I[k * 2 + 1] = r; Wt[k * 2] = (u - UK[c]) / (UK[c + 1] - UK[c]); Wt[k * 2 + 1] = (v - VK[r]) / (VK[r + 1] - VK[r]); }
+    return { n, I, W: Wt }; }
+
+  // the writer: a private vertex block in pole space, turned into the world when it is finished
+  let WD = null, WN = 0, WCAP = 0;
+  const vput = (x, y, z, u, v, lay, nx, ny, nz, sh, em) => { if (WN >= WCAP) return; const o = WN * 12; WD[o] = x; WD[o + 1] = y; WD[o + 2] = z; WD[o + 3] = u; WD[o + 4] = v; WD[o + 5] = lay; WD[o + 6] = nx; WD[o + 7] = ny; WD[o + 8] = nz; WD[o + 9] = sh; WD[o + 10] = em || 0; WD[o + 11] = 0; WN++; };
+  const CSN = n => { const c = new Float64Array(n + 1), s = new Float64Array(n + 1); for (let i = 0; i <= n; i++) { c[i] = Math.cos(i / n * TAU); s[i] = Math.sin(i / n * TAU); } return { c, s }; };
+  const CS = { 3: CSN(3), 4: CSN(4), 5: CSN(5), 6: CSN(6), 8: CSN(8) };
+  /* A band of tube between two rings.  Each ring: centre c (array, offset o), frame vectors X, Z (arrays with offsets), radius.
+     sl tips the normals along the axis (for chamfers and cones). */
+  const F0 = new Float64Array(9), F1 = new Float64Array(9);
+  function band(f0, r0, f1, r1, sides, lay, sh, sl, vt) {
+    const cs = CS[sides], C = cs.c, S = cs.s, ux = f1[0] - f0[0], uy = f1[1] - f0[1], uz = f1[2] - f0[2], ul = Math.sqrt(ux * ux + uy * uy + uz * uz) || 1, sn = sl || 0, cn = Math.sqrt(Math.max(0, 1 - sn * sn)), tv = (vt || ul * 3.1);
+    const ax = ux / ul * sn, ay = uy / ul * sn, az = uz / ul * sn;
+    for (let i = 0; i < sides; i++) { const c0 = C[i], s0 = S[i], c1 = C[i + 1], s1 = S[i + 1];
+      const ax0 = f0[3] * c0 + f0[6] * s0, ay0 = f0[4] * c0 + f0[7] * s0, az0 = f0[5] * c0 + f0[8] * s0, ax1 = f0[3] * c1 + f0[6] * s1, ay1 = f0[4] * c1 + f0[7] * s1, az1 = f0[5] * c1 + f0[8] * s1;
+      const bx0 = f1[3] * c0 + f1[6] * s0, by0 = f1[4] * c0 + f1[7] * s0, bz0 = f1[5] * c0 + f1[8] * s0, bx1 = f1[3] * c1 + f1[6] * s1, by1 = f1[4] * c1 + f1[7] * s1, bz1 = f1[5] * c1 + f1[8] * s1;
+      const u0 = i / sides, u1 = (i + 1) / sides;
+      const A = () => vput(f0[0] + ax0 * r0, f0[1] + ay0 * r0, f0[2] + az0 * r0, u0, 0, lay, ax0 * cn + ax, ay0 * cn + ay, az0 * cn + az, sh);
+      const Bq = () => vput(f0[0] + ax1 * r0, f0[1] + ay1 * r0, f0[2] + az1 * r0, u1, 0, lay, ax1 * cn + ax, ay1 * cn + ay, az1 * cn + az, sh);
+      const Cq = () => vput(f1[0] + bx1 * r1, f1[1] + by1 * r1, f1[2] + bz1 * r1, u1, tv, lay, bx1 * cn + ax, by1 * cn + ay, bz1 * cn + az, sh);
+      const D = () => vput(f1[0] + bx0 * r1, f1[1] + by0 * r1, f1[2] + bz0 * r1, u0, tv, lay, bx0 * cn + ax, by0 * cn + ay, bz0 * cn + az, sh);
+      if (r0 > 1e-5) { A(); Bq(); Cq(); } if (r1 > 1e-5) { A(); Cq(); D(); } }
+  }
+  // frame on the pole at arc length s (the same curve the solver uses)
+  function poleFrame(R, s, f) {
+    const cl = R.cl, sc = clampN(s, 0, PH), k = Math.min(NSEG - 1, Math.floor(sc / SEGL)), a = sc / SEGL - k, o = k * 3, xi = clampN(s / PH, 0, 1), fq = 2 * xi - xi * xi;
+    const tx = R.lx + 1.5 * R.dx / PH * fq, tz = R.lz + 1.5 * R.dz / PH * fq, an = Math.sqrt(tx * tx + tz * tz); let sx, sz, c;
+    if (an < 1e-9) { sx = tx; sz = tz; c = 1; } else { const q = Math.sin(an) / an; sx = tx * q; sz = tz * q; c = Math.cos(an); }
+    const ex = s - sc;
+    f[0] = cl[o] + (cl[o + 3] - cl[o]) * a + sx * ex; f[1] = cl[o + 1] + (cl[o + 4] - cl[o + 1]) * a + c * ex; f[2] = cl[o + 2] + (cl[o + 5] - cl[o + 2]) * a + sz * ex;
+    const ic = 1 / (1 + c); f[3] = c + sz * sz * ic; f[4] = -sx; f[5] = -sx * sz * ic; f[6] = f[5]; f[7] = -sz; f[8] = c + sx * sx * ic; return f;
+  }
+  const poleBand = (R, s0, r0, s1, r1, sides, lay, sh, sl) => { poleFrame(R, s0, F0); poleFrame(R, s1, F1); band(F0, r0, F1, r1, sides, lay, sh, sl); };
+  // frame on the rod at distance s from the hinge, lifted off the axis by (dn along rn, dp along ep)
+  function rodFrame(R, s, f, dn, dp) { const fr = R.fr; dn = dn || 0; dp = dp || 0;
+    f[0] = fr[15] + fr[9] * s + fr[12] * dn + fr[6] * dp; f[1] = fr[16] + fr[10] * s + fr[13] * dn + fr[7] * dp; f[2] = fr[17] + fr[11] * s + fr[14] * dn + fr[8] * dp;
+    f[3] = fr[12]; f[4] = fr[13]; f[5] = fr[14]; f[6] = fr[6]; f[7] = fr[7]; f[8] = fr[8]; return f; }
+  const rodBand = (R, s0, r0, s1, r1, sides, lay, sh, sl) => { rodFrame(R, s0, F0); rodFrame(R, s1, F1); band(F0, r0, F1, r1, sides, lay, sh, sl); };
+  // a strut between two points
+  const P0 = [0, 0, 0], P1 = [0, 0, 0];
+  function strut(a, b, r0, r1, sides, lay, sh) {
+    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], l = Math.sqrt(ux * ux + uy * uy + uz * uz) || 1, tx = ux / l, ty = uy / l, tz = uz / l;
+    let px, py, pz; if (Math.abs(ty) < .9) { px = tz; py = 0; pz = -tx; } else { px = 0; py = -tz; pz = ty; } const pl = Math.sqrt(px * px + py * py + pz * pz); px /= pl; py /= pl; pz /= pl;
+    const qx = ty * pz - tz * py, qy = tz * px - tx * pz, qz = tx * py - ty * px;
+    F0[0] = a[0]; F0[1] = a[1]; F0[2] = a[2]; F1[0] = b[0]; F1[1] = b[1]; F1[2] = b[2]; F0[3] = F1[3] = px; F0[4] = F1[4] = py; F0[5] = F1[5] = pz; F0[6] = F1[6] = qx; F0[7] = F1[7] = qy; F0[8] = F1[8] = qz;
+    band(F0, r0, F1, r1, sides, lay, sh);
+  }
+
+  /* The small disorder: nylon that has been folded, sat on, pulled out and shaken keeps a net of shallow facets between its hard
+     folds.  It is far below what the particles can carry, so it rides on the drawn sheet as a fixed tilt of each normal - a few
+     families of straight ridges (triangle waves, so the slope is constant between ridge lines) laid across the cloth. */
+  function wrinkles(seed) {
+    const g = new Float32Array(RUP * RVP * 2), fam = [];
+    for (let k = 0; k < 5; k++) { const a = k < 2 ? (h2(seed, 500 + k) - .5) * .45 : k < 3 ? Math.PI / 2 + (h2(seed, 500 + k) - .5) * .5 : (k & 1 ? .75 : -.75) + (h2(seed, 510 + k) - .5) * .4;
+      const lam = .16 + .22 * h2(seed, 520 + k), amp = .022 + .03 * h2(seed, 530 + k); fam.push([Math.cos(a) / lam, Math.sin(a) / lam, h2(seed, 540 + k), amp, Math.cos(a), Math.sin(a)]); }
+    for (let r = 0; r < RVP; r++) for (let c = 0; c < RUP; c++) { const x = UK[c] * FW, y = VK[r] * FH; let gu = 0, gv = 0;
+      for (const f of fam) { const q = x * f[0] + y * f[1] + f[2], fr = q - Math.floor(q), sg = fr < .5 ? 1 : -1, ed = Math.min(1, Math.min(fr, 1 - fr, Math.abs(fr - .5)) * 14); gu += sg * f[3] * f[4] * ed; gv += sg * f[3] * f[5] * ed; }
+      const fade = .45 + .55 * Math.min(1, VK[r] * 5); g[(r * RUP + c) * 2] = gu * fade; g[(r * RUP + c) * 2 + 1] = gv * fade; }
+    return g;
+  }
+  function surface(R) {
+    const P = R.P, wg = R.wg;
+    // across each solver row, then down each drawn column
+    for (let j = 0; j < NV; j++) for (let c = 0; c < RUP; c++) { const i = UI[c], w = c * 4, b = (j * NU + i) * 3, o = (j * RUP + c) * 3;
+      for (let k = 0; k < 3; k++) { const p1 = P[b + k], p2 = P[b + 3 + k], p0 = i > 0 ? P[b - 3 + k] : 2 * p1 - p2, p3 = i < NU - 2 ? P[b + 6 + k] : 2 * p2 - p1; RX[o + k] = UW[w] * p0 + UW[w + 1] * p1 + UW[w + 2] * p2 + UW[w + 3] * p3; } }
+    const st = RUP * 3;
+    for (let r = 0; r < RVP; r++) { const j = VI[r], w = r * 4, w0 = VW[w], w1 = VW[w + 1], w2 = VW[w + 2], w3 = VW[w + 3];
+      for (let c = 0; c < RUP * 3; c++) { const b = j * st + c, p1 = RX[b], p2 = RX[b + st], p0 = j > 0 ? RX[b - st] : 2 * p1 - p2, p3 = j < NV - 2 ? RX[b + 2 * st] : 2 * p2 - p1; RP[r * st + c] = w0 * p0 + w1 * p1 + w2 * p2 + w3 * p3; } }
+    for (let r = 0; r < RVP; r++) { const rm = r > 0 ? -st : 0, rp = r < RVN ? st : 0;
+      for (let c = 0; c < RUP; c++) { const o = r * st + c * 3, a = c > 0 ? o - 3 : o, b = c < RUN ? o + 3 : o;
+        const ux = RP[b] - RP[a], uy = RP[b + 1] - RP[a + 1], uz = RP[b + 2] - RP[a + 2], vx = RP[o + rp] - RP[o + rm], vy = RP[o + rp + 1] - RP[o + rm + 1], vz = RP[o + rp + 2] - RP[o + rm + 2];
+        let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx; const l = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1, ul = Math.sqrt(ux * ux + uy * uy + uz * uz) || 1, vl = Math.sqrt(vx * vx + vy * vy + vz * vz) || 1;
+        const w = (r * RUP + c) * 2, gu = wg[w] / ul, gv = wg[w + 1] / vl; nx = nx / l + ux * gu + vx * gv; ny = ny / l + uy * gu + vy * gv; nz = nz / l + uz * gu + vz * gv; const m = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+        RN[o] = nx / m; RN[o + 1] = ny / m; RN[o + 2] = nz / m; } }
+  }
+
+  function build(R, lod) {
+    const M = TL.METAL, Wh = TL.WHITE, Dk = TL.DARK, st = RUP * 3, wg = R.wg;
+    surface(R);
+    /* --- cloth --- */
+    const sun = FLAG.SUN, glow = sun ? .3 : 0; let slx = 0, sly = 0, slz = 0; if (sun) { slx = sun[0] * R.cy + sun[2] * R.sy; sly = sun[1]; slz = -sun[0] * R.sy + sun[2] * R.cy; }
+    let mx = 0, my = 0, mz = 0; for (let o = 0; o < RUP * RVP * 3; o += 3) { mx += RN[o]; my += RN[o + 1]; mz += RN[o + 2]; } { const l = Math.sqrt(mx * mx + my * my + mz * mz) || 1; mx /= l; my /= l; mz /= l; }
+    // one corner of a quad.  On a fold line the normal is taken from the quad's own side of it, so the fold shades as a hard line;
+    // and every fold is darkened a little by how far it turns from the lie of the sheet, which is what still reads in a lamp held at the eye
+    const cv = (c, r, t, qc, qr) => { const o = r * st + c * 3; let nx, ny, nz;
+      if (CRC[c] !== 0 || CRR[r] !== 0) { const a = CRC[c] !== 0 ? (qc === c ? o : o - 3) : (c > 0 ? o - 3 : o), b = CRC[c] !== 0 ? (qc === c ? o + 3 : o) : (c < RUN ? o + 3 : o), u = CRR[r] !== 0 ? (qr === r ? o : o - st) : (r > 0 ? o - st : o), d = CRR[r] !== 0 ? (qr === r ? o + st : o) : (r < RVN ? o + st : o);
+        const ux = RP[b] - RP[a], uy = RP[b + 1] - RP[a + 1], uz = RP[b + 2] - RP[a + 2], vx = RP[d] - RP[u], vy = RP[d + 1] - RP[u + 1], vz = RP[d + 2] - RP[u + 2];
+        nx = uy * vz - uz * vy; ny = uz * vx - ux * vz; nz = ux * vy - uy * vx; const l = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1, ul = Math.sqrt(ux * ux + uy * uy + uz * uz) || 1, vl = Math.sqrt(vx * vx + vy * vy + vz * vz) || 1;
+        const w = (r * RUP + c) * 2, gu = (wg[w] + (qc === c ? CRC[c] : -CRC[c])) / ul, gv = (wg[w + 1] + (qr === r ? CRR[r] : -CRR[r])) / vl;
+        nx = nx / l + ux * gu + vx * gv; ny = ny / l + uy * gu + vy * gv; nz = nz / l + uz * gu + vz * gv; const m = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1; nx /= m; ny /= m; nz /= m; }
+      else { nx = RN[o]; ny = RN[o + 1]; nz = RN[o + 2]; }
+      const dn = nx * mx + ny * my + nz * mz; let f = 1 - FOLDK * (1 - dn * dn); if (f < .42) f = .42;
+      vput(RP[o], RP[o + 1], RP[o + 2], UK[c] * 4, VK[r] * 2.4, Wh, nx, ny, nz, t * f, glow ? glow * t * Math.abs(nx * slx + ny * sly + nz * slz) : 0); };
+    if (!lod) {
+      for (let r = 0; r < RVN; r++) for (let c = 0; c < RUN; c++) { const t = CELL[r * RUN + c];
+        if ((c + r) & 1) { cv(c, r, t, c, r); cv(c + 1, r, t, c, r); cv(c + 1, r + 1, t, c, r); cv(c, r, t, c, r); cv(c + 1, r + 1, t, c, r); cv(c, r + 1, t, c, r); }
+        else { cv(c, r, t, c, r); cv(c + 1, r, t, c, r); cv(c, r + 1, t, c, r); cv(c + 1, r, t, c, r); cv(c + 1, r + 1, t, c, r); cv(c, r + 1, t, c, r); } }
+      // stars, on both faces
+      const I = STAR.I, Wt = STAR.W, E = .0019;
+      for (let side = -1; side <= 1; side += 2) for (let k = 0; k < STAR.n; k++) { const c = I[k * 2], r = I[k * 2 + 1], a = Wt[k * 2], b = Wt[k * 2 + 1], o = r * st + c * 3, w00 = (1 - a) * (1 - b), w10 = a * (1 - b), w01 = (1 - a) * b, w11 = a * b;
+        const nx = w00 * RN[o] + w10 * RN[o + 3] + w01 * RN[o + st] + w11 * RN[o + st + 3], ny = w00 * RN[o + 1] + w10 * RN[o + 4] + w01 * RN[o + st + 1] + w11 * RN[o + st + 4], nz = w00 * RN[o + 2] + w10 * RN[o + 5] + w01 * RN[o + st + 2] + w11 * RN[o + st + 5], e = E * side;
+        vput(w00 * RP[o] + w10 * RP[o + 3] + w01 * RP[o + st] + w11 * RP[o + st + 3] + nx * e, w00 * RP[o + 1] + w10 * RP[o + 4] + w01 * RP[o + st + 1] + w11 * RP[o + st + 4] + ny * e, w00 * RP[o + 2] + w10 * RP[o + 5] + w01 * RP[o + st + 2] + w11 * RP[o + st + 5] + nz * e, .5, .5, Wh, nx, ny, nz, TONE.star,
+          glow ? glow * Math.abs(nx * slx + ny * sly + nz * slz) : 0); }
+    } else {
+      // far: 10 x 13 quads, one a stripe; the canton a shade lighter for the stars it can no longer show
+      const LC = [0, 5, 9, 12, 14, 17, 21, 25, 29, 32, 34];
+      for (let s = 0; s < 13; s++) for (let q = 0; q < 10; q++) { const c0 = LC[q], c1 = LC[q + 1], r0 = s * 2, r1 = s * 2 + 2; let t = s & 1 ? TONE.white : TONE.red; if (q < 4 && s < 7) t = TONE.blue + .03;
+        cv(c0, r0, t, -9, -9); cv(c1, r0, t, -9, -9); cv(c1, r1, t, -9, -9); cv(c0, r0, t, -9, -9); cv(c1, r1, t, -9, -9); cv(c0, r1, t, -9, -9); }
+    }
+    /* --- pole --- */
+    const sides = lod ? 4 : 6, shL = .7, shU = .84;
+    if (!lod) {
+      // lower section, the swaged joint, upper section, and the driven cap
+      poleBand(R, -.1, .0165, 0, .0165, sides, M, shL);
+      for (let k = 0; k < 6; k++) poleBand(R, k * .2, .0165, (k + 1) * .2 - (k === 5 ? .03 : 0), .0165, sides, M, shL * (k === 0 ? .82 : 1));
+      poleBand(R, 1.17, .0165, 1.172, .0215, sides, M, .45, -.7); poleBand(R, 1.172, .0215, 1.258, .0215, sides, M, 1.0); poleBand(R, 1.258, .0215, 1.262, .014, sides, M, .45, .7);
+      poleBand(R, 1.202, .0222, 1.212, .0222, sides, Dk, 1.4); poleBand(R, 1.225, .0222, 1.232, .0222, sides, Dk, 1.4);
+      for (let k = 6; k < 12; k++) poleBand(R, k === 6 ? 1.262 : k * .2, .014, k === 11 ? HY - .034 : (k + 1) * .2, .014, sides, M, shU);
+      poleBand(R, .5, .0172, .56, .0172, sides, Dk, 1.9);                              // the depth mark it was driven to... and never reached
+      // the hinge collar and the cap above it
+      poleBand(R, HY - .036, .014, HY - .034, .0205, sides, M, .45, -.7); poleBand(R, HY - .034, .0205, HY + .026, .0205, sides, M, 1.02); poleBand(R, HY + .026, .0205, HY + .029, .014, sides, M, .7, .7);
+      poleBand(R, HY + .029, .014, PH - .012, .014, sides, M, shU); poleBand(R, PH - .012, .017, PH + .004, .017, sides, M, 1.08); poleBand(R, PH + .004, .017, PH + .012, .009, sides, M, .9, .6); poleBand(R, PH + .012, .009, PH + .0121, 0, sides, M, .75, .99);
+      poleBand(R, PH - .014, .014, PH - .012, .017, sides, M, .42, -.7);
+    } else {
+      poleBand(R, -.05, .02, 1.2, .02, 4, M, shL); poleBand(R, 1.2, .018, PH, .018, 4, M, shU);
+    }
+    /* --- hinge, latch, rod --- */
+    const fr = R.fr;
+    if (!lod) {
+      // clevis cheeks either side of the rod, standing off the collar
+      for (let sd = -1; sd <= 1; sd += 2) { rodFrame(R, .012, F0, 0, sd * .0125); rodFrame(R, .052, F1, 0, sd * .0125); band(F0, .0125, F1, .0105, 4, M, .7); band(F1, .0105, rodFrame(R, .0525, F0, 0, sd * .0125), 0, 4, M, .5, .99); }
+      // hinge pin across them
+      P0[0] = fr[15] + fr[9] * .034 - fr[6] * .022; P0[1] = fr[16] + fr[10] * .034 - fr[7] * .022; P0[2] = fr[17] + fr[11] * .034 - fr[8] * .022; P1[0] = P0[0] + fr[6] * .044; P1[1] = P0[1] + fr[7] * .044; P1[2] = P0[2] + fr[8] * .044; strut(P0, P1, .0052, .0052, 5, Dk, 2.2);
+      // the latch stay the rod sits on: fixed to the pole, so the rod can leave it
+      poleFrame(R, HY - .11, F0); const ct = Math.cos(R.tw), stw = Math.sin(R.tw), exx = F0[3] * ct + F0[6] * stw, exy = F0[4] * ct + F0[7] * stw, exz = F0[5] * ct + F0[8] * stw;
+      P0[0] = F0[0] + exx * .015; P0[1] = F0[1] + exy * .015; P0[2] = F0[2] + exz * .015; P1[0] = fr[15] + fr[3] * .118 - fr[0] * .0105; P1[1] = fr[16] + fr[4] * .118 - fr[1] * .0105; P1[2] = fr[17] + fr[5] * .118 - fr[2] * .0105;
+      strut(P0, P1, .0058, .0058, 4, M, .6); poleBand(R, HY - .128, .0195, HY - .096, .0195, sides, M, .95);
+      // rod: bare at the hinge, then inside the hem, then the keeper and the tip
+      rodBand(R, .016, RR, X0 - .006, RR, 5, M, .9); rodBand(R, X0 - .006, .0125, X0 - .002, .0125, 5, Dk, 1.6);
+      const sEnd = R.pinS[NU - 1];
+      // the hem sleeve, gathered: red over the stripes, blue over the canton
+      { const n = 11, sC = R.pinS[0] + (sEnd - R.pinS[0]) * CANU; let s0 = X0 - .002, r0 = .0118;
+        for (let k = 1; k <= n; k++) { const f = k / n, s1 = (X0 - .002) + (sEnd + .004 - X0) * f, r1 = .0118 + .0022 * h2(R.seed, 300 + k) + (k & 1 ? .0012 : 0), sm = (s0 + s1) * .5;
+          rodBand(R, s0, r0, s1, r1, 6, Wh, (sm < sC ? TONE.blue : TONE.red) * (.92 + .2 * h2(R.seed, 320 + k))); s0 = s1; r0 = r1; } }
+      rodBand(R, sEnd + .004, .0128, sEnd + .012, .0128, 5, Dk, 1.6); rodBand(R, sEnd + .012, RR, RL - .016, RR, 5, M, .9); rodBand(R, RL - .016, .0118, RL, .0118, 5, M, 1.02); rodBand(R, RL, .0118, RL + .006, 0, 5, M, .75, .8);
+      // the tie at the lower hoist corner: a turn of cord round the pole and out to the grommet
+      { const o = ((NV - 1) * NU) * 3, P = R.P; poleFrame(R, STIE, F0); poleFrame(R, STIE + .012, F1); band(F0, .0178, F1, .0178, sides, Wh, .78);
+        P0[0] = R.tie[0]; P0[1] = R.tie[1] + .006; P0[2] = R.tie[2]; P1[0] = P[o]; P1[1] = P[o + 1] + .004; P1[2] = P[o + 2]; strut(P0, P1, .0032, .0032, 3, Wh, .78);
+        // and the lashing of the upper corner to the hinge
+        P0[0] = fr[15] + fr[12] * .004; P0[1] = fr[16] + fr[13] * .004; P0[2] = fr[17] + fr[14] * .004; P1[0] = P[0]; P1[1] = P[1] - .006; P1[2] = P[2]; strut(P0, P1, .0032, .0032, 3, Wh, .78); }
+      // grommets in the canvas heading, a dark eye either face
+      grommet(R, .0105 / 1, .028); grommet(R, .0105, 1 - .03);
+      // holes
+      for (const hl of R.holes) hole(R, hl);
+    } else {
+      rodBand(R, 0, .012, RL, .012, 4, M, .9);
+    }
+    /* --- lanyard --- */
+    { const L = R.LP, ls = lod ? 3 : 4, step = lod ? 2 : 1;
+      for (let k = 0; k + step < NL; k += step) { P0[0] = L[k * 3]; P0[1] = L[k * 3 + 1]; P0[2] = L[k * 3 + 2]; const q = Math.min(NL - 1, k + step) * 3; P1[0] = L[q]; P1[1] = L[q + 1]; P1[2] = L[q + 2]; strut(P0, P1, lod ? .006 : .0036, lod ? .006 : .0036, ls, Wh, .84); }
+      if (!lod) { const q = (NL - 1) * 3, p = (NL - 2) * 3, dx = L[q] - L[p], dy = L[q + 1] - L[p + 1], dz = L[q + 2] - L[p + 2], l = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+        P0[0] = L[q]; P0[1] = L[q + 1]; P0[2] = L[q + 2]; P1[0] = L[q] + dx / l * .05; P1[1] = L[q + 1] + dy / l * .05; P1[2] = L[q + 2] + dz / l * .05; strut(P0, P1, .0085, .0085, 5, Dk, 2.4);     // the toggle
+        P0[0] = P1[0]; P0[1] = P1[1]; P0[2] = P1[2]; P1[0] += dx / l * .006; P1[1] += dy / l * .006; P1[2] += dz / l * .006; strut(P0, P1, .0085, 0, 5, Dk, 1.6);
+        // the lever it hangs from
+        P0[0] = fr[15] - fr[3] * .016 - fr[0] * .02; P0[1] = fr[16] - fr[4] * .016 - fr[1] * .02; P0[2] = fr[17] - fr[5] * .016 - fr[2] * .02; P1[0] = L[0]; P1[1] = L[1]; P1[2] = L[2]; strut(P0, P1, .0052, .004, 4, M, .72); } }
+    /* --- the heap of spoil round the foot of the pole --- */
+    if (!lod) { const D = FLAG.PAGE.DUST, n = 7; for (let i = 0; i < n; i++) { const a0 = i / n * TAU, a1 = (i + 1) / n * TAU, r0 = .085 + .03 * h2(R.seed, 400 + i), r1 = .085 + .03 * h2(R.seed, 400 + (i + 1) % n);
+        const x0 = Math.cos(a0), z0 = Math.sin(a0), x1 = Math.cos(a1), z1 = Math.sin(a1), gy0 = x0 * r0 * R.gsx + z0 * r0 * R.gsz + .002, gy1 = x1 * r1 * R.gsx + z1 * r1 * R.gsz + .002, top = .02;
+        const wu = (x, z) => (R.x + x * R.cy - z * R.sy) / 3.2, wv = (x, z) => (R.z + x * R.sy + z * R.cy) / 3.2;
+        vput(x0 * .02, top, z0 * .02, wu(0, 0), wv(0, 0), D[0], x0 * .3, .95, z0 * .3, D[1] * .9); vput(x1 * r1, gy1, z1 * r1, wu(x1 * r1, z1 * r1), wv(x1 * r1, z1 * r1), D[0], x1 * .3, .95, z1 * .3, D[1] * .84); vput(x0 * r0, gy0, z0 * r0, wu(x0 * r0, z0 * r0), wv(x0 * r0, z0 * r0), D[0], x0 * .3, .95, z0 * .3, D[1] * .84);
+        vput(x0 * .02, top, z0 * .02, wu(0, 0), wv(0, 0), D[0], x0 * .3, .95, z0 * .3, D[1] * .9); vput(x1 * .02, top, z1 * .02, wu(0, 0), wv(0, 0), D[0], x1 * .3, .95, z1 * .3, D[1] * .9); vput(x1 * r1, gy1, z1 * r1, wu(x1 * r1, z1 * r1), wv(x1 * r1, z1 * r1), D[0], x1 * .3, .95, z1 * .3, D[1] * .84); } }
+  }
+  // a small dark mark on both faces of the cloth at flag (u, v): n-gon of radius rad metres
+  function mark(R, u, v, rad, n, tone, rot, jag) {
+    const pts = []; for (let i = 0; i < n; i++) { const a0 = rot + i / n * TAU, a1 = rot + (i + 1) / n * TAU, q0 = jag ? .55 + .9 * h2(i * 31 + (rot * 1000 | 0), 7) : 1, q1 = jag ? .55 + .9 * h2(((i + 1) % n) * 31 + (rot * 1000 | 0), 7) : 1;
+      pts.push([u, v], [u + Math.cos(a0) * rad * q0 / FW, v + Math.sin(a0) * rad * q0 / FH], [u + Math.cos(a1) * rad * q1 / FW, v + Math.sin(a1) * rad * q1 / FH]); }
+    const D = decal(pts), st = RUP * 3, E = .0026;
+    for (let side = -1; side <= 1; side += 2) for (let k = 0; k < D.n; k++) { const c = D.I[k * 2], r = D.I[k * 2 + 1], a = D.W[k * 2], b = D.W[k * 2 + 1], o = r * st + c * 3, w00 = (1 - a) * (1 - b), w10 = a * (1 - b), w01 = (1 - a) * b, w11 = a * b;
+      const nx = w00 * RN[o] + w10 * RN[o + 3] + w01 * RN[o + st] + w11 * RN[o + st + 3], ny = w00 * RN[o + 1] + w10 * RN[o + 4] + w01 * RN[o + st + 1] + w11 * RN[o + st + 4], nz = w00 * RN[o + 2] + w10 * RN[o + 5] + w01 * RN[o + st + 2] + w11 * RN[o + st + 5], e = E * side;
+      vput(w00 * RP[o] + w10 * RP[o + 3] + w01 * RP[o + st] + w11 * RP[o + st + 3] + nx * e, w00 * RP[o + 1] + w10 * RP[o + 4] + w01 * RP[o + st + 1] + w11 * RP[o + st + 4] + ny * e, w00 * RP[o + 2] + w10 * RP[o + 5] + w01 * RP[o + st + 2] + w11 * RP[o + st + 5] + nz * e, .5, .5, TL.DARK, nx, ny, nz, tone); }
+  }
+  const grommet = (R, u, v) => mark(R, u, v, .0062, 5, 1.1, .3, false);
+  const hole = (R, hl) => mark(R, hl[0], hl[1], .0085, 5, .25, hl[2] * TAU, true);
+
+  function emit(B, R, lod) {
+    if (!B || !R || !R.P) return;
+    lod = lod ? 1 : 0;
+    let C = R.cache[lod];
+    if (!C) C = R.cache[lod] = { d: new Float32Array((lod ? 1200 : 9000) * 12), n: 0, ver: -1, sun: null };
+    if (C.ver !== R.ver || C.sun !== FLAG.SUN) {
+      WD = C.d; WN = 0; WCAP = lod ? 1200 : 9000; build(R, lod); WN -= WN % 3; C.n = WN; C.ver = R.ver; C.sun = FLAG.SUN;
+      const d = C.d, cy = R.cy, sy = R.sy, ox = R.x, oy = R.y, oz = R.z;
+      for (let i = 0, o = 0; i < WN; i++, o += 12) { const x = d[o], z = d[o + 2], nx = d[o + 6], ny = d[o + 7], nz = d[o + 8], l = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+        d[o] = ox + x * cy - z * sy; d[o + 1] += oy; d[o + 2] = oz + x * sy + z * cy; d[o + 6] = (nx * cy - nz * sy) / l; d[o + 7] = ny / l; d[o + 8] = (nx * sy + nz * cy) / l; }
+      WD = null;
+    }
+    if (B.d && B.d.set && typeof B.n === 'number') {
+      const max = typeof B.max === 'number' ? B.max : (B.d.length / 12) | 0; let n = Math.min(C.n, max - B.n); n -= n % 3; if (n <= 0) return;
+      B.d.set(C.d.subarray(0, n * 12), B.n * 12); B.n += n;
+    } else if (B.v) { const d = C.d, p = [0, 0, 0], q = [0, 0, 0]; for (let i = 0, o = 0; i < C.n; i++, o += 12) { p[0] = d[o]; p[1] = d[o + 1]; p[2] = d[o + 2]; q[0] = d[o + 6]; q[1] = d[o + 7]; q[2] = d[o + 8]; B.v(p, d[o + 3], d[o + 4], d[o + 5], q, d[o + 9], d[o + 10]); } }
+  }
+
+  /* ---------- ray test ---------- */
+  function hit(R, origin, dir) {
+    if (!R || !R.P || !origin || !dir) return null;
+    const o = toLoc(R, origin, [0, 0, 0]), d = toLocV(R, dir, [0, 0, 0]), dl = Math.hypot(d[0], d[1], d[2]); if (!(dl > 1e-12)) return null;
+    let best = Infinity, part = null; const P = R.P;
+    // bounding ball of the cloth first
+    { const c = ((NV >> 1) * NU + (NU >> 1)) * 3, wx = P[c] - o[0], wy = P[c + 1] - o[1], wz = P[c + 2] - o[2], t = (wx * d[0] + wy * d[1] + wz * d[2]) / (dl * dl), ex = wx - d[0] * t, ey = wy - d[1] * t, ez = wz - d[2] * t;
+      if (ex * ex + ey * ey + ez * ez < 1.0) for (let j = 0; j + 1 < NV; j++) for (let i = 0; i + 1 < NU; i++) { const a = (j * NU + i) * 3, b = a + 3, c2 = a + NU * 3, e = c2 + 3;
+          let t1 = tri(o, d, P, a, b, e); if (t1 > 0 && t1 < best) { best = t1; part = 'cloth'; } t1 = tri(o, d, P, a, e, c2); if (t1 > 0 && t1 < best) { best = t1; part = 'cloth'; } } }
+    const cl = R.cl, fr = R.fr;
+    for (let k = 0; k < NSEG; k++) { const t = cap(o, d, dl, cl[k * 3], cl[k * 3 + 1], cl[k * 3 + 2], cl[k * 3 + 3], cl[k * 3 + 4], cl[k * 3 + 5], k < 6 ? .0165 : .0145); if (t > 0 && t < best) { best = t; part = 'pole'; } }
+    { const t = cap(o, d, dl, fr[15], fr[16], fr[17], fr[15] + fr[9] * RL, fr[16] + fr[10] * RL, fr[17] + fr[11] * RL, .0125); if (t > 0 && t < best) { best = t; part = 'pole'; } }
+    if (!part) return null;
+    return { t: best, part, p: [fin(origin[0]) + fin(dir[0]) * best, fin(origin[1]) + fin(dir[1]) * best, fin(origin[2]) + fin(dir[2]) * best] };
+  }
+  function tri(o, d, P, a, b, c) {
+    const e1x = P[b] - P[a], e1y = P[b + 1] - P[a + 1], e1z = P[b + 2] - P[a + 2], e2x = P[c] - P[a], e2y = P[c + 1] - P[a + 1], e2z = P[c + 2] - P[a + 2];
+    const px = d[1] * e2z - d[2] * e2y, py = d[2] * e2x - d[0] * e2z, pz = d[0] * e2y - d[1] * e2x, det = e1x * px + e1y * py + e1z * pz; if (det > -1e-12 && det < 1e-12) return -1;
+    const inv = 1 / det, tx = o[0] - P[a], ty = o[1] - P[a + 1], tz = o[2] - P[a + 2], u = (tx * px + ty * py + tz * pz) * inv; if (u < 0 || u > 1) return -1;
+    const qx = ty * e1z - tz * e1y, qy = tz * e1x - tx * e1z, qz = tx * e1y - ty * e1x, v = (d[0] * qx + d[1] * qy + d[2] * qz) * inv; if (v < 0 || u + v > 1) return -1;
+    return (e2x * qx + e2y * qy + e2z * qz) * inv;
+  }
+  // ray against a round-ended tube from a to b: the parameter where it first comes within r of the axis
+  function cap(o, d, dl, ax, ay, az, bx, by, bz, r) {
+    const ux = bx - ax, uy = by - ay, uz = bz - az, wx = o[0] - ax, wy = o[1] - ay, wz = o[2] - az;
+    const A = dl * dl, Bq = d[0] * ux + d[1] * uy + d[2] * uz, Cq = ux * ux + uy * uy + uz * uz, D = d[0] * wx + d[1] * wy + d[2] * wz, E = ux * wx + uy * wy + uz * wz, den = A * Cq - Bq * Bq;
+    const s = den > 1e-12 ? clampN((A * E - Bq * D) / den, 0, 1) : 0;
+    const t = (Bq * s - D) / A; if (t <= 0) return -1;
+    const ex = wx + d[0] * t - ux * s, ey = wy + d[1] * t - uy * s, ez = wz + d[2] * t - uz * s, d2 = ex * ex + ey * ey + ez * ez; if (d2 > r * r) return -1;
+    return Math.max(1e-9, t - Math.sqrt(r * r - d2) / dl);
+  }
+
+  return { create, update, emit, hit, reset, SUN: null, PAGE: { DUST: [TL.DARK, 3.4] },
+    DIM: { pole: PH, hinge: HY, rod: RL, w: FW, h: FH, step: HS, grid: [NU, NV] } };
+})();
+
+
+/* stepfx.js : what a boot does to the regolith.  Needs prims.js only (TL, the batch layout).  One global, STEPFX.
+   No DOM, no clock, no Math.random: everything comes from the seeds and from what the caller passes in.
+
+   (i) The print.
+   STEPFX.print(B, m, groundY, lod)   append one bootprint.  m = { x, z, h, left, run, turn, seed [, drag] }
+        x, z      world metres, the middle of the sole          h      heading, radians (0 faces -Z, positive toward +X, as V3.rotY)
+        left      true for a left boot (the outline is handed)  run    0..1: 0 a walking step (heel in deepest), 1 a running one (toe dug in, heel barely marked, a short skid)
+        turn      -1..1: the boot twisted on its ball while it was down (same sense as heading): the print is smeared into a fan and its ribs are wiped
+        seed      integer: the crumbling of the rim             drag   optional 0..1: the boot slid to a stop: a smooth trough behind the print
+        lod 0 (within about 10 m): 240 vertices.  lod 1 (to 40 m): 24 vertices.  Draw nothing beyond that.
+        The print is an overshoe sole 33 cm long: rounded toe and heel, eight straight ribs across it, vertical walls, and the soil it
+        displaced thrown up round it in a low crumbled rim.  It cannot be cut INTO the ground mesh, so it is built a centimetre proud of
+        it and shaded as the hollow it is; the rim runs out into the ground with the ground's own normal, shade and texture, so there is no edge.
+        The mesh of a print is kept (per m object, in a WeakMap) and block-copied after the first call, so 150 prints cost almost nothing.
+        No print is made on rock (ground steeper than the terrain's own rock threshold).
+   Set these once to match the terrain the prints lie on:
+   STEPFX.PAGE.DUST = [layer, gain]   the regolith page and its shade gain ([WL.REGO, 1] in the game; the default is a stand-in for the bare harness)
+   STEPFX.GRID = 2                    the terrain's cell size in metres.  groundY is bilinear but the terrain is DRAWN as two triangles per cell
+                                      (split from (i, j) to (i+1, j+1)); the print is laid on those triangles, with their interpolated normals.
+                                      0 = lay it on groundY as it is (for a ground that is not a grid).
+   STEPFX.SHADE = (x, z) => shade     the terrain's vertex shade at a grid point (the game: .78 + fbm(x * .2, z * .2) * .5).  null = 1.
+   STEPFX.SUN = [x, y, z]             optional unit vector toward the sun: the shadow the wall throws across the floor is then baked in.
+
+   (ii) The dust.  There is no air: every grain is on its own parabola under 1.24 m/s^2 from the instant it leaves the boot, nothing hangs
+        and nothing billows, and it is gone the moment it lands.
+   STEPFX.create(seed)                -> sys
+   STEPFX.step(sys, ev)               a footfall.  ev = { x, y, z, h, left, run, kind, v }
+        x, y, z   where the boot is (y on the ground)           h, left, run   as for the print
+        kind      'strike'  the sole comes down: a small low splash squeezed out forward and to both sides
+                  'push'    the boot leaves: a low flat sheet thrown ahead and out to the sides by the toe; as run rises it becomes a rooster
+                            tail thrown up and back, metres long
+                  'scuff'   a boot dragged or turned on the surface: a wide low fan
+                  'land'    coming down from a hop or a jump: a ring thrown out all round
+        v         how fast the boot was moving, m/s (a number), or its velocity [x, y, z] (then a scuff is thrown that way).  Absent = a usual value for the kind.
+   STEPFX.update(sys, dt, groundY)    advance.  Costs nothing while nothing is in flight.
+   STEPFX.emit(B, sys, cam)           cam = { e, r, up, f } (eye, right, up, forward).  At most 3,600 vertices: one streak a grain, drawn along its
+                                      own motion as the film would smear it, never smaller on the screen than about a pixel.
+   STEPFX.clear(sys)                  drop everything in flight.        sys.n = grains in flight. */
+const STEPFX = (() => {
+  const GRAV = 1.24, CAP = 1200, RAD = Math.PI / 180;
+  const h1 = n => { let t = Math.imul(n ^ 0x9e3779b9, 0x85ebca6b); t ^= t >>> 13; t = Math.imul(t, 0xc2b2ae35); return ((t ^ t >>> 16) >>> 0) / 4294967296; };
+  const h2 = (a, b) => h1((Math.imul(a | 0, 73856093) ^ Math.imul(b | 0, 19349663)) | 0);
+  const fin = v => (typeof v === 'number' && v === v && v !== Infinity && v !== -Infinity) ? v : 0;
+  const clampN = (v, a, b) => v < a ? a : v > b ? b : v;
+  const ZERO = () => 0;
+  const API = { print, create, step, update, emit, clear, PAGE: { DUST: [TL.DARK, 3.4] }, GRID: 2, SHADE: null, SUN: null, GRAV };
+
+  /* ---------- the ground as it is drawn ---------- */
+  const GC = new Map(), S = new Float64Array(5);   // S: height, normal, shade at the last point asked for
+  let gFn = null, gCs = -1, gSh = null;
+  function cellOf(g, i, j, cs) {
+    const key = (i + 32768) * 65536 + (j + 32768); let c = GC.get(key); if (c) return c;
+    if (GC.size > 400) GC.clear();
+    const H = new Float64Array(16); for (let b = 0; b < 4; b++) for (let a = 0; a < 4; a++) H[b * 4 + a] = fin(g((i - 1 + a) * cs, (j - 1 + b) * cs));
+    c = new Float64Array(20);                       // the four corners (i,j) (i+1,j) (i+1,j+1) (i,j+1), each: height, normal, shade - as the terrain mesh has them
+    const put = (o, a, b) => { const q = b * 4 + a, nx = H[q - 1] - H[q + 1], ny = 2 * cs, nz = H[q - 4] - H[q + 4], l = Math.sqrt(nx * nx + ny * ny + nz * nz);
+      c[o] = H[q]; c[o + 1] = nx / l; c[o + 2] = ny / l; c[o + 3] = nz / l; c[o + 4] = API.SHADE ? (fin(API.SHADE((i - 1 + a) * cs, (j - 1 + b) * cs)) || 1) : 1; };
+    put(0, 1, 1); put(5, 2, 1); put(10, 2, 2); put(15, 1, 2); GC.set(key, c); return c;
+  }
+  function sample(g, x, z) {
+    const cs = API.GRID;
+    if (cs > 0) { const gx = x / cs, gz = z / cs, i = Math.floor(gx), j = Math.floor(gz), fx = gx - i, fz = gz - j, c = cellOf(g, i, j, cs);
+      let wa, wb, wc, wd; if (fx >= fz) { wa = 1 - fx; wb = fx - fz; wc = fz; wd = 0; } else { wa = 1 - fz; wb = 0; wc = fx; wd = fz - fx; }
+      S[0] = wa * c[0] + wb * c[5] + wc * c[10] + wd * c[15]; const nx = wa * c[1] + wb * c[6] + wc * c[11] + wd * c[16], ny = wa * c[2] + wb * c[7] + wc * c[12] + wd * c[17], nz = wa * c[3] + wb * c[8] + wc * c[13] + wd * c[18], l = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+      S[1] = nx / l; S[2] = ny / l; S[3] = nz / l; S[4] = wa * c[4] + wb * c[9] + wc * c[14] + wd * c[19]; }
+    else { const e = .12, nx = fin(g(x - e, z)) - fin(g(x + e, z)), ny = 2 * e, nz = fin(g(x, z - e)) - fin(g(x, z + e)), l = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+      S[0] = fin(g(x, z)); S[1] = nx / l; S[2] = ny / l; S[3] = nz / l; S[4] = API.SHADE ? (fin(API.SHADE(x, z)) || 1) : 1; }
+  }
+
+  /* ---------- the print ---------- */
+  // the sole (a right boot; a = to the right, b = forward, metres), counter-clockwise from the right-hand end of the toe curve
+  const NO = 12, NK = 17, BP = .07, BMIN = -.165, BMAX = .168;
+  const OUT = (() => { const o = [], se = (c, p) => Math.sign(c) * Math.pow(Math.abs(c), 2 / p);
+    for (let k = 0; k <= 6; k++) { const t = k * 30 * RAD; o.push(.074 * se(Math.cos(t), 2.5) - .005 * Math.sin(t), .088 + .080 * se(Math.sin(t), 2.5)); }
+    for (let k = 0; k <= 4; k++) { const t = (180 + k * 45) * RAD; o.push(.064 * se(Math.cos(t), 2.3), -.100 + .065 * se(Math.sin(t), 2.3)); }
+    return new Float64Array(o); })();
+  const OA = new Float64Array(NO), OB = new Float64Array(NO), ONA = new Float64Array(NO), ONB = new Float64Array(NO);
+  const RIM = new Float64Array(NO * 12), FL = new Float64Array(NK * 2 * 5), FK = new Float64Array(NK);
+  const W = new Float32Array(240 * 12); let WN = 0;
+  const pv = (x, y, z, nx, ny, nz, lay, sh) => { const o = WN * 12; W[o] = x; W[o + 1] = y; W[o + 2] = z; W[o + 3] = x / 3.2; W[o + 4] = z / 3.2; W[o + 5] = lay; W[o + 6] = nx; W[o + 7] = ny; W[o + 8] = nz; W[o + 9] = sh; W[o + 10] = 0; W[o + 11] = 0; WN++; };
+  let ELO = 0, EHI = 0; const LR = [0, 2, 3, 4, 6, 7, 9, 11];
+  // how far the outline reaches to either side at b
+  function extent(b) { let lo = 1e9, hi = -1e9;
+    for (let k = 0; k < NO; k++) { const n = (k + 1) % NO, b0 = OB[k], b1 = OB[n]; if ((b - b0) * (b - b1) <= 0 && b0 !== b1) { const a = OA[k] + (OA[n] - OA[k]) * (b - b0) / (b1 - b0); if (a < lo) lo = a; if (a > hi) hi = a; } }
+    if (lo > hi) { let best = 1e9; for (let k = 0; k < NO; k++) { const d = Math.abs(OB[k] - b); if (d < best) { best = d; lo = hi = OA[k]; } } }
+    ELO = lo; EHI = hi; }
+  // from (a, b) toward (sa, sb): how far to the wall
+  function toWall(a, b, sa, sb) { let best = 1e9;
+    for (let k = 0; k < NO; k++) { const n = (k + 1) % NO, ea = OA[n] - OA[k], eb = OB[n] - OB[k], den = sa * eb - sb * ea; if (den > -1e-9 && den < 1e-9) continue;
+      const qa = OA[k] - a, qb = OB[k] - b, t = (qa * eb - qb * ea) / den, w = (qa * sb - qb * sa) / den; if (t > 0 && w >= 0 && w <= 1 && t < best) best = t; }
+    return best; }
+
+  function buildPrint(m, g, lod) {
+    WN = 0;
+    const x = fin(m.x), z = fin(m.z), hd = fin(m.h), mir = m.left ? -1 : 1, run = clampN(fin(m.run), 0, 1), turn = clampN(fin(m.turn), -1, 1), seed = m.seed | 0, at = Math.abs(turn);
+    const drag = clampN(fin(m.drag) + run * .22, 0, 1), fx = Math.sin(hd), fz = -Math.cos(hd), rx = Math.cos(hd), rz = Math.sin(hd);
+    sample(g, x, z); if (S[2] < .86) return 0;
+    const gnx = S[1], gny = S[2], gnz = S[3], gs0 = S[4], D = API.PAGE.DUST, lay = D[0], gain = fin(D[1]) || 1;
+    const tt = Math.tan(turn * .42), DR = drag * .11;
+    const warpB = b => b < -.05 ? b - DR * Math.min(1, (-.05 - b) * 10) : b;
+    for (let k = 0; k < NO; k++) { let a = OUT[k * 2] * mir; const b = warpB(OUT[k * 2 + 1]), da = (b - BP) * tt; if (da * a > 0) a += da; OA[k] = a; OB[k] = b; }
+    for (let k = 0; k < NO; k++) { const p = (k + NO - 1) % NO, n = (k + 1) % NO, na = (OB[n] - OB[p]) * mir, nb = -(OA[n] - OA[p]) * mir, l = Math.hypot(na, nb) || 1; ONA[k] = na / l; ONB[k] = nb / l; }
+    if (lod) {   // far: a soft dark patch the shape of the print, a triangle fan of eight
+      const cy = S[0] + .009, cs = .6 * gs0 * gain;
+      for (let k = 0; k < 8; k++) { pv(x, cy, z, gnx, gny, gnz, lay, cs);
+        for (let e = 0; e < 2; e++) { const i = LR[(k + e) & 7], a = OA[i] + ONA[i] * .03, b = OB[i] + ONB[i] * .03, wx = x + rx * a + fx * b, wz = z + rz * a + fz * b; sample(g, wx, wz); pv(wx, S[0] + .003, wz, S[1], S[2], S[3], lay, S[4] * gain); } }
+      return WN; }
+    // the sun, in the print's own frame; sk = length of shadow per unit of depth
+    let sa = 0, sb = 0, sk = 0; { const s = API.SUN; if (s) { const hx = fin(s[0]), hy = fin(s[1]), hz = fin(s[2]), hl = Math.hypot(hx, hz); if (hl > 1e-6 && hy > .01) { sa = (hx * rx + hz * rz) / hl; sb = (hx * fx + hz * fz) / hl; sk = Math.min(hl / hy, 12); } } }
+    /* the rim: the top of the wall, and the foot of the heap outside it */
+    let rmin = 1;
+    for (let k = 0; k < NO; k++) { const a = OA[k], b = OB[k], u = clampN((b - BMIN) / (BMAX - BMIN), 0, 1), deep = u * run + (1 - u) * (1 - run), moved = Math.abs(a - OUT[k * 2] * mir) + (OUT[k * 2 + 1] - b) * .5;
+      const rh = .0125 + (h2(seed, k) - .35) * .006 + deep * .003 + Math.min(.008, moved * .1), o = k * 12; if (rh < rmin) rmin = rh;
+      const wx = x + rx * a + fx * b, wz = z + rz * a + fz * b; sample(g, wx, wz);
+      RIM[o] = wx; RIM[o + 1] = S[0]; RIM[o + 2] = wz; RIM[o + 3] = rh; RIM[o + 4] = S[4];
+      const w = .04 + .032 * h2(seed, 40 + k) + moved * .45, a2 = a + ONA[k] * w, b2 = b + ONB[k] * w, ox = x + rx * a2 + fx * b2, oz = z + rz * a2 + fz * b2; sample(g, ox, oz);
+      RIM[o + 5] = ox; RIM[o + 6] = S[0] - .002; RIM[o + 7] = oz; RIM[o + 8] = S[1]; RIM[o + 9] = S[2]; RIM[o + 10] = S[3]; RIM[o + 11] = S[4]; }
+    /* the floor: stations heel to toe, valley and ridge by turns */
+    const heelLift = .0012 + .0072 * run, toeLift = .0045 - .0033 * run, depth = rmin - .003, dS = .012;
+    for (let k = 0; k < NK; k++) { const b0 = BMIN - .002 + (BMAX - BMIN + .004) * k / (NK - 1), b = warpB(b0), u = k / (NK - 1);
+      extent(b - dS); let lo = ELO, hi = EHI; extent(b); if (ELO < lo) lo = ELO; if (EHI > hi) hi = EHI; extent(b + dS); if (ELO < lo) lo = ELO; if (EHI > hi) hi = EHI;
+      // the ribs survive where the sole did not slide
+      let rk = clampN(1 - at * Math.abs(b0 - BP) * 9, 0, 1); if (b0 < -.05 && drag > 0) rk *= clampN(1 - drag * (-.05 - b0) * 16, 0, 1); rk *= .8 + .2 * h2(seed, 80 + k); FK[k] = rk;
+      const hgt = Math.min(heelLift + (toeLift - heelLift) * u + (b0 - b) * .03 + (k & 1 ? .005 * rk : 0) + (1 - rk) * .0018, rmin - .0025), sh0 = (k & 1 ? .84 : .58) * rk + .7 * (1 - rk);
+      for (let s = 0; s < 2; s++) { const a = s ? hi + .004 : lo - .004, wx = x + rx * a + fx * b, wz = z + rz * a + fz * b, o = (k * 2 + s) * 5; sample(g, wx, wz);
+        let sh = sh0; if (sk > 0) { const ai = s ? hi - .006 : lo + .006, d = toWall(ai, b, sa, sb), len = Math.max(.004, (depth - hgt + .004)) * sk; sh *= 1 - .6 * clampN(1.3 - d / len, 0, 1); }
+        FL[o] = wx; FL[o + 1] = S[0] + hgt; FL[o + 2] = wz; FL[o + 3] = sh * S[4] * gain; } }
+    for (let k = 0; k + 1 < NK; k++) { const t = (k & 1 ? .15 : -.15) * (FK[k] + FK[k + 1]) * .5; let nx = gnx + fx * t, ny = gny, nz = gnz + fz * t; const l = Math.sqrt(nx * nx + ny * ny + nz * nz); nx /= l; ny /= l; nz /= l;
+      const a = k * 10, b = a + 5, c = a + 15, d = a + 10;
+      pv(FL[a], FL[a + 1], FL[a + 2], nx, ny, nz, lay, FL[a + 3]); pv(FL[b], FL[b + 1], FL[b + 2], nx, ny, nz, lay, FL[b + 3]); pv(FL[c], FL[c + 1], FL[c + 2], nx, ny, nz, lay, FL[c + 3]);
+      pv(FL[a], FL[a + 1], FL[a + 2], nx, ny, nz, lay, FL[a + 3]); pv(FL[c], FL[c + 1], FL[c + 2], nx, ny, nz, lay, FL[c + 3]); pv(FL[d], FL[d + 1], FL[d + 2], nx, ny, nz, lay, FL[d + 3]); }
+    /* the wall, straight down from the rim, and the heap outside it */
+    for (let k = 0; k < NO; k++) { const n = (k + 1) % NO, o = k * 12, q = n * 12;
+      const ax = -(ONA[k] * rx + ONB[k] * fx), az = -(ONA[k] * rz + ONB[k] * fz), bx = -(ONA[n] * rx + ONB[n] * fx), bz = -(ONA[n] * rz + ONB[n] * fz), wy = .13, wl = 1 / Math.sqrt(1 + wy * wy);
+      const sA = .62 * RIM[o + 4] * gain, sB = .62 * RIM[q + 4] * gain, tA = RIM[o + 1] + RIM[o + 3], tB = RIM[q + 1] + RIM[q + 3], lA = RIM[o + 1] + .0004, lB = RIM[q + 1] + .0004;
+      pv(RIM[o], tA, RIM[o + 2], ax * wl, wy * wl, az * wl, lay, sA * 1.12); pv(RIM[q], tB, RIM[q + 2], bx * wl, wy * wl, bz * wl, lay, sB * 1.12); pv(RIM[q], lB, RIM[q + 2], bx * wl, wy * wl, bz * wl, lay, sB * .8);
+      pv(RIM[o], tA, RIM[o + 2], ax * wl, wy * wl, az * wl, lay, sA * 1.12); pv(RIM[q], lB, RIM[q + 2], bx * wl, wy * wl, bz * wl, lay, sB * .8); pv(RIM[o], lA, RIM[o + 2], ax * wl, wy * wl, az * wl, lay, sA * .8);
+      // the heap: its crest leans outward and is a shade darker than untouched ground (turned soil is); its foot is the ground itself
+      const jA = .27 + .14 * (h2(seed, 60 + k) - .5), jB = .27 + .14 * (h2(seed, 60 + n) - .5);
+      let cax = gnx - ax * jA, cay = gny, caz = gnz - az * jA, cbx = gnx - bx * jB, cby = gny, cbz = gnz - bz * jB; const la = Math.sqrt(cax * cax + cay * cay + caz * caz), lb = Math.sqrt(cbx * cbx + cby * cby + cbz * cbz); cax /= la; cay /= la; caz /= la; cbx /= lb; cby /= lb; cbz /= lb;
+      const hA = (.84 + .08 * h2(seed, 70 + k)) * RIM[o + 4] * gain, hB = (.84 + .08 * h2(seed, 70 + n)) * RIM[q + 4] * gain, gA = RIM[o + 11] * gain, gB = RIM[q + 11] * gain;
+      pv(RIM[o], tA, RIM[o + 2], cax, cay, caz, lay, hA); pv(RIM[q + 5], RIM[q + 6], RIM[q + 7], RIM[q + 8], RIM[q + 9], RIM[q + 10], lay, gB); pv(RIM[q], tB, RIM[q + 2], cbx, cby, cbz, lay, hB);
+      pv(RIM[o], tA, RIM[o + 2], cax, cay, caz, lay, hA); pv(RIM[o + 5], RIM[o + 6], RIM[o + 7], RIM[o + 8], RIM[o + 9], RIM[o + 10], lay, gA); pv(RIM[q + 5], RIM[q + 6], RIM[q + 7], RIM[q + 8], RIM[q + 9], RIM[q + 10], lay, gB); }
+    return WN;
+  }
+
+  const PC = new WeakMap();
+  function print(B, m, groundY, lod) {
+    if (!B || !m || typeof m !== 'object') return;
+    lod = lod ? 1 : 0;
+    const g = typeof groundY === 'function' ? groundY : ZERO, sun = API.SUN, D = API.PAGE.DUST;
+    if (g !== gFn || API.GRID !== gCs || API.SHADE !== gSh) { GC.clear(); gFn = g; gCs = API.GRID; gSh = API.SHADE; }
+    let c = PC.get(m);
+    const s0 = sun ? fin(sun[0]) : 9, s1 = sun ? fin(sun[1]) : 9, s2 = sun ? fin(sun[2]) : 9;
+    if (!c || c.x !== m.x || c.z !== m.z || c.h !== m.h || c.left !== m.left || c.run !== m.run || c.turn !== m.turn || c.seed !== m.seed || c.drag !== m.drag || c.g !== g || c.cs !== API.GRID || c.sh !== API.SHADE || c.lay !== D[0] || c.gain !== D[1] || c.s0 !== s0 || c.s1 !== s1 || c.s2 !== s2) {
+      c = { x: m.x, z: m.z, h: m.h, left: m.left, run: m.run, turn: m.turn, seed: m.seed, drag: m.drag, g, cs: API.GRID, sh: API.SHADE, lay: D[0], gain: D[1], s0, s1, s2, d: [null, null] }; PC.set(m, c); }
+    let d = c.d[lod]; if (!d) { const n = buildPrint(m, g, lod); d = c.d[lod] = W.slice(0, n * 12); }
+    put(B, d, d.length / 12);
+  }
+  // copy whole triangles into the batch, as many as there is room for
+  const TP = [0, 0, 0], TQ = [0, 0, 0];
+  function put(B, d, nv) {
+    if (nv <= 0) return;
+    if (B.d && B.d.set && typeof B.n === 'number') { const max = typeof B.max === 'number' ? B.max : (B.d.length / 12) | 0; let n = Math.min(nv, max - B.n); n -= n % 3; if (n <= 0) return; B.d.set(n * 12 === d.length ? d : d.subarray(0, n * 12), B.n * 12); B.n += n; }
+    else if (B.v) for (let i = 0, o = 0; i < nv; i++, o += 12) { TP[0] = d[o]; TP[1] = d[o + 1]; TP[2] = d[o + 2]; TQ[0] = d[o + 6]; TQ[1] = d[o + 7]; TQ[2] = d[o + 8]; B.v(TP, d[o + 3], d[o + 4], d[o + 5], TQ, d[o + 9], d[o + 10]); }
+  }
+
+  /* ---------- the dust ---------- */
+  function create(seed) {
+    return { seed: (seed | 0) || 1, rs: ((seed | 0) * 2654435761 >>> 0) || 1, n: 0, t: 0,
+      P: new Float32Array(CAP * 3), V: new Float32Array(CAP * 3), T0: new Float64Array(CAP), TE: new Float64Array(CAP), SZ: new Float32Array(CAP), RN: new Float32Array(CAP * 3), TN: new Float32Array(CAP), UV: new Float32Array(CAP * 2) };
+  }
+  function clear(sys) { if (sys) sys.n = 0; }
+  let RS = 1;
+  const rnd = () => { RS = (RS + 0x6D2B79F5) | 0; let t = Math.imul(RS ^ RS >>> 15, 1 | RS); t = (t + Math.imul(t ^ t >>> 7, 61 | t)) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+
+  /* A spray of n grains from a patch of the boot.  (ox, oz) and (sx, sz): where on the sole and how spread, boot frame (right, forward).
+     az: which way it goes, radians from the boot's forward toward its right; sp: half-width of the fan; el0..el1: elevation;
+     v0..v1: speed (many slow, few fast: that is what draws a sheet out into streaks); span: seconds over which it leaves. */
+  function spray(sys, n, X, Y, Z, fx, fz, rx, rz, ox, oz, sx, sz, az, sp, el0, el1, v0, v1, span) {
+    const room = CAP - sys.n; if (n > room) n = room; if (n <= 0) return;
+    const P = sys.P, V = sys.V, t = sys.t;
+    for (let k = 0; k < n; k++) { const i = sys.n++, o = i * 3;
+      const a = az + (rnd() + rnd() - 1) * sp, q = rnd(), el = el0 + (el1 - el0) * rnd(), clod = rnd() < .14;
+      let v = v0 + (v1 - v0) * q * Math.sqrt(q); if (clod) v *= .72;
+      const ca = Math.cos(a), sn = Math.sin(a), dx = fx * ca + rx * sn, dz = fz * ca + rz * sn, ce = Math.cos(el), la = ox + (rnd() - .5) * sx, lb = oz + (rnd() - .5) * sz;
+      P[o] = X + rx * la + fx * lb; P[o + 1] = Y + .004 + rnd() * .012; P[o + 2] = Z + rz * la + fz * lb;
+      V[o] = dx * ce * v; V[o + 1] = Math.sin(el) * v; V[o + 2] = dz * ce * v;
+      sys.T0[i] = t + rnd() * span; sys.TE[i] = -1; sys.SZ[i] = clod ? .012 + .014 * rnd() : .005 + .005 * rnd();
+      // each grain turns its own face to the light
+      const u = rnd() * 2 - 1, w = rnd() * 6.2832, s = Math.sqrt(1 - u * u); sys.RN[o] = s * Math.cos(w); sys.RN[o + 1] = u; sys.RN[o + 2] = s * Math.sin(w);
+      sys.TN[i] = (clod ? .8 : 1) * (1.25 + .75 * rnd()); sys.UV[i * 2] = rnd(); sys.UV[i * 2 + 1] = rnd(); }
+  }
+
+  function step(sys, ev) {
+    if (!sys || !sys.P || !ev) return;
+    const X = fin(ev.x), Y = fin(ev.y), Z = fin(ev.z), hd = fin(ev.h), run = clampN(fin(ev.run), 0, 1), side = ev.left ? -1 : 1, kind = ev.kind;
+    let fx = Math.sin(hd), fz = -Math.cos(hd); const rx = -fz, rz = fx;
+    let sp = -1, vv = ev.v;
+    if (typeof vv === 'number') sp = fin(vv); else if (vv && vv.length >= 3) { const ax = fin(vv[0]), az = fin(vv[2]); sp = Math.hypot(ax, fin(vv[1]), az); if (kind === 'scuff') { const l = Math.hypot(ax, az); if (l > 1e-6) { fx = ax / l; fz = az / l; } } }
+    RS = sys.rs;
+    if (kind === 'strike') { const s = clampN(sp < 0 ? .9 + run : sp, .2, 5), k = .55 + .3 * s;
+      spray(sys, 70 + 30 * run | 0, X, Y, Z, fx, fz, rx, rz, 0, -.03, .15, .26, 0, 1.9, 9 * RAD, 40 * RAD, .25 * k, 1.2 * k, .05);
+      spray(sys, 40, X, Y, Z, fx, fz, rx, rz, side * .02, .1, .13, .1, 0, .7, 7 * RAD, 26 * RAD, .3 * k, 1.5 * k, .06); }
+    else if (kind === 'push') { const s = clampN(sp < 0 ? 1.3 + 1.2 * run : sp, .2, 6), k = .5 + .38 * s;
+      // the toe: a flat sheet ahead and out to the sides
+      spray(sys, 210 * (1 - .6 * run) | 0, X, Y, Z, fx, fz, rx, rz, 0, .13, .15, .06, 0, 1.0, 6 * RAD, 27 * RAD, .4 * k, 2.3 * k, .1);
+      // and, with a run behind it, the tail: up and back
+      if (run > .15) spray(sys, 210 * run | 0, X, Y, Z, fx, fz, rx, rz, 0, .09, .13, .1, Math.PI + side * .06, .3, 18 * RAD, 42 * RAD, .7 + .3 * run, 1.2 + 1.2 * run, .14); }
+    else if (kind === 'scuff') { const s = clampN(sp < 0 ? 1.3 : sp, .2, 5);
+      spray(sys, 200, X, Y, Z, fx, fz, rx, rz, 0, .05, .16, .3, 0, 1.05, 5 * RAD, 30 * RAD, .3 * s, 1.6 * s, .16); }
+    else if (kind === 'land') { const s = clampN(sp < 0 ? 1.6 : sp, .2, 6), k = .45 + .38 * s;
+      spray(sys, 320, X, Y, Z, fx, fz, rx, rz, 0, 0, .2, .36, 0, Math.PI, 8 * RAD, 36 * RAD, .3 * k, 1.9 * k, .05); }
+    sys.rs = RS;
+  }
+
+  // when and where a grain comes down: its parabola against the ground, found once
+  function landing(sys, i, g) {
+    const o = i * 3, P = sys.P, V = sys.V, x0 = P[o], y0 = P[o + 1], z0 = P[o + 2], vx = V[o], vy = V[o + 1], vz = V[o + 2];
+    let yg = fin(g(x0, z0)), tau = .05;
+    for (let it = 0; it < 3; it++) { const dsc = vy * vy + 2 * GRAV * (y0 - yg); tau = dsc > 0 ? (vy + Math.sqrt(dsc)) / GRAV : vy / GRAV; if (!(tau > .03)) { tau = .03; break; } yg = fin(g(x0 + vx * tau, z0 + vz * tau)); }
+    // rising ground can meet it sooner: walk back until it is clear
+    for (let it = 0; it < 4; it++) { const th = tau * .5, y = y0 + vy * th - .5 * GRAV * th * th; if (y < fin(g(x0 + vx * th, z0 + vz * th)) - .01 && th > .05) tau = th; else break; }
+    return sys.T0[i] + tau;
+  }
+  function update(sys, dt, groundY) {
+    if (!sys || !sys.P) return;
+    dt = fin(dt); if (dt < 0) dt = 0; if (dt > .25) dt = .25; sys.t += dt;
+    if (sys.n === 0) return;
+    const g = typeof groundY === 'function' ? groundY : ZERO, t = sys.t, TE = sys.TE;
+    for (let i = 0; i < sys.n; i++) {
+      if (TE[i] < 0) TE[i] = landing(sys, i, g);
+      if (t >= TE[i]) { const l = --sys.n; if (i !== l) { const a = i * 3, b = l * 3, P = sys.P, V = sys.V, N = sys.RN; P[a] = P[b]; P[a + 1] = P[b + 1]; P[a + 2] = P[b + 2]; V[a] = V[b]; V[a + 1] = V[b + 1]; V[a + 2] = V[b + 2]; N[a] = N[b]; N[a + 1] = N[b + 1]; N[a + 2] = N[b + 2];
+          sys.T0[i] = sys.T0[l]; TE[i] = TE[l]; sys.SZ[i] = sys.SZ[l]; sys.TN[i] = sys.TN[l]; sys.UV[i * 2] = sys.UV[l * 2]; sys.UV[i * 2 + 1] = sys.UV[l * 2 + 1]; i--; } }
+    }
+  }
+
+  const MINANG = .0026, EXPO = .03;
+  function emit(B, sys, cam) {
+    if (!B || !sys || !sys.P || sys.n === 0 || !cam || !cam.e || !cam.r || !cam.up || !cam.f) return;
+    const direct = B.d && B.d.set && typeof B.n === 'number', max = direct ? (typeof B.max === 'number' ? B.max : (B.d.length / 12) | 0) : 0;
+    if (!direct && !B.v) return;
+    const ex = fin(cam.e[0]), ey = fin(cam.e[1]), ez = fin(cam.e[2]), rx = fin(cam.r[0]), ry = fin(cam.r[1]), rz = fin(cam.r[2]), ux = fin(cam.up[0]), uy = fin(cam.up[1]), uz = fin(cam.up[2]), fx = fin(cam.f[0]), fy = fin(cam.f[1]), fz = fin(cam.f[2]);
+    const P = sys.P, V = sys.V, RN = sys.RN, t = sys.t, D = API.PAGE.DUST, lay = D[0], gain = fin(D[1]) || 1, sn = API.SUN, bx = -fx + (sn ? fin(sn[0]) : 0), by = -fy + (sn ? fin(sn[1]) : .4), bz = -fz + (sn ? fin(sn[2]) : 0), bl = .9 / (Math.sqrt(bx * bx + by * by + bz * bz) || 1), d = direct ? B.d : null;
+    for (let i = 0; i < sys.n; i++) {
+      const tau = t - sys.T0[i]; if (tau < 0) continue;
+      if (direct && B.n + 3 > max) break;
+      const o = i * 3, px = P[o] + V[o] * tau, py = P[o + 1] + V[o + 1] * tau - .5 * GRAV * tau * tau, pz = P[o + 2] + V[o + 2] * tau, vx = V[o], vy = V[o + 1] - GRAV * tau, vz = V[o + 2];
+      const qx = px - ex, qy = py - ey, qz = pz - ez, dep = qx * fx + qy * fy + qz * fz; if (dep < .12) continue;
+      let sx = vx * rx + vy * ry + vz * rz, sy = vx * ux + vy * uy + vz * uz; const sl = Math.sqrt(sx * sx + sy * sy);
+      if (sl > 1e-5) { sx /= sl; sy /= sl; } else { sx = 0; sy = 1; }
+      const w = Math.max(sys.SZ[i], dep * MINANG) * .5, len = Math.min(Math.max(w * 2.4, sl * EXPO * .5), .09 + w * 2);
+      const dx = (rx * sx + ux * sy) * len, dy = (ry * sx + uy * sy) * len, dz = (rz * sx + uz * sy) * len, wx = (-rx * sy + ux * sx) * w, wy = (-ry * sy + uy * sx) * w, wz = (-rz * sy + uz * sx) * w;
+      let nx = bx * bl + RN[o] * .45, ny = by * bl + RN[o + 1] * .45, nz = bz * bl + RN[o + 2] * .45; const nl = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1; nx /= nl; ny /= nl; nz /= nl;
+      const sh = sys.TN[i] * gain, u = sys.UV[i * 2], v = sys.UV[i * 2 + 1];
+      if (direct) { let q = B.n * 12;
+        d[q] = px + dx + wx; d[q + 1] = py + dy + wy; d[q + 2] = pz + dz + wz; d[q + 3] = u; d[q + 4] = v; d[q + 5] = lay; d[q + 6] = nx; d[q + 7] = ny; d[q + 8] = nz; d[q + 9] = sh; d[q + 10] = 0; d[q + 11] = 0; q += 12;
+        d[q] = px + dx - wx; d[q + 1] = py + dy - wy; d[q + 2] = pz + dz - wz; d[q + 3] = u; d[q + 4] = v; d[q + 5] = lay; d[q + 6] = nx; d[q + 7] = ny; d[q + 8] = nz; d[q + 9] = sh; d[q + 10] = 0; d[q + 11] = 0; q += 12;
+        d[q] = px - dx; d[q + 1] = py - dy; d[q + 2] = pz - dz; d[q + 3] = u; d[q + 4] = v; d[q + 5] = lay; d[q + 6] = nx; d[q + 7] = ny; d[q + 8] = nz; d[q + 9] = sh; d[q + 10] = 0; d[q + 11] = 0; B.n += 3; }
+      else { TQ[0] = nx; TQ[1] = ny; TQ[2] = nz; TP[0] = px + dx + wx; TP[1] = py + dy + wy; TP[2] = pz + dz + wz; B.v(TP, u, v, lay, TQ, sh, 0); TP[0] = px + dx - wx; TP[1] = py + dy - wy; TP[2] = pz + dz - wz; B.v(TP, u, v, lay, TQ, sh, 0); TP[0] = px - dx; TP[1] = py - dy; TP[2] = pz - dz; B.v(TP, u, v, lay, TQ, sh, 0); }
+    }
+  }
+  return API;
+})();
+
+
 /* argus.js : ARGUS A-2, the unmanned ascent vehicle at the head of the valley.   Needs prims.js (V3, TL, makeBatch).
    Reads WL (world.js) and TL.NASA lazily, at the first call, so it may be loaded before world.js.   One global: ARGUS.
    No DOM, no clock, no Math.random.
@@ -16014,12 +16970,15 @@ function step(dt, cmd) {
   // Hold the key for the whole of it, or let go early and come down sooner.
   const G = 1.24; if (cmd.jump && !p.jwas) p.jbuf = .2; else p.jbuf -= dt; p.jwas = cmd.jump;
   const gnd = Math.max(groundY(p.x, p.z), rockTop(p.x, p.z, p.y === undefined ? -1e9 : p.y + .05));
-  const moved = p.px === undefined ? 9 : Math.hypot(p.x - p.px, p.z - p.pz); p.px = p.x; p.pz = p.z;
+  const moved = p.px === undefined ? 9 : Math.hypot(p.x - p.px, p.z - p.pz); if (moved > 1e-4 && moved < 1) p.mh = Math.atan2(p.x - p.px, -(p.z - p.pz)); p.px = p.x; p.pz = p.z;
   if (p.air <= 0) { if (moved < 1 && gnd < p.y - .45) { p.air = 1; p.vy = 0; p.coyote = .14; }   // walked off an edge: fall, do not snap
-    else { p.y = gnd; p.coyote = .14; if (p.jbuf > 0) { p.jbuf = 0; p.vy = 2.75 + (run ? .55 : 0); p.air = 1; if (AU.ctx) sfx.step(true, { push: true, foot: p.foot || 1 }); } } }
-  else { p.vy -= G * dt; if (!cmd.jump && p.vy > 1.1) p.vy -= 5 * dt; p.y += p.vy * dt; if (p.y <= gnd && p.vy <= 0) { const vi = -p.vy; p.y = gnd; p.vy = 0; p.air = 0; if (AU.ctx) sfx.step(true, { land: vi, foot: p.foot || 1 }); S.shake = Math.max(S.shake, .08 + vi * .04); mark(p.x, p.z, p.yaw, 10 + vi * 5 | 0, 1.1 + vi * .5); } p.coyote -= dt; if (p.coyote > 0 && p.jbuf > 0 && p.vy <= 0) { p.jbuf = 0; p.vy = 2.75; } }
+    else { p.y = gnd; p.coyote = .14; if (p.jbuf > 0) { p.jbuf = 0; p.vy = 2.75 + (run ? .55 : 0); p.air = 1; if (AU.ctx) sfx.step(true, { push: true, foot: p.foot || 1 }); if (STEP_OK) { const sv = Math.hypot(p.vx, p.vz), hh = sv > .4 && p.mh !== undefined ? p.mh : p.yaw; for (const sd of [-1, 1]) mark(p.x + Math.cos(hh) * .16 * sd, p.z + Math.sin(hh) * .16 * sd, hh, 0, 0, { left: sd < 0, run: clamp(sv / 5.8, 0, 1), kind: 'push', v: 2.2 + sv * .4, print: false }); } } } }
+  else { p.vy -= G * dt; if (!cmd.jump && p.vy > 1.1) p.vy -= 5 * dt; p.y += p.vy * dt; if (p.y <= gnd && p.vy <= 0) { const vi = -p.vy; p.y = gnd; p.vy = 0; p.air = 0; if (AU.ctx) sfx.step(true, { land: vi, foot: p.foot || 1 }); S.shake = Math.max(S.shake, .08 + vi * .04); if (STEP_OK) { const sv = Math.hypot(p.vx, p.vz), hh = sv > .4 && p.mh !== undefined ? p.mh : p.yaw; mark(p.x - Math.cos(hh) * .16, p.z - Math.sin(hh) * .16, hh, 0, 0, { left: true, run: .3, kind: 'land', v: vi }); mark(p.x + Math.cos(hh) * .16 + Math.sin(hh) * .12, p.z + Math.sin(hh) * .16 - Math.cos(hh) * .12, hh, 0, 0, { left: false, run: .3, kind: null }); p.lpr = null; } else mark(p.x, p.z, p.yaw, 10 + vi * 5 | 0, 1.1 + vi * .5); } p.coyote -= dt; if (p.coyote > 0 && p.jbuf > 0 && p.vy <= 0) { p.jbuf = 0; p.vy = 2.75; } }
   p.lift = p.y - groundY(p.x, p.z);
-  const v = Math.hypot(p.vx, p.vz); if (p.air <= 0) { p.bob += v * dt; p.stepD += v * dt; if (p.stepD > (run ? 2.3 : 1.7)) { p.stepD = 0; p.foot = -(p.foot || 1); sfx.step(run, { foot: p.foot }); mark(p.x + Math.cos(p.yaw) * .17 * p.foot, p.z + Math.sin(p.yaw) * .17 * p.foot, p.yaw, run ? 5 : 3, run ? 1.1 : .7); } }
+  const v = Math.hypot(p.vx, p.vz); if (p.air <= 0) { p.bob += v * dt; p.stepD += STEP_OK ? (moved < 1 ? moved : 0) : v * dt; if (p.stepD > (run ? 2.3 : 1.7)) { p.stepD = 0; p.foot = -(p.foot || 1); sfx.step(run, { foot: p.foot }); if (STEP_OK) { const hh = p.mh === undefined ? p.yaw : p.mh, rk = clamp((v - 3.4) / 2.4, 0, 1), fx2 = p.x + Math.cos(hh) * .15 * p.foot + Math.sin(hh) * .3, fz2 = p.z + Math.sin(hh) * .15 * p.foot - Math.cos(hh) * .3;
+      if (p.lpr) mark(p.lpr[0], p.lpr[1], hh, 0, 0, { left: p.foot > 0, run: rk, kind: 'push', v, print: false });   /* the other boot leaves the print it made a stride ago */
+      mark(fx2, fz2, hh, 0, 0, { left: p.foot < 0, run: rk, kind: 'strike', v }); p.lpr = [fx2, fz2]; }
+    else mark(p.x + Math.cos(p.yaw) * .17 * p.foot, p.z + Math.sin(p.yaw) * .17 * p.foot, p.yaw, run ? 5 : 3, run ? 1.1 : .7); } }
   p.stam = clamp(p.stam + (run ? -(S.crew.id === 'waldron' ? .09 : .15) : .12) * dt, 0, 1);
   if (cmd.lamp) { p.lamp = !p.lamp; if (AU.ctx) sfx.sw(); }
   const dShip = Math.hypot(p.x - SHIP.x, p.z - SHIP.z);
@@ -16078,7 +17037,7 @@ function step(dt, cmd) {
     if (f.kind === 'crew' || f.kin) { // the crew play their parts; the one on Algo is carried round by his
       if (f.kin) { if (f.stun > 0) f.stun -= dt; } else if (crewRole(f, dt, p, d)) return;
       f.spd = lerp(f.spd, Math.hypot(f.x - ox, f.z - oz) / dt, dt * 8); if (d < nearest && f.kin) nearest = d;
-      if (f.kind === 'crew' && f.spd > .5) { f.pd = (f.pd || 0) + f.spd * dt; if (f.pd > 2) { f.pd = 0; if (d < 60) mark(f.x, f.z, f.heading, 2, .5); } }
+      if (f.kind === 'crew' && f.spd > .5) { f.pd = (f.pd || 0) + f.spd * dt; if (f.pd > (STEP_OK ? (f.spd > 4 ? 1.5 : .95) : 2)) { f.pd = 0; if (d < 60) { if (STEP_OK) { f.ft = -(f.ft || 1); const hh = f.heading, rk = clamp((f.spd - 3.2) / 2.4, 0, 1), fx2 = f.x + Math.cos(hh) * .14 * f.ft, fz2 = f.z + Math.sin(hh) * .14 * f.ft; if (f.lpr) mark(f.lpr[0], f.lpr[1], hh, 0, 0, { left: f.ft > 0, run: rk, kind: 'push', v: f.spd, print: false }); mark(fx2, fz2, hh, 0, 0, { left: f.ft < 0, run: rk, kind: 'strike', v: f.spd }); f.lpr = [fx2, fz2]; } else mark(f.x, f.z, f.heading, 2, .5); } } }
       continue; }
     if (f.bur) { if (burStep(f, dt, p, fd, touch)) return; if (f.active && f.deadT === undefined && f.bs !== 'away' && d < nearest) nearest = d; continue; }
     if (f.stun > 0) f.stun -= dt;
@@ -16423,8 +17382,16 @@ function crewTaken(f, quiet, stunT) {
 }
 /* A footfall in regolith: a print that stays, and dust thrown on a clean parabola, because in vacuum
    nothing slows a grain down. It leaves the ground and lands where the arithmetic says it lands. */
-function mark(x, z, heading, grains, kick) {
+const STEP_OK = typeof STEPFX !== 'undefined' && !!STEPFX.print && !!STEPFX.create;
+if (STEP_OK) { try { STEPFX.PAGE.DUST = [WL.REGO, 1]; STEPFX.GRID = 2; if (typeof fbm === 'function') STEPFX.SHADE = (x, z) => .78 + fbm(x * .2, z * .2) * .5; } catch (e) { } }
+if (typeof FLAG !== 'undefined' && FLAG.PAGE) { try { FLAG.PAGE.DUST = [WL.REGO, 1]; } catch (e) { } }
+const stepSys = () => S.sfx || (S.sfx = STEPFX.create(((S.seed || 3) * 17 + 1) | 0));
+/* o: { left, run 0..1, turn, kind 'strike' | 'push' | 'scuff' | 'land' | null, v, print: false to throw dust without leaving a print } */
+function mark(x, z, heading, grains, kick, o) {
   const y = groundY(x, z);
+  if (STEP_OK) { o = o || {}; const left = !!o.left, run = o.run || 0;
+    if (o.print !== false) { S.pn = (S.pn || 0) + 1; S.prints.push({ x, z, y, h: heading, left, run, turn: o.turn || 0, seed: (S.pn * 7919) | 0 }); if (S.prints.length > 420) S.prints.shift(); }
+    if (o.kind !== null) { try { STEPFX.step(stepSys(), { x, y, z, h: heading, left, run, kind: o.kind || 'strike', v: o.v }); } catch (e) { } } return; }
   S.prints.push({ x, z, y, h: heading }); if (S.prints.length > 150) S.prints.shift();
   for (let i = 0; i < grains; i++) { const a = S.rng() * 6.283, sp = (.4 + S.rng() * 1.5) * kick;
     S.dust.push({ x, y: y + .03, z, vx: Math.cos(a) * sp, vy: (.5 + S.rng() * 1.6) * kick, vz: Math.sin(a) * sp, r: .012 + S.rng() * .02 }); }
@@ -16464,7 +17431,8 @@ function flagShot(o, dir, bt, arm) { const F = flagOf(); if (!F) return; let h =
   const A = ARM_SPEC[arm] || ARM_SPEC.tp82, sp = A.beam ? 3000 : A.rocket ? clamp(40 + h.t * 22, 40, 380) : 315, r = A.beam ? .004 : A.rocket ? .0065 : .0046;
   if (h.part === 'cloth') FLAG.update(F.rig, 0, { pass: { p: h.p, v: [dir[0] * sp, dir[1] * sp, dir[2] * sp], r } });
   else if (!A.beam) { const j = A.rocket ? .9 : 1.5; FLAG.update(F.rig, 0, { knock: { j: [dir[0] * j, dir[1] * j, dir[2] * j], h: h.p[1] - F.gy } }); } }
-function dustStep(dt) { for (let i = S.dust.length - 1; i >= 0; i--) { const g = S.dust[i]; g.vy -= 1.24 * dt; g.x += g.vx * dt; g.y += g.vy * dt; g.z += g.vz * dt; if (g.y <= groundY(g.x, g.z)) S.dust.splice(i, 1); } }
+function dustStep(dt) { if (STEP_OK && S.sfx) { try { STEPFX.update(S.sfx, dt, groundY); } catch (e) { } }
+  for (let i = S.dust.length - 1; i >= 0; i--) { const g = S.dust[i]; g.vy -= 1.24 * dt; g.x += g.vx * dt; g.y += g.vy * dt; g.z += g.vz * dt; if (g.y <= groundY(g.x, g.z)) S.dust.splice(i, 1); } }
 function end(kind) { S.over = kind; S.overT = 0; if (!AU.ctx) return; if (kind === 'dup') { sfx.breach(); sfx.kei(.9, 0); VOICE.utter(S.crew.id, 'death', null); } if (kind === 'crush') sfx.rumble(1.2); }
 
 // ---------------------------------------------------------------- the landing, and what the cameras saw afterwards
@@ -16719,6 +17687,7 @@ const TINTS = new Float32Array(72); (() => { const T = (i, r, g, b) => TINTS.set
   T(TL.SUIT, 1, .98, .94); T(TL.DARK, .92, .84, .78); T(TL.METAL, .96, .96, .98); T(TL.VISOR, .8, .9, 1.1); for (let i = 0; i < 10; i++) T(TL.FACE + i, 1.08, .86, .74);
   T(WL.REGO, 1.02, .93, .82); T(WL.ROCK, .98, .9, .8); T(WL.HULL, 1, 1, .98); T(WL.CRATE, 1.05, .91, .74); })();   // kept inside the film palette — the old orange was the one thing on screen reading as colour
 const SUN = V3.norm([-.62, .36, .58]), JUP = V3.norm([.1, .5, -.86]);
+if (STEP_OK) STEPFX.SUN = SUN; if (FLAG_OK) FLAG.SUN = SUN;
 function shadowMat(c) { const f = V3.mul(SUN, -1), r = V3.norm(V3.cross(f, [0, 1, 0])), u = V3.cross(r, f), E = 85, D = 260, tex = 2 * E / R.SM; const cr = Math.round(V3.dot(r, c) / tex) * tex, cu = Math.round(V3.dot(u, c) / tex) * tex, cf = V3.dot(f, c);
   return new Float32Array([r[0] / E, u[0] / E, f[0] / D, 0, r[1] / E, u[1] / E, f[1] / D, 0, r[2] / E, u[2] / E, f[2] / D, 0, -cr / E, -cu / E, -cf / D, 1]); }
 const cineAlt = t => t < DES_T ? 1500 * Math.pow(1 - t / DES_T, 2.3) + 9 : 9;
@@ -16772,7 +17741,8 @@ function render(dt, now) {
       if (!S.cine) { const ce2 = cam.e; const nb0 = B.n;
         emitTracers(B, cam, dt); emitBreakup(B, cam); if (S.depart !== undefined) emitDepart(B, cam, S.depart); else if (S.stage === 3 && S.launchT > LAUNCH_HOLD) emitDepart(B, cam, S.launchT - LAUNCH_HOLD);
         for (const m of S.prints) { const dx = m.x - ce2[0], dz = m.z - ce2[2]; if (dx * dx + dz * dz > 1600) continue;
-          if (GEAR_OK) GEAR.footprint(B, m.x, m.z, m.h, groundY); else { const c = Math.cos(m.h), sn = Math.sin(m.h); B.quad([m.x - c * .13 - sn * .07, m.y + .012, m.z - sn * .13 + c * .07], [m.x + c * .13 - sn * .07, m.y + .012, m.z + sn * .13 + c * .07], [m.x + c * .13 + sn * .07, m.y + .012, m.z + sn * .13 - c * .07], [m.x - c * .13 + sn * .07, m.y + .012, m.z - sn * .13 - c * .07], WL.REGO, .28, 0); } }
+          if (STEP_OK) { const q2 = dx * dx + dz * dz; STEPFX.print(B, m, groundY, q2 < 100 ? 0 : 1); } else if (GEAR_OK) GEAR.footprint(B, m.x, m.z, m.h, groundY); else { const c = Math.cos(m.h), sn = Math.sin(m.h); B.quad([m.x - c * .13 - sn * .07, m.y + .012, m.z - sn * .13 + c * .07], [m.x + c * .13 - sn * .07, m.y + .012, m.z + sn * .13 + c * .07], [m.x + c * .13 + sn * .07, m.y + .012, m.z + sn * .13 - c * .07], [m.x - c * .13 + sn * .07, m.y + .012, m.z - sn * .13 - c * .07], WL.REGO, .28, 0); } }
+        if (STEP_OK && S.sfx && S.sfx.n) STEPFX.emit(B, S.sfx, cam);
         for (const g of S.dust) B.ball([g.x, g.y, g.z], [g.r, 0, 0], [0, g.r, 0], [0, 0, g.r], WL.REGO, .9, 0, 4, 2);
         for (const c of S.brass) { const dx = c.x - ce2[0], dz = c.z - ce2[2]; if (dx * dx + dz * dz > 900) continue;
           const ca = Math.cos(c.a), sa = Math.sin(c.a), hy = c.gnd ? 0 : 1, L = .0095;
